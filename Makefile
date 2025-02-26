@@ -1,9 +1,10 @@
 CXX = g++
-CFLAGS = -std=c++17 -O2 -Iheaders
-LDFLAGS = -lglfw -lvulkan -ldl -lpthread -lX11 -lXxf86vm -lXrandr -lXi
+CFLAGS = -std=c++17 -O2 -Iheaders $(shell sdl2-config --cflags)
+LDFLAGS = -lglfw -lvulkan -ldl -lpthread -lX11 -lXxf86vm -lXrandr -lXi $(shell sdl2-config --libs)
+
 
 # List of source files
-SRCS = main.cpp
+SRCS = main.cpp vk_engine.cpp VkBootstrap.cpp
 
 # Automatically generate a list of object files
 OBJS = $(SRCS:.cpp=.o)

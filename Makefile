@@ -4,7 +4,7 @@ LDFLAGS = -lglfw -lvulkan -ldl -lpthread -lX11 -lXxf86vm -lXrandr -lXi $(shell s
 
 
 # List of source files
-SRCS = main.cpp vk_engine.cpp VkBootstrap.cpp vk_initializers.cpp
+SRCS = main.cpp vk_engine.cpp VkBootstrap.cpp vk_initializers.cpp vk_images.cpp
 
 # Automatically generate a list of object files
 OBJS = $(SRCS:.cpp=.o)

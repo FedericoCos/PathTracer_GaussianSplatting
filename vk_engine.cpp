@@ -57,6 +57,11 @@ void VulkanEngine::cleanup(){
         // Basically, destroy object in reverse order of their creation
         for(int i = 0; i < FRAME_OVERLAP; i++){
             vkDestroyCommandPool(_device, _frames[i]._commandPool, nullptr); // It is not possible to destroy individually VkComandBuffer
+
+            // Destroy sync objects
+            vkDestroyFence(_device, _frames[i]._renderFence, nullptr);
+            vkDestroySemaphore(_device, _frames[i]._renderSemaphore, nullptr);
+            vkDestroySemaphore(_device ,_frames[i]._swapchainSemaphore, nullptr);
         }
 
         vkDestroySwapchainKHR(_device, _swapchain, nullptr); // Images are owned and destroyed by the swapchain
@@ -83,6 +88,78 @@ void VulkanEngine::draw(){
 
     uint32_t swapchainImageIndex;
     vkAcquireNextImageKHR(_device, _swapchain, 1000000000, get_current_frame()._swapchainSemaphore, nullptr, &swapchainImageIndex);
+
+    VkCommandBuffer cmd = get_current_frame()._mainCommandBuffer;
+
+    // now that we are sure that the commands finished executing, we can safely
+    // reset the command buffer to beginrecording again
+    vkResetCommandBuffer(cmd, 0);
+
+    /**
+     * Before recording commands into a command buffer, you must call vkBeginCommandBuffer.
+        This resets and prepares the command buffer for recording.
+     */
+    VkCommandBufferBeginInfo cmdBeginInfo = vkinit::command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT); // tells the drivers that this buffer will only be submitted and executed once
+
+    // start of command buffer reccording
+    vkBeginCommandBuffer(cmd, &cmdBeginInfo);
+
+    // now, we need to transition the swapchain image into a drawable layout, perform operations, and transition it back
+    // for a display optimal layout
+    vkutil::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL); // TODO, WK_IMAGE_LAYOUT_GENERAL is not the most optimal for rendering
+                                                                                                                              // It is used if you want to write an image from a compute shader
+                                                                                                                              // If you want a read-only image or an image to be used with rasterization commands, there are better options
+
+    //make a clear-color from frame number. This will flash with a 120 frame period.
+	VkClearColorValue clearValue;
+	float flash = std::abs(std::sin(_frameNumber / 120.f));
+	clearValue = { { 0.0f, 0.0f, flash, 1.0f } };
+
+	VkImageSubresourceRange clearRange = vkinit::image_subresource_range(VK_IMAGE_ASPECT_COLOR_BIT);
+
+	//clear image
+	vkCmdClearColorImage(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange);
+
+	//make the swapchain image into presentable mode
+	vkutil::transition_image(cmd, _swapchainImages[swapchainImageIndex],VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+
+    vkEndCommandBuffer(cmd);
+
+    //prepare the submission to the queue. 
+	//we want to wait on the _presentSemaphore, as that semaphore is signaled when the swapchain is ready
+	//we will signal the _renderSemaphore, to signal that rendering has finished
+
+	VkCommandBufferSubmitInfo cmdinfo = vkinit::command_buffer_submit_info(cmd);	
+	
+	VkSemaphoreSubmitInfo waitInfo = vkinit::semaphore_submit_info(VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR,get_current_frame()._swapchainSemaphore);
+	VkSemaphoreSubmitInfo signalInfo = vkinit::semaphore_submit_info(VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, get_current_frame()._renderSemaphore);	
+	
+	VkSubmitInfo2 submit = vkinit::submit_info(&cmdinfo,&signalInfo,&waitInfo);	
+
+	//submit command buffer to the queue and execute it.
+	// _renderFence will now block until the graphic commands finish execution
+	vkQueueSubmit2(_graphicsQueue, 1, &submit, get_current_frame()._renderFence);
+
+    //prepare present
+	// this will put the image we just rendered to into the visible window.
+	// we want to wait on the _renderSemaphore for that, 
+	// as its necessary that drawing commands have finished before the image is displayed to the user
+	VkPresentInfoKHR presentInfo = {};
+	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+	presentInfo.pNext = nullptr;
+	presentInfo.pSwapchains = &_swapchain;
+	presentInfo.swapchainCount = 1;
+
+	presentInfo.pWaitSemaphores = &get_current_frame()._renderSemaphore;
+	presentInfo.waitSemaphoreCount = 1;
+
+	presentInfo.pImageIndices = &swapchainImageIndex;
+
+	vkQueuePresentKHR(_graphicsQueue, &presentInfo);
+
+	//increase the number of frames drawn
+	_frameNumber++;
+
 }
 
 void VulkanEngine::run(){
@@ -193,6 +270,11 @@ void VulkanEngine::init_swapchain()
                     .set_desired_format(VkSurfaceFormatKHR{ .format = _swapchainImageFormat, .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR })
                     .set_desired_present_mode(VK_PRESENT_MODE_FIFO_KHR) // vsync present mode
                     .set_desired_extent(_windowExtent.width, _windowExtent.height)
+                    .add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT) // If an image has VK_IMAGE_USAGE_TRANSFER_DST_BIT, it can be used in operations that write to it via a transfer command, such as:
+                                                                            // Copying data from a buffer to the image (vkCmdCopyBufferToImage)
+                                                                            // Copying data from another image (vkCmdCopyImage)
+                                                                            // Blitting (scaling/interpolating) images (vkCmdBlitImage)
+                                                                            // Clearing the image with vkCmdClearColorImage() or vkCmdClearDepthStencilImage()
                     .build()
                     .value();
     

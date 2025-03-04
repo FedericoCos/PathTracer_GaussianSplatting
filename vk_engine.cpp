@@ -11,6 +11,9 @@
 #include <chrono>
 #include <thread>
 
+#define VMA_IMPLEMENTATION
+#include "vk_mem_alloc.h"
+
 
 constexpr bool bUseValidationLayers = true;
 
@@ -43,6 +46,18 @@ void VulkanEngine::init(){
     init_commands();
     init_sync_structures();
 
+    // Initialize the memory allocator
+    VmaAllocatorCreateInfo allocatorInfo = {};
+    allocatorInfo.physicalDevice = _chosenGPU;
+    allocatorInfo.device = _device;
+    allocatorInfo.instance = _instance;
+    allocatorInfo.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT; // we'll let use of GPU pointers
+    vmaCreateAllocator(&allocatorInfo, &_allocator);
+
+    _mainDeletionQueue.push_function([&](){
+        vmaDestroyAllocator(_allocator);
+    });
+
 
     // evrything went fine
     _isInitialized = true;
@@ -62,7 +77,12 @@ void VulkanEngine::cleanup(){
             vkDestroyFence(_device, _frames[i]._renderFence, nullptr);
             vkDestroySemaphore(_device, _frames[i]._renderSemaphore, nullptr);
             vkDestroySemaphore(_device ,_frames[i]._swapchainSemaphore, nullptr);
+
+            _frames[i]._deletionQueue.flush();
         }
+
+        // flush the global deletion queue
+        _mainDeletionQueue.flush();
 
         vkDestroySwapchainKHR(_device, _swapchain, nullptr); // Images are owned and destroyed by the swapchain
 
@@ -84,6 +104,8 @@ void VulkanEngine::cleanup(){
 
 void VulkanEngine::draw(){
     vkWaitForFences(_device, 1, &get_current_frame()._renderFence, true, 1000000000); // wait GPU to finish its work
+
+    get_current_frame()._deletionQueue.flush(); // delete objects created fro the past frame
     vkResetFences(_device, 1, &get_current_frame()._renderFence);
 
     uint32_t swapchainImageIndex;
@@ -284,6 +306,53 @@ void VulkanEngine::init_swapchain()
     _swapchainImageViews = vkbSwapchain.get_image_views().value();
 
     _swapchainImageFormat = vkbSwapchain.image_format;
+
+    // draw image size will match the window
+    VkExtent3D drawImageExtent = {
+        _windowExtent.width,
+        _windowExtent.height,
+        1
+    };
+
+    // hardcoding the draw format to 32 bit float
+    _drawImage. imageFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+    _drawImage.imageExtent = drawImageExtent;
+
+    /**
+     * In Vulkan, all images and buffers must fill a UsageFlags with what 
+     * they will be used for. This allows the driver to perform optimizations
+     * in the background depending on what that buffer or image is going to do later.
+     * In our case we want TransferRSC and TransferDST so that we can copy from and into the image,
+     * Storage because thats the compute shader can write to it layout, and
+     * Color attachment so that we can use graphics pipelines to draw geometry into it
+     */
+    VkImageUsageFlags drawImageUsages{};
+    drawImageUsages |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    drawImageUsages |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    drawImageUsages |= VK_IMAGE_USAGE_STORAGE_BIT;
+	drawImageUsages |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
+
+    VkImageCreateInfo rimg_info = vkinit::image_create_info(_drawImage.imageFormat, drawImageUsages, drawImageExtent);
+
+    // for the draw image, we want to allocate it from GPU local memory
+    VmaAllocationCreateInfo rimg_allocinfo = {};
+    rimg_allocinfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+    rimg_allocinfo.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT); //  flag for GPU only device for fast access
+    
+    // allocate and create the image
+    vmaCreateImage(_allocator, &rimg_info, &rimg_allocinfo, &_drawImage.image, &_drawImage.allocation, nullptr);
+
+    // build a image-view for the draw image to use for rendering
+    VkImageViewCreateInfo rview_info = vkinit::imageview_create_info(_drawImage.imageFormat, _drawImage.image, VK_IMAGE_ASPECT_COLOR_BIT);
+
+    vkCreateImageView(_device, &rview_info, nullptr, &_drawImage.imageView);
+
+    // add to deletion queues
+    _mainDeletionQueue.push_function([=]() {
+        vkDestroyImageView(_device, _drawImage.imageView, nullptr);
+        vmaDestroyImage(_allocator, _drawImage.image, _drawImage.allocation);
+    });
     
 }
 

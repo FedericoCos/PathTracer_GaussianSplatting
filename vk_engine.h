@@ -8,14 +8,8 @@
 
 #include "VkBootstrap.h"
 
-struct FrameData{
-    VkCommandPool _commandPool; // the command pool for the commands
-    VkCommandBuffer _mainCommandBuffer; // the buffer to record into
-
-    VkSemaphore _swapchainSemaphore, // so that render commands wait on the swapchain image request
-                _renderSemaphore; // control presenting the image to the OS once the drawing finishes
-    VkFence _renderFence; // waits for the draw commands of a given frame to be finished
-};
+#include <deque>
+#include <bits/stdc++.h>
 
 constexpr unsigned int FRAME_OVERLAP = 2; // double buffering: GPU running some commands while we write into others
 
@@ -47,6 +41,15 @@ public:
     VkQueue _graphicsQueue;
     uint32_t _graphicsQueueFamily; // family of the above queue
     FrameData _frames[FRAME_OVERLAP];
+
+    DeletionQueue _mainDeletionQueue;
+
+    // Virtual memory allocator
+    VmaAllocator _allocator;
+
+    // draw resources
+    AllocatedImage _drawImage;
+    VkExtent2D _drawExtent;
 
     // initializes everything in the engine
     void init();

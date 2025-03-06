@@ -40,12 +40,9 @@ void VulkanEngine::init(){
         window_flags
     );
 
+
     // load the core Vulkan structures
     init_vulkan(); // Instance and device creation
-    init_swapchain(); // create the swapchain
-    init_commands();
-    init_sync_structures();
-
     // Initialize the memory allocator
     VmaAllocatorCreateInfo allocatorInfo = {};
     allocatorInfo.physicalDevice = _chosenGPU;
@@ -57,6 +54,10 @@ void VulkanEngine::init(){
     _mainDeletionQueue.push_function([&](){
         vmaDestroyAllocator(_allocator);
     });
+
+    init_swapchain(); // create the swapchain
+    init_commands();
+    init_sync_structures();
 
 
     // evrything went fine
@@ -123,7 +124,7 @@ void VulkanEngine::draw(){
      */
     VkCommandBufferBeginInfo cmdBeginInfo = vkinit::command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT); // tells the drivers that this buffer will only be submitted and executed once
 
-    // start of command buffer reccording
+    /* // start of command buffer reccording
     vkBeginCommandBuffer(cmd, &cmdBeginInfo);
 
     // now, we need to transition the swapchain image into a drawable layout, perform operations, and transition it back
@@ -145,7 +146,44 @@ void VulkanEngine::draw(){
 	//make the swapchain image into presentable mode
 	vkutil::transition_image(cmd, _swapchainImages[swapchainImageIndex],VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
-    vkEndCommandBuffer(cmd);
+    vkEndCommandBuffer(cmd); */
+
+    /**
+     * Difference with previous implementation: now we do not perform the clear on the swapchain
+     * Instead we do it on the _drawImage.image. Ince we have cleared the image
+     * we transition both the swapchain and the draw image into their layouts for transfer
+     * and we execute the copy command 
+     */
+    _drawExtent.width = _drawImage.imageExtent.width;
+	_drawExtent.height = _drawImage.imageExtent.height;
+
+    // start of command buffer reccording
+    vkBeginCommandBuffer(cmd, &cmdBeginInfo);
+
+    // now, we need to transition the swapchain image into a drawable layout, perform operations, and transition it back
+    // for a display optimal layout
+    vkutil::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL); // TODO, WK_IMAGE_LAYOUT_GENERAL is not the most optimal for rendering
+                                                                                                                              // It is used if you want to write an image from a compute shader
+                                                                                                                              // If you want a read-only image or an image to be used with rasterization commands, there are better options	
+
+	// transition our main draw image into general layout so we can write into it
+	// we will overwrite it all so we dont care about what was the older layout
+	vkutil::transition_image(cmd, _drawImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+
+	draw_background(cmd);
+
+	//transition the draw image and the swapchain image into their correct transfer layouts
+	vkutil::transition_image(cmd, _drawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+	vkutil::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+	// execute a copy from the draw image into the swapchain
+	vkutil::copy_image_to_image(cmd, _drawImage.image, _swapchainImages[swapchainImageIndex], _drawExtent, _windowExtent);
+
+	// set swapchain image layout to Present so we can show it on the screen
+	vkutil::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+
+	//finalize the command buffer (we can no longer add commands, but it can now be executed)
+	vkEndCommandBuffer(cmd);
 
     //prepare the submission to the queue. 
 	//we want to wait on the _presentSemaphore, as that semaphore is signaled when the swapchain is ready
@@ -387,4 +425,16 @@ void VulkanEngine::init_sync_structures()
 		vkCreateSemaphore(_device, &semaphoreCreateInfo, nullptr, &_frames[i]._swapchainSemaphore);
 		vkCreateSemaphore(_device, &semaphoreCreateInfo, nullptr, &_frames[i]._renderSemaphore);
 	}
+}
+
+void VulkanEngine::draw_background(VkCommandBuffer cmd){
+    // make a clear-color from frame number. This will flash with a 120 fram period
+    VkClearColorValue clearValue;
+    float flash = std::abs(std::sin(_frameNumber / 120.f));
+    clearValue = {{ 0.0f, 0.0f, flash, 1.0f}};
+
+    VkImageSubresourceRange clearRange = vkinit::image_subresource_range(VK_IMAGE_ASPECT_COLOR_BIT);
+
+    // clear image
+    vkCmdClearColorImage(cmd, _drawImage.image, VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange);
 }

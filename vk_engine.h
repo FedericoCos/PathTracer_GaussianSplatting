@@ -75,4 +75,5 @@ private:
     void init_swapchain();
     void init_commands();
     void init_sync_structures();
+    void draw_background(VkCommandBuffer cmd);
 };

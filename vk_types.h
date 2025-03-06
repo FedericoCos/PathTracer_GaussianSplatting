@@ -8,6 +8,8 @@
 #include <vulkan/vulkan.h>
 
 #include "vk_mem_alloc.h"
+#include <deque>
+#include <bits/stdc++.h>
 
 struct DeletionQueue{
     std::deque<std::function<void()>> deletors;

@@ -10,6 +10,9 @@
 #include "vk_mem_alloc.h"
 #include <deque>
 #include <bits/stdc++.h>
+#include <vector>
+#include <span>
+#include <iostream>
 
 struct DeletionQueue{
     std::deque<std::function<void()>> deletors;

@@ -1,10 +1,10 @@
 CXX = g++
-CFLAGS = -std=c++17 -O2 -Iheaders $(shell sdl2-config --cflags)
+CFLAGS = -std=c++20 -O2 -Iheaders $(shell sdl2-config --cflags)
 LDFLAGS = -lglfw -lvulkan -ldl -lpthread -lX11 -lXxf86vm -lXrandr -lXi $(shell sdl2-config --libs)
 
 
 # List of source files
-SRCS = main.cpp vk_engine.cpp VkBootstrap.cpp vk_initializers.cpp vk_images.cpp
+SRCS = main.cpp vk_engine.cpp VkBootstrap.cpp vk_initializers.cpp vk_images.cpp vk_descriptors.cpp vk_pipelines.cpp
 
 # Automatically generate a list of object files
 OBJS = $(SRCS:.cpp=.o)
@@ -28,6 +28,7 @@ $(TARGET): $(OBJS)
 
 # Run the program
 test: $(TARGET)
+	glslc shaders/gradient.comp -o shaders/shader.comp.spv
 	./$(TARGET)
 
 # Clean up the build files

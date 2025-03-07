@@ -5,6 +5,9 @@
 layout (local_size_x = 16, local_size_y = 16) in;
 
 //descriptor bindings for the pipeline
+// rgba16f specifies the format of the image as 16-bit floating point per channel (good for HDR and smooth gradients)
+// set = 0 refers to Descriptor set 0 - a collection of resources like buffers and imageSize
+// binding = 0 refers to binding 0 within that set
 layout(rgba16f,set = 0, binding = 0) uniform image2D image;
 
 
@@ -17,6 +20,7 @@ void main()
     {
         vec4 color = vec4(0.0, 0.0, 0.0, 1.0);
 
+        // this is a gradient color, with creation of a grid
         if(gl_LocalInvocationID.x != 0 && gl_LocalInvocationID.y != 0)
         {
             color.x = float(texelCoord.x)/(size.x);

@@ -62,6 +62,11 @@ public:
     VkPipeline _gradientPipeline;
     VkPipelineLayout _gradientPipelineLayout;
 
+    // immediate submit structures (for ImGui)
+    VkFence _immFence;
+    VkCommandBuffer _immCommandBuffer;
+    VkCommandPool _immCommandPool;
+
     // initializes everything in the engine
     void init();
 
@@ -71,8 +76,12 @@ public:
     // draw loop
     void draw();
 
+    void draw_imgui(VkCommandBuffer cmd, VkImageView targetImageView);
+
     //run main loop
     void run();
+
+    void immediate_submit(std::function<void(VkCommandBuffer cmd)>&& function);
 
     static VulkanEngine& Get();
 
@@ -89,5 +98,6 @@ private:
     void init_descriptors();
     void init_pipelines();
     void init_background_pipelines();
+    void init_imgui();
     void draw_background(VkCommandBuffer cmd);
 };

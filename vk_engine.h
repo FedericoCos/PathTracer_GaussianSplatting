@@ -12,8 +12,18 @@
 
 #include <deque>
 #include <bits/stdc++.h>
+#define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES // allows the use of not packed (minimal) structures, more
+                                           // in line with Vulkan need
+#include <glm/glm.hpp>
 
 constexpr unsigned int FRAME_OVERLAP = 2; // double buffering: GPU running some commands while we write into others
+
+// Push constant for gradient_color shader
+struct ComputePushConstants{
+    glm::vec4 data1;
+    glm::vec4 data2;
+
+};
 
 class VulkanEngine{
 public:

@@ -22,7 +22,18 @@ constexpr unsigned int FRAME_OVERLAP = 2; // double buffering: GPU running some 
 struct ComputePushConstants{
     glm::vec4 data1;
     glm::vec4 data2;
+    glm::vec4 data3;
+    glm::vec4 data4;
 
+};
+
+struct ComputeEffect{
+    const char * name;
+
+    VkPipeline pipeline;
+    VkPipelineLayout layout;
+
+    ComputePushConstants data;
 };
 
 class VulkanEngine{
@@ -71,6 +82,9 @@ public:
     // gradient (compute) pipeline
     VkPipeline _gradientPipeline;
     VkPipelineLayout _gradientPipelineLayout;
+
+    std::vector<ComputeEffect> backgroundEffects;
+    int currentBackgroundEffect{0};
 
     // immediate submit structures (for ImGui)
     VkFence _immFence;

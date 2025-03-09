@@ -31,6 +31,8 @@ test: $(TARGET)
 	glslc shaders/gradient.comp -o shaders/shader.comp.spv
 	glslc shaders/sky.comp -o shaders/shader.sky.spv
 	glslc shaders/gradient_color.comp -o shaders/shader.gradient_color.spv
+	glslc shaders/colored_triangle.frag -o shaders/shader.triangleFrag.spv
+	glslc shaders/colored_triangle.vert -o shaders/shader.triangleVertex.spv
 	./$(TARGET)
 
 # Clean up the build files

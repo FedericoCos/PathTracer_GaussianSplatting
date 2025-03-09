@@ -1,25 +1,48 @@
 // Contains image related vulkan helpers
 #include "vk_images.h"
-
 #include "vk_initializers.h"
+
+#include <fstream>
 
 void vkutil::transition_image(VkCommandBuffer cmd, VkImage image, VkImageLayout currentLayout, VkImageLayout newLayout)
 {
-    VkImageMemoryBarrier2 imageBarrier {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    VkImageMemoryBarrier2 imageBarrier = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     imageBarrier.pNext = nullptr;
 
-    imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT; // TODO!! It stalls the GPU pipeline a bit. If many transitions per frame are needed as part
-                                                                      // of a post process chain, you want to avoid doing this, and instead use stagemasks more accurate to what is needed
-                                                                      // The barrier will stop the gpucommands completely when it arrives at the barrier
-    imageBarrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT; // Also access mask indentifies how the GPU operations will be handled when barrier is met
-    imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    imageBarrier.dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT;
+    // Handle the transition to PRESENT_SRC_KHR
+    if (newLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) {
+        imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        imageBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+        imageBarrier.dstAccessMask = 0;  // Presentation doesn't need access mask
+    } 
+    else if (currentLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_GENERAL) {
+        imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        imageBarrier.srcAccessMask = 0;
+        imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        imageBarrier.dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+    } 
+    else if (currentLayout == VK_IMAGE_LAYOUT_GENERAL && newLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+        imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        imageBarrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+        imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        imageBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT;
+    } 
+    else {
+        imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        imageBarrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+        imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        imageBarrier.dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT;
+    }
 
     imageBarrier.oldLayout = currentLayout;
     imageBarrier.newLayout = newLayout;
 
-    VkImageAspectFlags aspectMask = (newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-    /**
+    VkImageAspectFlags aspectMask = (newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) 
+        ? VK_IMAGE_ASPECT_DEPTH_BIT 
+        : VK_IMAGE_ASPECT_COLOR_BIT;
+
+        /**
      * As part of the barrier, we need to use a VkImageSubresourceRange too. This lets us target a part of the image with the barrier. 
      * Its most useful for things like array images or mipmapped images, where we would only need to barrier on a given layer 
      * or mipmap level. We are going to completely default it and have it transition all mipmap levels and layers.
@@ -27,10 +50,9 @@ void vkutil::transition_image(VkCommandBuffer cmd, VkImage image, VkImageLayout 
     imageBarrier.subresourceRange = vkinit::image_subresource_range(aspectMask);
     imageBarrier.image = image;
 
-    VkDependencyInfo depInfo {};
+    VkDependencyInfo depInfo = {};
     depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     depInfo.pNext = nullptr;
-
     depInfo.imageMemoryBarrierCount = 1;
     depInfo.pImageMemoryBarriers = &imageBarrier;
 
@@ -73,4 +95,49 @@ void vkutil::copy_image_to_image(VkCommandBuffer cmd, VkImage source, VkImage de
 	blitInfo.pRegions = &blitRegion;
 
 	vkCmdBlitImage2(cmd, &blitInfo); // TODO, BlitImage is slow
+}
+
+bool vkutil::load_shader_module(const char * filePath, VkDevice device, VkShaderModule * outShaderModule){
+    // open the dile. With cursor at the end
+    std::ifstream file(filePath, std::ios::ate | std::ios::binary);
+
+    if(!file.is_open()){
+        return false;
+    }
+
+    // find what the size of the file is by looking up the location of the cursor
+    // because the cursor is at the end, it gives the size directly in bytes
+    size_t fileSize = (size_t)file.tellg(); // long unsigned int
+
+    // spirv expects the buffer to be on uint32, so make sure to reserve a int
+    // vector big enough for the entire file
+    std::vector<uint32_t> buffer(fileSize / sizeof(uint32_t));
+
+    // put file cursor at beginning
+    file.seekg(0);
+
+    // load the entire file into the buffer
+    file.read((char *) buffer.data(), fileSize);
+
+    // now that the file is loaded into the buffer, we can close it
+    file.close();
+
+    // create a new shader module,  using the buffer we loaded
+    VkShaderModuleCreateInfo createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    createInfo.pNext = nullptr;
+
+    // codeSize has to be in bytes, so multiply the ints in the buffer by size of
+    // int to know the real size of the buffer
+    createInfo.codeSize = buffer.size() * sizeof(uint32_t);
+    createInfo.pCode = buffer.data();
+
+    // check that the creation goes well
+    VkShaderModule shaderModule;
+    if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS){
+        return false;
+    }
+
+    *outShaderModule = shaderModule;
+    return true;
 }

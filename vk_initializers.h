@@ -34,4 +34,8 @@ namespace vkinit {
 
 	VkRenderingInfo rendering_info(VkExtent2D renderExtent, VkRenderingAttachmentInfo* colorAttachment,
 		VkRenderingAttachmentInfo* depthAttachment);
+
+	VkPipelineShaderStageCreateInfo pipeline_shader_stage_create_info(VkShaderStageFlagBits shaderStageFlag, VkShaderModule module);
+
+	VkPipelineLayoutCreateInfo pipeline_layout_create_info();
 }

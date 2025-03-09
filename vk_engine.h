@@ -91,6 +91,11 @@ public:
     VkCommandBuffer _immCommandBuffer;
     VkCommandPool _immCommandPool;
 
+    // Pipeline for triangle shaders
+    VkPipelineLayout _trianglePipelineLayout;
+    VkPipeline _trianglePipeline;
+
+
     // initializes everything in the engine
     void init();
 
@@ -124,4 +129,6 @@ private:
     void init_background_pipelines();
     void init_imgui();
     void draw_background(VkCommandBuffer cmd);
+    void init_triangle_pipeline();
+    void draw_geometry(VkCommandBuffer cmd);
 };

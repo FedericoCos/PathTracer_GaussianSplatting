@@ -101,6 +101,10 @@ public:
 
     GPUMeshBuffers rectangle;
 
+    // for window resizeing
+    bool resize_requested = false;
+    float renderScale = 1.f;
+
 
     // initializes everything in the engine
     void init();
@@ -142,4 +146,7 @@ private:
     GPUMeshBuffers uploadMesh(std::span<uint32_t> indices, std::span<Vertex> vertices);
     void init_mesh_pipeline();
     void init_default_data();
+    void resize_swapchain();
+    void destroy_swapchain();
+    void create_swapchain(uint32_t width, uint32_t height);
 };

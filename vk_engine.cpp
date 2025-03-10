@@ -32,7 +32,7 @@ void VulkanEngine::init(){
     SDL_Init(SDL_INIT_VIDEO); // The parameter SDL_INIT_VIDEO is a flag to tell SDL which functionalities we want
                               // In this case, we are selecting video and mouse/keyboard input
 
-    SDL_WindowFlags window_flags = (SDL_WindowFlags)(SDL_WINDOW_VULKAN);
+    SDL_WindowFlags window_flags = (SDL_WindowFlags)(SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
 
     // Create blank SDL window for our application
     _window = SDL_CreateWindow(
@@ -66,7 +66,6 @@ void VulkanEngine::init(){
     init_descriptors();
 
     init_default_data();
-    std::cout << "PORCA MADONNA" << std::endl;
     init_pipelines();
 
     init_imgui();
@@ -121,7 +120,12 @@ void VulkanEngine::draw(){
     vkResetFences(_device, 1, &get_current_frame()._renderFence);
 
     uint32_t swapchainImageIndex;
-    vkAcquireNextImageKHR(_device, _swapchain, 1000000000, get_current_frame()._swapchainSemaphore, nullptr, &swapchainImageIndex);
+    VkResult e = vkAcquireNextImageKHR(_device, _swapchain, 1000000000, get_current_frame()._swapchainSemaphore, nullptr, &swapchainImageIndex);
+    // for window resize
+    if (e == VK_ERROR_OUT_OF_DATE_KHR || e == VK_SUBOPTIMAL_KHR){
+        resize_requested = true;
+        return;
+    }
 
     VkCommandBuffer cmd = get_current_frame()._mainCommandBuffer;
 
@@ -165,8 +169,8 @@ void VulkanEngine::draw(){
      * we transition both the swapchain and the draw image into their layouts for transfer
      * and we execute the copy command 
      */
-    _drawExtent.width = _drawImage.imageExtent.width;
-	_drawExtent.height = _drawImage.imageExtent.height;
+    _drawExtent.height = std::min(_windowExtent.height, _drawImage.imageExtent.height) * renderScale;
+    _drawExtent.width= std::min(_windowExtent.width, _drawImage.imageExtent.width) * renderScale;
 
     // start of command buffer reccording
     vkBeginCommandBuffer(cmd, &cmdBeginInfo);
@@ -319,12 +323,17 @@ void VulkanEngine::run(){
             continue;
         }
 
+        if (resize_requested){
+            resize_swapchain();
+        }
+
         // imgui new frame
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
 
         if (ImGui::Begin("background")) {
+            ImGui::SliderFloat("Render Scale",&renderScale, 0.3f, 1.f);
 			
 			ComputeEffect& selected = backgroundEffects[currentBackgroundEffect];
 		
@@ -463,7 +472,7 @@ void VulkanEngine::init_swapchain()
     VmaAllocationCreateInfo rimg_allocinfo = {};
     rimg_allocinfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
     rimg_allocinfo.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT); //  flag for GPU only device for fast access
-    
+
     // allocate and create the image
     vmaCreateImage(_allocator, &rimg_info, &rimg_allocinfo, &_drawImage.image, &_drawImage.allocation, nullptr);
 
@@ -1051,6 +1060,7 @@ void VulkanEngine::init_mesh_pipeline(){
 	pipelineBuilder.set_multisampling_none();
 	//no blending
 	pipelineBuilder.disable_blending();
+    // pipelineBuilder.enable_blending_alphablend();
 
 	pipelineBuilder.disable_depthtest();
 
@@ -1102,4 +1112,54 @@ void VulkanEngine::init_default_data() {
 		destroy_buffer(rectangle.vertexBuffer);
 	});
 
+}
+
+
+void VulkanEngine::resize_swapchain(){
+    vkQueueWaitIdle(_graphicsQueue);
+
+    destroy_swapchain();
+
+    int w, h;
+    SDL_GetWindowSize(_window, &w, &h);
+    _windowExtent.width = w;
+    _windowExtent.height = h;
+
+    create_swapchain(_windowExtent.width, _windowExtent.height);
+
+    resize_requested = false;
+}
+
+
+void VulkanEngine::destroy_swapchain()
+{
+	vkDestroySwapchainKHR(_device, _swapchain, nullptr);
+
+	// destroy swapchain resources
+	for (int i = 0; i < _swapchainImageViews.size(); i++) {
+
+		vkDestroyImageView(_device, _swapchainImageViews[i], nullptr);
+	}
+}
+
+void VulkanEngine::create_swapchain(uint32_t width, uint32_t height)
+{
+	vkb::SwapchainBuilder swapchainBuilder{ _chosenGPU,_device,_surface };
+
+	_swapchainImageFormat = VK_FORMAT_B8G8R8A8_UNORM;
+
+	vkb::Swapchain vkbSwapchain = swapchainBuilder
+		//.use_default_format_selection()
+		.set_desired_format(VkSurfaceFormatKHR{ .format = _swapchainImageFormat, .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR })
+		//use vsync present mode
+		.set_desired_present_mode(VK_PRESENT_MODE_FIFO_KHR)
+		.set_desired_extent(width, height)
+		.add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+		.build()
+		.value();
+
+	//store swapchain and its related images
+	_swapchain = vkbSwapchain.swapchain;
+	_swapchainImages = vkbSwapchain.get_images().value();
+	_swapchainImageViews = vkbSwapchain.get_image_views().value();
 }

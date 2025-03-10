@@ -176,3 +176,35 @@ void PipelineBuilder::disable_depthtest()
     _depthStencil.minDepthBounds = 0.f;
     _depthStencil.maxDepthBounds = 1.f;
 }
+
+/**
+ * Blends by simply adding the color
+ * outColor = srcColor.rgb * srcColor.a + dstColor.rgb * 1.0
+ */
+void PipelineBuilder::enable_blending_additive(){
+    _colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    _colorBlendAttachment.blendEnable = VK_TRUE;
+    _colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    _colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    _colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+    _colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    _colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    _colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+}
+
+/**
+ * Blends by mixing the color
+ * outColor = srcColor.rgb * srcColor.a + dstColor.rgb * (1.0 - srcColor.a)
+ * The alpha value is taken from the fragment shader, so youu need to 
+ * modify it
+ */
+void PipelineBuilder::enable_blending_alphablend(){
+    _colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    _colorBlendAttachment.blendEnable = VK_TRUE;
+    _colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    _colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    _colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+    _colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    _colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    _colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+}

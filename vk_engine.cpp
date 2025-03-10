@@ -1133,13 +1133,13 @@ void VulkanEngine::resize_swapchain(){
 
 void VulkanEngine::destroy_swapchain()
 {
-	vkDestroySwapchainKHR(_device, _swapchain, nullptr);
-
 	// destroy swapchain resources
 	for (int i = 0; i < _swapchainImageViews.size(); i++) {
 
 		vkDestroyImageView(_device, _swapchainImageViews[i], nullptr);
 	}
+
+    vkDestroySwapchainKHR(_device, _swapchain, nullptr);
 }
 
 void VulkanEngine::create_swapchain(uint32_t width, uint32_t height)

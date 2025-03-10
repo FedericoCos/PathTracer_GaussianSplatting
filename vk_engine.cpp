@@ -65,6 +65,8 @@ void VulkanEngine::init(){
 
     init_descriptors();
 
+    init_default_data();
+    std::cout << "PORCA MADONNA" << std::endl;
     init_pipelines();
 
     init_imgui();
@@ -595,6 +597,7 @@ void VulkanEngine::init_descriptors(){
 void VulkanEngine::init_pipelines(){
     init_background_pipelines();
     init_triangle_pipeline();
+    init_mesh_pipeline();
 }
 
 void VulkanEngine::init_background_pipelines(){
@@ -669,7 +672,7 @@ void VulkanEngine::init_background_pipelines(){
     vkDestroyShaderModule(_device, gradientShader, nullptr);
     vkDestroyShaderModule(_device, skyShader, nullptr);
 
-	_mainDeletionQueue.push_function([=, this]() {
+	_mainDeletionQueue.push_function([=, *this]() {
 		vkDestroyPipelineLayout(_device, _gradientPipelineLayout, nullptr);
 		vkDestroyPipeline(_device, sky.pipeline, nullptr);
         vkDestroyPipeline(_device, gradient.pipeline, nullptr);
@@ -677,6 +680,13 @@ void VulkanEngine::init_background_pipelines(){
 }
 
 
+/**
+ * The VulkanEngine::immediate_submit function is a utility designed to execute a 
+ * small batch of Vulkan commands immediately and synchronously. 
+ * This is useful for tasks like uploading resources to the GPU, 
+ * transitioning image layouts, or other operations that need to be performed 
+ * outside the main render loop.
+ */
 void VulkanEngine::immediate_submit(std::function<void(VkCommandBuffer cmd)>&& function){
     /**
      * TODO a way to improve this would be to run it on a different queue than the graphics queue, and that way we
@@ -691,6 +701,8 @@ void VulkanEngine::immediate_submit(std::function<void(VkCommandBuffer cmd)>&& f
     vkBeginCommandBuffer(cmd, &cmdBeginInfo);
 
     function(cmd);
+
+    vkEndCommandBuffer(cmd);
 
     VkCommandBufferSubmitInfo cmdInfo = vkinit::command_buffer_submit_info(cmd);
     VkSubmitInfo2 submit = vkinit::submit_info(&cmdInfo, nullptr, nullptr);
@@ -762,7 +774,7 @@ void VulkanEngine::init_imgui(){
     ImGui_ImplVulkan_CreateFontsTexture();
 
     // add the destroy the imgui created structures
-    _mainDeletionQueue.push_function([=, this]() {
+    _mainDeletionQueue.push_function([=, *this]() {
         ImGui_ImplVulkan_Shutdown();
         vkDestroyDescriptorPool(_device, imguiPool, nullptr);
     });
@@ -866,5 +878,228 @@ void VulkanEngine::draw_geometry(VkCommandBuffer cmd)
 	//launch a draw command to draw 3 vertices
 	vkCmdDraw(cmd, 3, 1, 0, 0);
 
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _meshPipeline);
+
+	GPUDrawPushConstants push_constants;
+	push_constants.worldMatrix = glm::mat4{ 1.f };
+	push_constants.vertexBuffer = rectangle.vertexBufferAddress;
+
+	vkCmdPushConstants(cmd, _meshPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(GPUDrawPushConstants), &push_constants); // TO CHECK
+	vkCmdBindIndexBuffer(cmd, rectangle.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+
+	vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
+
 	vkCmdEndRendering(cmd);
+}
+
+AllocatedBuffer VulkanEngine::create_buffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage){
+    // allocate buffer
+    VkBufferCreateInfo bufferInfo = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    bufferInfo.pNext = nullptr;
+    bufferInfo.size = allocSize;
+
+    /**
+     * With images, we were creating them in device local memory, which is the fastest
+     * memory possible as its on GPU VRAM
+     * but with buffers we have to decide if we want them to be writeable from cpu
+     * directly or not. These would be the main usages we can use
+     * 
+        VMA_MEMORY_USAGE_GPU_ONLY Is for purely GPU-local memory. 
+        This memory wont be writeable or readable from CPU because its on GPU VRAM, 
+        but its the fastest to both read and write with shaders.
+        VMA_MEMORY_USAGE_CPU_ONLY Is for memory that is on the CPU RAM. 
+        This is memory we can write to from CPU, but the GPU can still read from it. 
+        Keep in mind that because this is on CPU ram which is outside of the GPU, 
+        the accesses to this will come at a performance hit. 
+        It is still quite useful if we have data that changes every frame or 
+        small amounts of data where slower access wont matter
+        VMA_MEMORY_USAGE_CPU_TO_GPU Is also writeable from CPU, 
+        but might be faster to access from GPU. On vulkan 1.2 and forwards, 
+        GPUs have a small memory region on their own VRAM that is still writeable from CPU. 
+        Its size is limited unless we use Resizable BAR, 
+        but its memory that is both cpu-writeable and fast to access in GPU
+        VMA_MEMORY_USAGE_GPU_TO_CPU Used on memory that we want to be safely readable 
+        from CPU.
+
+     */
+    bufferInfo.usage = usage; // We can use this to control where VMA will put our buffer
+
+    VmaAllocationCreateInfo vmaallocInfo = {};
+    vmaallocInfo.usage = memoryUsage;
+    vmaallocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT; // this maps the pointer automatically so we can write to the memory, as long as the buffer is accessible from CPU
+    AllocatedBuffer newBuffer;
+
+    // allocate the buffer
+    vmaCreateBuffer(_allocator, &bufferInfo, &vmaallocInfo, &newBuffer.buffer, &newBuffer.allocation, &newBuffer.info);
+
+    return newBuffer;
+}
+
+void VulkanEngine::destroy_buffer(const AllocatedBuffer& buffer){
+    vmaDestroyBuffer(_allocator, buffer.buffer, buffer.allocation);
+}
+
+GPUMeshBuffers VulkanEngine::uploadMesh(std::span<uint32_t> indices, std::span<Vertex> vertices){
+    const size_t vertexBufferSize = vertices.size() * sizeof(Vertex);
+    const size_t indexBufferSize = indices.size() * sizeof(uint32_t);
+
+    GPUMeshBuffers newSurface;
+
+    // create vertex buffer
+    newSurface.vertexBuffer = create_buffer(vertexBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT /* bacause its a SSBO */ | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT /* Bacause we'll be taking its adress*/,
+		VMA_MEMORY_USAGE_GPU_ONLY);
+
+    // find the adress of the vertex buffer
+    VkBufferDeviceAddressInfo deviceAdressInfo{ .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,.buffer = newSurface.vertexBuffer.buffer };
+    newSurface.vertexBufferAddress = vkGetBufferDeviceAddress(_device, &deviceAdressInfo);
+    
+
+    // create index buffer
+    newSurface.indexBuffer = create_buffer(indexBufferSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT /* To signal that buffer is for indexed draws */ | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		VMA_MEMORY_USAGE_GPU_ONLY);
+
+    /**
+     * With the buffers allocated, we need to write the data into them. 
+     * For that, we will be using a staging buffer. 
+     * This is a very common pattern with vulkan. 
+     * As GPU_ONLY memory cant be written on CPU, we first write the memory on a 
+     * temporal staging buffer that is CPU writeable, and then execute a 
+     * copy command to copy this buffer into the GPU buffers. 
+     * Its not necesary for meshes to use GPU_ONLY vertex buffers, 
+     * but its highly recommended unless its something like a 
+     * CPU side particle system or other dynamic effects.
+     */
+
+    AllocatedBuffer staging = create_buffer(vertexBufferSize + indexBufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY);
+
+    void * data = staging.allocation -> GetMappedData();
+
+    // copy vertex buffer
+    memcpy(data, vertices.data(), vertexBufferSize);
+
+    // copy index buffer
+    memcpy((char *)data + vertexBufferSize, indices.data(), indexBufferSize);
+    
+
+    /**
+     * TODO
+     * Note that this pattern is not very efficient, 
+     * as we are waiting for the GPU command to fully execute before continuing 
+     * with our CPU side logic. This is something people generally put on a 
+     * background thread, whose sole job is to execute uploads like this one, 
+     * and deleting/reusing the staging buffers.
+     */
+    immediate_submit([&](VkCommandBuffer cmd) {
+		VkBufferCopy vertexCopy{ 0 };
+		vertexCopy.dstOffset = 0;
+		vertexCopy.srcOffset = 0;
+		vertexCopy.size = vertexBufferSize;
+
+		vkCmdCopyBuffer(cmd, staging.buffer, newSurface.vertexBuffer.buffer, 1, &vertexCopy);
+
+		VkBufferCopy indexCopy{ 0 };
+		indexCopy.dstOffset = 0;
+		indexCopy.srcOffset = vertexBufferSize;
+		indexCopy.size = indexBufferSize;
+
+		vkCmdCopyBuffer(cmd, staging.buffer, newSurface.indexBuffer.buffer, 1, &indexCopy);
+	});
+
+    destroy_buffer(staging);
+
+    return newSurface;
+}
+
+void VulkanEngine::init_mesh_pipeline(){
+    VkShaderModule triangleFragShader;
+    std::filesystem::path path = std::filesystem::current_path();
+    std::string stringPath = path.generic_string() + "/shaders/shader.triangleFrag.spv";
+    if(!vkutil::load_shader_module(stringPath.c_str(), _device, &triangleFragShader)){
+        std::cout << "Error in loading shader \n" << std::endl;
+    }
+
+    VkShaderModule triangleVertexShader;
+    stringPath = path.generic_string() + "/shaders/shader.triangleMeshVertex.spv";
+    if(!vkutil::load_shader_module(stringPath.c_str(), _device, &triangleVertexShader)){
+        std::cout << "Error in loading shader \n" << std::endl;
+    }
+
+    VkPushConstantRange bufferRange{};
+    bufferRange.offset = 0;
+    bufferRange.size = sizeof(GPUDrawPushConstants);
+    bufferRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+    VkPipelineLayoutCreateInfo pipeline_layout_info = vkinit::pipeline_layout_create_info();
+    pipeline_layout_info.pPushConstantRanges = &bufferRange;
+    pipeline_layout_info.pushConstantRangeCount = 1;
+
+    vkCreatePipelineLayout(_device, &pipeline_layout_info, nullptr, &_meshPipelineLayout);
+
+    PipelineBuilder pipelineBuilder;
+
+	//use the triangle layout we created
+	pipelineBuilder._pipelineLayout = _meshPipelineLayout;
+	//connecting the vertex and pixel shaders to the pipeline
+	pipelineBuilder.set_shaders(triangleVertexShader, triangleFragShader);
+	//it will draw triangles
+	pipelineBuilder.set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+	//filled triangles
+	pipelineBuilder.set_polygon_mode(VK_POLYGON_MODE_FILL);
+	//no backface culling
+	pipelineBuilder.set_cull_mode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
+	//no multisampling
+	pipelineBuilder.set_multisampling_none();
+	//no blending
+	pipelineBuilder.disable_blending();
+
+	pipelineBuilder.disable_depthtest();
+
+	//connect the image format we will draw into, from draw image
+	pipelineBuilder.set_color_attachment_format(_drawImage.imageFormat);
+	pipelineBuilder.set_depth_format(VK_FORMAT_UNDEFINED);
+
+	//finally build the pipeline
+	_meshPipeline = pipelineBuilder.build_pipeline(_device);
+
+	//clean structures
+	vkDestroyShaderModule(_device, triangleFragShader, nullptr);
+	vkDestroyShaderModule(_device, triangleVertexShader, nullptr);
+
+	_mainDeletionQueue.push_function([&]() {
+		vkDestroyPipelineLayout(_device, _meshPipelineLayout, nullptr);
+		vkDestroyPipeline(_device, _meshPipeline, nullptr);
+	});
+}
+
+void VulkanEngine::init_default_data() {
+	std::array<Vertex,4> rect_vertices;
+
+	rect_vertices[0].position = {0.5,-0.5, 0};
+	rect_vertices[1].position = {0.5,0.5, 0};
+	rect_vertices[2].position = {-0.5,-0.5, 0};
+	rect_vertices[3].position = {-0.5,0.5, 0};
+
+	rect_vertices[0].color = {0,0, 0,1};
+	rect_vertices[1].color = { 0.5,0.5,0.5 ,1};
+	rect_vertices[2].color = { 1,0, 0,1 };
+	rect_vertices[3].color = { 0,1, 0,1 };
+
+	std::array<uint32_t,6> rect_indices;
+
+	rect_indices[0] = 0;
+	rect_indices[1] = 1;
+	rect_indices[2] = 2;
+
+	rect_indices[3] = 2;
+	rect_indices[4] = 1;
+	rect_indices[5] = 3;
+
+	rectangle = uploadMesh(rect_indices,rect_vertices);
+
+	//delete the rectangle data on engine shutdown
+	_mainDeletionQueue.push_function([&](){
+		destroy_buffer(rectangle.indexBuffer);
+		destroy_buffer(rectangle.vertexBuffer);
+	});
+
 }

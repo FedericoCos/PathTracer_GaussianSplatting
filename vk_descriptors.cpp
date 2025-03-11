@@ -187,3 +187,76 @@ VkDescriptorSet DescriptorAllocatorGrowable::allocate(VkDevice device, VkDescrip
     return ds;
 }
 
+/**
+* Descriptors Allowed in a buffer 
+VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
+VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
+VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC
+ */
+void DescriptorWriter::write_buffer(int binding, VkBuffer buffer, size_t size, size_t offset, VkDescriptorType type){
+    VkDescriptorBufferInfo& info = bufferInfos.emplace_back(VkDescriptorBufferInfo{
+        .buffer = buffer,
+        .offset = offset,
+        .range = size
+    });
+
+    VkWriteDescriptorSet write = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+
+    write.dstBinding = binding;
+    write.dstSet = VK_NULL_HANDLE; // left empty for now until we need to write it
+    write.descriptorCount = 1;
+    write.descriptorType = type;
+    write.pBufferInfo = &info;
+
+    writes.push_back(write);
+}
+
+/**
+ * Possible layout
+ * VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL -> best layout for accessing textures in the shaders
+ * VK_IMAGE_LAYOUT_GENERAL -> when using images from compute shaders and writing them
+ */
+void DescriptorWriter::write_image(int binding, VkImageView image, VkSampler sampler, VkImageLayout layout, VkDescriptorType type){
+    VkDescriptorImageInfo& info = imageInfos.emplace_back(VkDescriptorImageInfo{
+        .sampler = sampler,
+        .imageView = image,
+        .imageLayout = layout
+    });
+
+    VkWriteDescriptorSet write = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+
+    write.dstBinding = binding;
+    write.dstSet = VK_NULL_HANDLE; // left empty for now until we need to write it
+    write.descriptorCount = 1;
+    write.descriptorType = type;
+    write.pImageInfo = &info;
+
+    writes.push_back(write);
+}
+
+/**
+ * TODO -> maybe evaluate the addition of adding write_sampler() where it has
+ * VK_DESCRIPTOR-tyPE_SAMPLER and sets imageview and lyout to null
+ */
+
+void DescriptorWriter::clear(){
+    imageInfos.clear();
+    writes.clear();
+    bufferInfos.clear();
+}
+
+/**
+ * Takes a device and a descriptor set
+ * connects that set to the array of writes
+ * and then calls vkUpdateDescriptorSets to write the descriptor set
+ * to its new bindings
+ */
+void DescriptorWriter::update_set(VkDevice device, VkDescriptorSet set){
+    for (VkWriteDescriptorSet& write : writes){
+        write.dstSet = set;
+    }
+
+    vkUpdateDescriptorSets(device, (uint32_t)writes.size(), writes.data(), 0, nullptr);
+}
+

@@ -8,12 +8,18 @@
 #include <vulkan/vulkan.h>
 
 #include "vk_mem_alloc.h"
+struct DescriptorAllocatorGrowable; // forward declaration of structure
 #include <deque>
 #include <bits/stdc++.h>
 #include <vector>
 #include <span>
 #include <iostream>
+#define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
 #include <glm/glm.hpp>
+
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 struct DeletionQueue{
     std::deque<std::function<void()>> deletors;
@@ -47,6 +53,11 @@ struct FrameData{
                 _renderSemaphore; // control presenting the image to the OS once the drawing finishes
     VkFence _renderFence; // waits for the draw commands of a given frame to be finished
     DeletionQueue _deletionQueue;
+
+    DescriptorAllocatorGrowable * _frameDescriptors; // resetting the whole descriptor pool
+                                                    // at once is a lot faster than trying
+                                                    // to keep track of individual descriptor
+                                                    // set resource lifetimes
 };
 
 struct AllocatedImage {
@@ -85,4 +96,30 @@ struct GPUMeshBuffers {
 struct GPUDrawPushConstants {
     glm::mat4 worldMatrix;
     VkDeviceAddress vertexBuffer;
+};
+
+struct GPUSceneData{
+    glm::mat4 view;
+    glm::mat4 proj;
+    glm::mat4 viewproj;
+    glm::vec4 ambientColor;
+    glm::vec4 sunlightDirection; // w for sun power
+    glm::vec4 sunlightColor;
+};
+
+enum class MaterialPass :uint8_t{
+    MainColor,
+    Transparent,
+    Other
+};
+
+struct MaterialPipeline {
+    VkPipeline pipeline;
+    VkPipelineLayout layout;
+};
+
+struct MaterialInstance {
+    MaterialPipeline * pipeline;
+    VkDescriptorSet materialSet;
+    MaterialPass passType;
 };

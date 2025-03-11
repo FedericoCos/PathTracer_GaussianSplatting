@@ -7,14 +7,12 @@
 #include "vk_images.h"
 #include "vk_descriptors.h"
 #include "vk_pipelines.h"
+#include "vk_loader.h"
 
 #include "VkBootstrap.h"
 
 #include <deque>
 #include <bits/stdc++.h>
-#define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES // allows the use of not packed (minimal) structures, more
-                                           // in line with Vulkan need
-#include <glm/glm.hpp>
 
 constexpr unsigned int FRAME_OVERLAP = 2; // double buffering: GPU running some commands while we write into others
 
@@ -105,6 +103,25 @@ public:
     bool resize_requested = false;
     float renderScale = 1.f;
 
+    // Descriptor layout for scende data
+    GPUSceneData sceneData;
+    VkDescriptorSetLayout _gpuSceneDataDescriptorLayout;
+
+    //Basic test images and samplers
+    AllocatedImage _whiteImage;
+    AllocatedImage _blackImage;
+    AllocatedImage _greyImage;
+    AllocatedImage _errorCheckerboardImage;
+
+    VkSampler _defaultSamplerLinear;
+    VkSampler _defaultSamplerNearest;
+
+    // Descriptor Set Layout for single image
+    VkDescriptorSetLayout _singleImageDescriptorLayout;
+
+    // meshes
+    std::vector<std::shared_ptr<MeshAsset>> testMeshes;
+
 
     // initializes everything in the engine
     void init();
@@ -126,6 +143,7 @@ public:
 
     FrameData& get_current_frame() { return _frames[_frameNumber % FRAME_OVERLAP]; };
 
+    GPUMeshBuffers uploadMesh(std::span<uint32_t> indices, std::span<Vertex> vertices);
 
 private:
 
@@ -143,10 +161,42 @@ private:
     void draw_geometry(VkCommandBuffer cmd);
     AllocatedBuffer create_buffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
     void destroy_buffer(const AllocatedBuffer& buffer);
-    GPUMeshBuffers uploadMesh(std::span<uint32_t> indices, std::span<Vertex> vertices);
     void init_mesh_pipeline();
     void init_default_data();
     void resize_swapchain();
     void destroy_swapchain();
     void create_swapchain(uint32_t width, uint32_t height);
+    AllocatedImage create_image(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
+    AllocatedImage create_image(void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
+    void destroy_image(const AllocatedImage& img);
+};
+
+struct GLFTMetallic_Roughness{
+    MaterialPipeline opaquePipeline;
+    MaterialPipeline transparentPipeline;
+
+    VkDescriptorSetLayout materialLayout;
+
+    struct MaterialConstants {
+        glm::vec4 colorFactors;
+        glm::vec4 metal_rough_factors;
+        // padding, we need it anyway for uniform buffers
+        glm::vec4 extra[14];
+    };
+
+    struct MaterialResources {
+        AllocatedImage colorImage;
+        VkSampler colorSampler;
+        AllocatedImage metalRoughImage;
+        VkSampler metalRoughSampler;
+        VkBuffer dataBuffer;
+        uint32_t dataBufferOffset;
+    };
+
+    DescriptorWriter writer;
+
+    void build_pipelines(VulkanEngine * engine);
+    void clear_resources(VkDevice device);
+
+    MaterialInstance write_material(VkDevice device, MaterialPass pass, const MaterialResources& resources, DescriptorAllocatorGrowable& descriptorAllocator);
 };

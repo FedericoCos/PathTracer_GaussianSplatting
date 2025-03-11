@@ -1,4 +1,5 @@
 // Contains descriptor set abstractions
+#pragma once
 
 #include "vk_types.h"
 

@@ -236,3 +236,20 @@ VkPipelineLayoutCreateInfo vkinit::pipeline_layout_create_info() {
     info.pPushConstantRanges = nullptr;
     return info;
 }
+
+
+VkRenderingAttachmentInfo vkinit::depth_attachment_info(
+    VkImageView view, VkImageLayout layout /*= VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL*/)
+{
+    VkRenderingAttachmentInfo depthAttachment {};
+    depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAttachment.pNext = nullptr;
+
+    depthAttachment.imageView = view;
+    depthAttachment.imageLayout = layout;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depthAttachment.clearValue.depthStencil.depth = 0.f;
+
+    return depthAttachment;
+}

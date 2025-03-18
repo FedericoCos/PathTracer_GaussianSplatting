@@ -169,6 +169,7 @@ VkDescriptorSet DescriptorAllocatorGrowable::allocate(VkDevice device, VkDescrip
     allocInfo.descriptorSetCount = 1;
     allocInfo.pSetLayouts = &layout;
 
+
     VkDescriptorSet ds;
     VkResult result = vkAllocateDescriptorSets(device, &allocInfo, &ds);
 

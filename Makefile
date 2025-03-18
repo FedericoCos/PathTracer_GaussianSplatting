@@ -35,6 +35,8 @@ test: $(TARGET)
 	glslc shaders/colored_triangle.vert -o shaders/shader.triangleVertex.spv
 	glslc shaders/colored_triangle_mesh.vert -o shaders/shader.triangleMeshVertex.spv
 	glslc shaders/tex_image.frag -o shaders/shader.texImageFrag.spv
+	glslc shaders/mesh.vert -o shaders/shader.meshVert.spv
+	glslc shaders/mesh.frag -o shaders/shader.meshFrag.spv
 	./$(TARGET)
 
 # Clean up the build files

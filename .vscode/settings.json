@@ -87,7 +87,8 @@
         "typeindex": "cpp",
         "valarray": "cpp",
         "variant": "cpp",
-        "filesystem": "cpp"
+        "filesystem": "cpp",
+        "version": "cpp"
     },
     "C_Cpp.errorSquiggles": "enabled"
 }

@@ -11,10 +11,11 @@ layout (location = 0) out vec4 outFragColor;
 
 void main() 
 {
-	float lightValue = max(dot(inNormal, sceneData.sunlightDirection.xyz), 0.1f);
+	float lightValue = max(dot(inNormal, normalize(sceneData.sunlightDirection.xyz)), 0.1f);
 
-	vec3 color = inColor * texture(colorTex,inUV).xyz;
-	vec3 ambient = color *  sceneData.ambientColor.xyz;
+	vec4 texColor = texture(colorTex, inUV);
+	vec3 color = inColor * texColor.xyz;
+	vec3 ambient = normalize(sceneData.ambientColor.xyz) * sceneData.ambientColor.w;
 
-	outFragColor = vec4(color * lightValue *  sceneData.sunlightColor.w + ambient ,1.0f);
+	outFragColor = vec4(color * lightValue *  sceneData.sunlightColor.w + ambient , texColor.a / 4);
 }

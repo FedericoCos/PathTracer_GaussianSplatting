@@ -1,44 +1,38 @@
-// Contains helpers to create vulkan structures
-
+// Code for creation of Vulkan Structures
 #pragma once
 
 #include "vk_types.h"
 
-namespace vkinit {
+namespace vkinit{
+    /**
+     * Allows to initialize an image info for image allocation
+     * Sets mipmap levels to 1 and MSAA to 1
+     */
+    VkImageCreateInfo image_create_info(VkFormat format, VkImageUsageFlags usageFlags, VkExtent3D extent);
 
-	// Command pool
-	VkCommandPoolCreateInfo command_pool_create_info(uint32_t queueFamilyIndex, VkCommandPoolCreateFlags flags = 0);
-	VkCommandBufferAllocateInfo command_buffer_allocate_info(VkCommandPool pool, uint32_t count = 1, VkCommandBufferLevel level = VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+    /**
+     * Allows to create an image view for an image
+     */
+    VkImageViewCreateInfo imageview_create_info(VkFormat format, VkImage image, VkImageAspectFlags aspectFlags);
 
-	// Semaphore and Fences
-	VkFenceCreateInfo fence_create_info(VkFenceCreateFlags flags);
-	VkSemaphoreCreateInfo semaphore_create_info(VkSemaphoreCreateFlags flags);
+    VkCommandPoolCreateInfo command_pool_create_info(uint32_t queuefamilyIndex, VkCommandPoolCreateFlags flags = 0);
+    VkCommandBufferAllocateInfo command_buffer_allocate_info(VkCommandPool pool, uint32_t count = 1, VkCommandBufferLevel level = VK_COMMAND_BUFFER_LEVEL_PRIMARY);
 
-	VkCommandBufferBeginInfo command_buffer_begin_info(VkCommandBufferUsageFlags flags);
+    VkFenceCreateInfo fence_create_info(VkFenceCreateFlags flags);
+    VkSemaphoreCreateInfo semaphore_create_info(VkSemaphoreCreateFlags flags);
+    VkSemaphoreSubmitInfo semaphore_submit_info(VkPipelineStageFlags2 stageMask, VkSemaphore semaphore);
 
-	VkImageSubresourceRange image_subresource_range(VkImageAspectFlags aspectMask);
+    VkCommandBufferBeginInfo command_buffer_begin_info(VkCommandBufferUsageFlags aspectMask);
+    VkCommandBufferSubmitInfo command_buffer_submit_info(VkCommandBuffer cmd);
+    VkSubmitInfo2 submit_info(VkCommandBufferSubmitInfo* cmd, VkSemaphoreSubmitInfo* signalSemaphoreInfo,
+                            VkSemaphoreSubmitInfo* waitSemaphoreInfo);
 
-	
-	VkSemaphoreSubmitInfo semaphore_submit_info(VkPipelineStageFlags2 stageMask, VkSemaphore semaphore);
 
-	VkCommandBufferSubmitInfo command_buffer_submit_info(VkCommandBuffer cmd);
+    VkPipelineLayoutCreateInfo pipeline_layout_create_info();
+    VkPipelineShaderStageCreateInfo pipeline_shader_stage_create_info(VkShaderStageFlagBits shaderStageFlag, VkShaderModule module);
 
-	VkSubmitInfo2 submit_info(VkCommandBufferSubmitInfo* cmd, VkSemaphoreSubmitInfo* signalSemaphoreInfo,
-		VkSemaphoreSubmitInfo* waitSemaphoreInfo);
-
-	
-	VkImageCreateInfo image_create_info(VkFormat format, VkImageUsageFlags usageFlags, VkExtent3D extent);
-	VkImageViewCreateInfo imageview_create_info(VkFormat format, VkImage image, VkImageAspectFlags aspectFlags);
-
-	VkRenderingAttachmentInfo attachment_info(VkImageView view, VkClearValue* clear ,VkImageLayout layout /*= VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL*/);
-
+    VkRenderingAttachmentInfo attachment_info(VkImageView view, VkClearValue* clear ,VkImageLayout layout /*= VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL*/);
 	VkRenderingInfo rendering_info(VkExtent2D renderExtent, VkRenderingAttachmentInfo* colorAttachment,
 		VkRenderingAttachmentInfo* depthAttachment);
-
-	VkPipelineShaderStageCreateInfo pipeline_shader_stage_create_info(VkShaderStageFlagBits shaderStageFlag, VkShaderModule module);
-
-	VkPipelineLayoutCreateInfo pipeline_layout_create_info();
-
-	VkRenderingAttachmentInfo depth_attachment_info(
-		VkImageView view, VkImageLayout layout /*= VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL*/);
+    VkRenderingAttachmentInfo depth_attachment_info(VkImageView view, VkImageLayout layout);
 }

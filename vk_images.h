@@ -1,12 +1,41 @@
-// Contains image related vulkan helpers
+// To handle images like textures, ...
 #pragma once
 
-#include <vulkan/vulkan.h>
+#include "vk_types.h"
 
-namespace vkutil{
-    void transition_image(VkCommandBuffer cmd, VkImage image, VkImageLayout currentLayout, VkImageLayout newLayout);
+class VulkanEngine; // forward declaration
 
-    void copy_image_to_image(VkCommandBuffer cmd, VkImage source, VkImage destination, VkExtent2D srcSize, VkExtent2D dstSize);	
+namespace vkimage{
+    AllocatedImage create_image(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped, VulkanEngine& engine);
+    /**
+     * Creates an AllocateImage object to later use as resource (such as texture)
+     */
+    AllocatedImage create_image(void * data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped, VulkanEngine& engine);
+    void destroy_image(const AllocatedImage& img, VulkanEngine& engine);
 
-    bool load_shader_module(const char * filePath, VkDevice device, VkShaderModule * outShaderModule);
-}
+    /**
+     * Allows to consider only specific subparts of an image
+     */
+    VkImageSubresourceRange image_subresource_range(VkImageAspectFlags aspectMask);
+
+    /**
+     * Allows for transitioning the layout of an image
+     */
+    void transition_image(
+        VkCommandBuffer cmd,
+        VkImage image,
+        VkImageLayout oldLayout,
+        VkImageLayout newLayout,
+        uint32_t mipLevels,
+        uint32_t layerCount,
+        VkPipelineStageFlags2 srcStage = 0,
+        VkAccessFlags2 srcAccess = 0,
+        VkPipelineStageFlags2 dstStage = 0,
+        VkAccessFlags2 dstAccess = 0);
+
+    
+    void copy_image_to_image(VkCommandBuffer cmd, VkImage source, VkImage destination, VkExtent2D srcSize, VkExtent2D dstSize);
+
+    std::optional<AllocatedImage> load_image(VulkanEngine& engine, fastgltf::Asset& asset, fastgltf::Image& image);
+
+} 

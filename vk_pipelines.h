@@ -1,13 +1,11 @@
-// Contains abstractions for pipelines
+// Constains abstractions for pipelines
 
 #include "vk_types.h"
 #include "vk_initializers.h"
 
-
 class PipelineBuilder{
 public:
     std::vector<VkPipelineShaderStageCreateInfo> _shaderStages;
-
     VkPipelineInputAssemblyStateCreateInfo _inputAssembly;
     VkPipelineRasterizationStateCreateInfo _rasterizer;
     VkPipelineColorBlendAttachmentState _colorBlendAttachment;

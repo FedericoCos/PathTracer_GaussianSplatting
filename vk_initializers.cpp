@@ -1,80 +1,76 @@
-// contains helpers to create vulkan structures
 #include "vk_initializers.h"
 
-VkCommandPoolCreateInfo vkinit::command_pool_create_info(uint32_t queueFamilyIndex, VkCommandPoolCreateFlags flags /*= 0*/)
-{
-	/*
-    Most Vulkan Info structures, used for all of the VkCreateX functions, 
-    and a lot of the other Vulkan structures, need sType and pNext set. 
-    This is used for extensions, as some extensions will still call the 
-    VkCreateX function, but with structs of a different type than the normal one. 
-    The sType helps the implementation know what struct is being used in the function.
-    */
-	VkCommandPoolCreateInfo info = {}; // 0s initialization of structure
-	info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-	info.pNext = nullptr;
-
-	info.queueFamilyIndex = queueFamilyIndex;
-	info.flags = flags;
-	return info;
-}
-
-VkCommandBufferAllocateInfo vkinit::command_buffer_allocate_info(VkCommandPool pool, uint32_t count /*= 1*/, VkCommandBufferLevel level /*= VK_COMMAND_BUFFER_LEVEL_PRIMARY*/)
-{
-	VkCommandBufferAllocateInfo info = {};
-	info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-	info.pNext = nullptr;
-
-	info.commandPool = pool;
-	info.commandBufferCount = count;
-	info.level = level;
-	return info;
-}
-
-VkFenceCreateInfo vkinit::fence_create_info(VkFenceCreateFlags flags /*= 0*/)
-{
-    VkFenceCreateInfo info = {};
-    info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+VkImageCreateInfo vkinit::image_create_info(VkFormat format, VkImageUsageFlags usageFlags, VkExtent3D extent){
+    VkImageCreateInfo info = {};
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     info.pNext = nullptr;
 
-    info.flags = flags;
+    info.imageType = VK_IMAGE_TYPE_2D;
+
+    info.format = format;
+    info.extent = extent;
+    info.mipLevels = 1;
+    info.arrayLayers = 1;
+    info.samples = VK_SAMPLE_COUNT_1_BIT;
+    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    info.usage = usageFlags;
 
     return info;
 }
 
-VkSemaphoreCreateInfo vkinit::semaphore_create_info(VkSemaphoreCreateFlags flags /*= 0*/)
+VkImageViewCreateInfo vkinit::imageview_create_info(VkFormat format, VkImage image, VkImageAspectFlags aspectFlags)
 {
+    // build a image-view for the depth image to use for rendering
+    VkImageViewCreateInfo info = {};
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    info.pNext = nullptr;
+
+    info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    info.image = image;
+    info.format = format;
+    info.subresourceRange.baseMipLevel = 0;
+    info.subresourceRange.levelCount = 1;
+    info.subresourceRange.baseArrayLayer = 0;
+    info.subresourceRange.layerCount = 1;
+    info.subresourceRange.aspectMask = aspectFlags;
+
+    return info;
+}
+
+VkCommandPoolCreateInfo vkinit::command_pool_create_info(uint32_t queueFamilyIndex, VkCommandPoolCreateFlags flags){
+    VkCommandPoolCreateInfo info = {};
+    info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    info.pNext = nullptr;
+    info.queueFamilyIndex = queueFamilyIndex;
+    info.flags = flags;
+    return info;
+}
+
+VkCommandBufferAllocateInfo vkinit::command_buffer_allocate_info(VkCommandPool pool, uint32_t count, VkCommandBufferLevel level){
+    VkCommandBufferAllocateInfo info = {};
+    info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    info.pNext = nullptr;
+    info.commandPool = pool;
+    info.commandBufferCount = count;
+    info.level = level;
+    return info;
+}
+
+VkFenceCreateInfo vkinit::fence_create_info(VkFenceCreateFlags flags){
+    VkFenceCreateInfo info = {};
+    info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    info.pNext = nullptr;
+    info.flags = flags;
+    return info;
+}
+
+VkSemaphoreCreateInfo vkinit::semaphore_create_info(VkSemaphoreCreateFlags flags){
     VkSemaphoreCreateInfo info = {};
     info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     info.pNext = nullptr;
     info.flags = flags;
     return info;
 }
-
-VkCommandBufferBeginInfo vkinit::command_buffer_begin_info(VkCommandBufferUsageFlags flags /*= 0*/)
-{
-    VkCommandBufferBeginInfo info = {};
-    info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    info.pNext = nullptr;
-
-    info.pInheritanceInfo = nullptr;
-    info.flags = flags;
-    return info;
-}
-
-// Basic implementation, we are returning the all mipmap levels and layers
-VkImageSubresourceRange vkinit::image_subresource_range(VkImageAspectFlags aspectMask)
-{
-    VkImageSubresourceRange subImage {};
-    subImage.aspectMask = aspectMask;
-    subImage.baseMipLevel = 0;
-    subImage.levelCount = VK_REMAINING_MIP_LEVELS;
-    subImage.baseArrayLayer = 0;
-    subImage.layerCount = VK_REMAINING_ARRAY_LAYERS;
-
-    return subImage;
-}
-
 
 VkSemaphoreSubmitInfo vkinit::semaphore_submit_info(VkPipelineStageFlags2 stageMask, VkSemaphore semaphore)
 {
@@ -87,6 +83,15 @@ VkSemaphoreSubmitInfo vkinit::semaphore_submit_info(VkPipelineStageFlags2 stageM
 	submitInfo.value = 1;
 
 	return submitInfo;
+}
+
+VkCommandBufferBeginInfo vkinit::command_buffer_begin_info(VkCommandBufferUsageFlags flags){
+    VkCommandBufferBeginInfo info = {};
+    info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    info.pNext = nullptr;
+    info.pInheritanceInfo = nullptr;
+    info.flags = flags;
+    return info;
 }
 
 VkCommandBufferSubmitInfo vkinit::command_buffer_submit_info(VkCommandBuffer cmd)
@@ -119,53 +124,30 @@ VkSubmitInfo2 vkinit::submit_info(VkCommandBufferSubmitInfo* cmd, VkSemaphoreSub
     return info;
 }
 
-VkImageCreateInfo vkinit::image_create_info(VkFormat format, VkImageUsageFlags usageFlags, VkExtent3D extent)
-{
-    VkImageCreateInfo info = {};
-    info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+VkPipelineLayoutCreateInfo vkinit::pipeline_layout_create_info(){
+    VkPipelineLayoutCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     info.pNext = nullptr;
 
-    info.imageType = VK_IMAGE_TYPE_2D;
-
-    info.format = format;
-    info.extent = extent;
-
-    info.mipLevels = 1;
-    info.arrayLayers = 1;
-
-    //for MSAA. we will not be using it by default, so default it to 1 sample per pixel.
-    info.samples = VK_SAMPLE_COUNT_1_BIT;
-
-    //optimal tiling, which means the image is stored on the best gpu format
-    info.tiling = VK_IMAGE_TILING_OPTIMAL; // use tiling Linear to reade image data from cpu, which makes the gpu data into a simple 2d array
-    info.usage = usageFlags;
-
+    info.flags = 0;
+    info.setLayoutCount = 0;
+    info.pSetLayouts = nullptr;
+    info.pPushConstantRanges = nullptr;
+    info.pushConstantRangeCount = 0;
     return info;
 }
 
-VkImageViewCreateInfo vkinit::imageview_create_info(VkFormat format, VkImage image, VkImageAspectFlags aspectFlags)
-{
-    // build a image-view for the depth image to use for rendering
-    VkImageViewCreateInfo info = {};
-    info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    info.pNext = nullptr;
+VkPipelineShaderStageCreateInfo vkinit::pipeline_shader_stage_create_info(VkShaderStageFlagBits shaderStageFlag, VkShaderModule module){
+    VkPipelineShaderStageCreateInfo stageInfo{};
+    stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stageInfo.pNext = nullptr;
+    stageInfo.stage = shaderStageFlag; // if either vertex stage or fragment
+    stageInfo.module = module;
+    stageInfo.pName = "main";
 
-    info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    info.image = image;
-    info.format = format;
-    info.subresourceRange.baseMipLevel = 0;
-    info.subresourceRange.levelCount = 1;
-    info.subresourceRange.baseArrayLayer = 0;
-    info.subresourceRange.layerCount = 1;
-    info.subresourceRange.aspectMask = aspectFlags;
-
-    return info;
+    return stageInfo;
 }
 
-/**
- * Thanks to the clear value, we can either do a clear
- * or skip it and load the image
- */
 VkRenderingAttachmentInfo vkinit::attachment_info(
     VkImageView view, VkClearValue* clear ,VkImageLayout layout /*= VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL*/)
 {
@@ -175,14 +157,6 @@ VkRenderingAttachmentInfo vkinit::attachment_info(
 
     colorAttachment.imageView = view;
     colorAttachment.imageLayout = layout;
-    /**
-     * We need to hook imageview and layout as usual with all these rendering commands. 
-     * The important part is the loadOP and storeOP. 
-     * This controls what happens to the render target in this attachment when its used within a renderpass 
-     * (both dynamic one and class renderpass). For load options, we have LOAD, 
-     * which will keep the data in that image. Clear which will set it to our clear value at the start,
-     * and dont-care where we plan to replace every pixel and thus the gpu can skip loading it from memory.
-     */
     colorAttachment.loadOp = clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     if (clear) {
@@ -208,35 +182,6 @@ VkRenderingInfo vkinit::rendering_info(VkExtent2D renderExtent, VkRenderingAttac
 
     return renderInfo;
 }
-
-VkPipelineShaderStageCreateInfo vkinit::pipeline_shader_stage_create_info(VkShaderStageFlagBits shaderStageFlag, VkShaderModule module){
-    VkPipelineShaderStageCreateInfo stageinfo{};
-    stageinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stageinfo.pNext = nullptr;
-    //shader stage
-	stageinfo.stage = shaderStageFlag;
-    //module containing the code for this shader stage
-	stageinfo.module = module;
-    //the entry point of the shader
-	stageinfo.pName = "main";
-
-    return stageinfo;
-}
-
-VkPipelineLayoutCreateInfo vkinit::pipeline_layout_create_info() {
-    VkPipelineLayoutCreateInfo info{};
-    info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    info.pNext = nullptr;
-
-    //empty defaults
-    info.flags = 0;
-    info.setLayoutCount = 0;
-    info.pSetLayouts = nullptr;
-    info.pushConstantRangeCount = 0;
-    info.pPushConstantRanges = nullptr;
-    return info;
-}
-
 
 VkRenderingAttachmentInfo vkinit::depth_attachment_info(
     VkImageView view, VkImageLayout layout /*= VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL*/)

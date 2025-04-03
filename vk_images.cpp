@@ -1,70 +1,189 @@
-// Contains image related vulkan helpers
+// To handle images like textures, ...
+
 #include "vk_images.h"
-#include "vk_initializers.h"
+#include "vk_engine.h"
 
-#include <fstream>
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 
-void vkutil::transition_image(VkCommandBuffer cmd, VkImage image, VkImageLayout currentLayout, VkImageLayout newLayout)
-{
-    VkImageMemoryBarrier2 imageBarrier = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-    imageBarrier.pNext = nullptr;
+AllocatedImage vkimage::create_image(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped, VulkanEngine& engine){
+    AllocatedImage newImage;
+    newImage.imageFormat = format;
+    newImage.imageExtent = size;
 
-    // Handle the transition to PRESENT_SRC_KHR
-    if (newLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) {
-        imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        imageBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-        imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
-        imageBarrier.dstAccessMask = 0;  // Presentation doesn't need access mask
-    } 
-    else if (currentLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_GENERAL) {
-        imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        imageBarrier.srcAccessMask = 0;
-        imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        imageBarrier.dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
-    } 
-    else if (currentLayout == VK_IMAGE_LAYOUT_GENERAL && newLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
-        imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        imageBarrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
-        imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        imageBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT;
-    } 
-    else {
-        imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-        imageBarrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-        imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-        imageBarrier.dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT;
+    VkImageCreateInfo img_info = vkinit::image_create_info(format, usage, size);
+    if (mipmapped){
+        img_info.mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(size.width, size.height)))) + 1;
     }
 
-    imageBarrier.oldLayout = currentLayout;
-    imageBarrier.newLayout = newLayout;
+    VmaAllocationCreateInfo allocInfo = {};
+    allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+    allocInfo.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    vmaCreateImage(engine.getAllocator(), &img_info, &allocInfo, &newImage.image, &newImage.allocation, nullptr);
 
-    VkImageAspectFlags aspectMask = (newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) 
-        ? VK_IMAGE_ASPECT_DEPTH_BIT 
-        : VK_IMAGE_ASPECT_COLOR_BIT;
+    VkImageAspectFlags aspectFlag = VK_IMAGE_ASPECT_COLOR_BIT;
+    if (format == VK_FORMAT_D32_SFLOAT){
+        aspectFlag = VK_IMAGE_ASPECT_DEPTH_BIT;
+    }
 
-        /**
-     * As part of the barrier, we need to use a VkImageSubresourceRange too. This lets us target a part of the image with the barrier. 
-     * Its most useful for things like array images or mipmapped images, where we would only need to barrier on a given layer 
-     * or mipmap level. We are going to completely default it and have it transition all mipmap levels and layers.
-     */
-    imageBarrier.subresourceRange = vkinit::image_subresource_range(aspectMask);
-    imageBarrier.image = image;
+    VkImageViewCreateInfo view_info = vkinit::imageview_create_info(format, newImage.image, aspectFlag);
+    view_info.subresourceRange.levelCount = img_info.mipLevels;
+    vkCreateImageView(engine.getDevice(), &view_info, nullptr, &newImage.imageView);
+
+    return newImage;
+}
+
+
+AllocatedImage vkimage::create_image(void * data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped, VulkanEngine& engine){
+    size_t data_size = size.depth * size.width * size.height * 4;
+    AllocatedBuffer uploadBuffer = engine.create_buffer(data_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
+
+    memcpy(uploadBuffer.info.pMappedData, data, data_size);
+    AllocatedImage new_image = create_image(size, format, usage | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, mipmapped, engine);
+
+    engine.immediate_submit([&](VkCommandBuffer cmd) {
+		transition_image(cmd, new_image.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, 1);
+
+		VkBufferImageCopy copyRegion = {};
+		copyRegion.bufferOffset = 0;
+		copyRegion.bufferRowLength = 0;
+		copyRegion.bufferImageHeight = 0;
+
+		copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		copyRegion.imageSubresource.mipLevel = 0;
+		copyRegion.imageSubresource.baseArrayLayer = 0;
+		copyRegion.imageSubresource.layerCount = 1;
+		copyRegion.imageExtent = size;
+
+		// copy the buffer into the image
+		vkCmdCopyBufferToImage(cmd, uploadBuffer.buffer, new_image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+			&copyRegion);
+
+		transition_image(cmd, new_image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 1);
+		});
+
+	engine.destroy_buffer(uploadBuffer);
+
+	return new_image;
+}
+
+void vkimage::destroy_image(const AllocatedImage& img, VulkanEngine& engine){
+    vkDestroyImageView(engine.getDevice(), img.imageView, nullptr);
+    vmaDestroyImage(engine.getAllocator(), img.image, img.allocation);
+}
+
+VkImageSubresourceRange vkimage::image_subresource_range(VkImageAspectFlags aspectMask){
+    VkImageSubresourceRange subImage {};
+    subImage.aspectMask = aspectMask;
+    subImage.baseMipLevel = 0;
+    subImage.levelCount = VK_REMAINING_MIP_LEVELS;
+    subImage.baseArrayLayer = 0;
+    subImage.layerCount = VK_REMAINING_ARRAY_LAYERS;
+
+    return subImage;
+}
+
+
+void vkimage::transition_image(
+    VkCommandBuffer cmd,
+    VkImage image,
+    VkImageLayout oldLayout,
+    VkImageLayout newLayout,
+    uint32_t mipLevels,
+    uint32_t layerCount,
+    VkPipelineStageFlags2 srcStage,
+    VkAccessFlags2 srcAccess,
+    VkPipelineStageFlags2 dstStage,
+    VkAccessFlags2 dstAccess)
+{
+    VkImageMemoryBarrier2 barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barrier.image = image;
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+
+    // Automatically detect aspect mask
+    if (newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL || newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    else
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = mipLevels;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = layerCount;
+
+    // If caller didn't specify stages, pick defaults based on layouts
+    if (srcStage == 0 || dstStage == 0)
+    {
+        switch (oldLayout)
+        {
+        case VK_IMAGE_LAYOUT_UNDEFINED:
+            srcStage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+            srcAccess = 0;
+            break;
+        case VK_IMAGE_LAYOUT_GENERAL:
+            srcStage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            srcAccess = VK_ACCESS_2_SHADER_WRITE_BIT;
+            break;
+        case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+            srcStage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+            srcAccess = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+            break;
+        case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+            srcStage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            srcAccess = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            break;
+        default:
+            srcStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            srcAccess = VK_ACCESS_2_MEMORY_WRITE_BIT;
+            break;
+        }
+
+        switch (newLayout)
+        {
+        case VK_IMAGE_LAYOUT_GENERAL:
+            dstStage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            dstAccess = VK_ACCESS_2_SHADER_WRITE_BIT;
+            break;
+        case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+            dstStage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            dstAccess = VK_ACCESS_2_SHADER_READ_BIT;
+            break;
+        case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+            dstStage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+            dstAccess = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT;
+            break;
+        case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+            dstStage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            dstAccess = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            break;
+        case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
+            dstStage = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+            dstAccess = 0;
+            break;
+        default:
+            dstStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            dstAccess = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+            break;
+        }
+    }
+
+    barrier.srcStageMask = srcStage;
+    barrier.srcAccessMask = srcAccess;
+    barrier.dstStageMask = dstStage;
+    barrier.dstAccessMask = dstAccess;
 
     VkDependencyInfo depInfo = {};
     depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    depInfo.pNext = nullptr;
     depInfo.imageMemoryBarrierCount = 1;
-    depInfo.pImageMemoryBarriers = &imageBarrier;
+    depInfo.pImageMemoryBarriers = &barrier;
 
-    /**
-     * Once we have the range and the barrier, we pack them into a VkDependencyInfo struct and call VkCmdPipelineBarrier2. 
-     * It is possible to layout transitions multiple images at once by sending more imageMemoryBarriers into the dependency info, 
-     * which is likely to improve performance if we are doing transitions or barriers for multiple things at once.
-     */
     vkCmdPipelineBarrier2(cmd, &depInfo);
 }
 
-void vkutil::copy_image_to_image(VkCommandBuffer cmd, VkImage source, VkImage destination, VkExtent2D srcSize, VkExtent2D dstSize){
+void vkimage::copy_image_to_image(VkCommandBuffer cmd, VkImage source, VkImage destination, VkExtent2D srcSize, VkExtent2D dstSize){
     VkImageBlit2 blitRegion{ .sType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2, .pNext = nullptr};
 
     blitRegion.srcOffsets[1].x = srcSize.width;
@@ -97,47 +216,81 @@ void vkutil::copy_image_to_image(VkCommandBuffer cmd, VkImage source, VkImage de
 	vkCmdBlitImage2(cmd, &blitInfo); // TODO, BlitImage is slow
 }
 
-bool vkutil::load_shader_module(const char * filePath, VkDevice device, VkShaderModule * outShaderModule){
-    // open the dile. With cursor at the end
-    std::ifstream file(filePath, std::ios::ate | std::ios::binary);
+std::optional<AllocatedImage> vkimage::load_image(VulkanEngine& engine, fastgltf::Asset& asset, fastgltf::Image& image){
+    AllocatedImage newImage {};
 
-    if(!file.is_open()){
-        return false;
+    int width, height, nrChannels;
+
+    std::visit(
+        fastgltf::visitor {
+            [](auto& arg) {},
+            [&](fastgltf::sources::URI& filePath) {
+                assert(filePath.fileByteOffset == 0);
+                assert(filePath.uri.isLocalPath());
+
+                const std::string path(filePath.uri.path().begin(),
+                    filePath.uri.path().end());
+
+                unsigned char * data = stbi_load(path.c_str(), &width, &height, &nrChannels, 4);
+                if(data){
+                    VkExtent3D imageSize;
+                    imageSize.width = width;
+                    imageSize.height = height;
+                    imageSize.depth = 1;
+
+                    newImage = create_image(data, imageSize, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT, false, engine);
+                    stbi_image_free(data);
+                }
+            },
+            [&](fastgltf::sources::Vector& vector) {
+                unsigned char * data = stbi_load_from_memory(vector.bytes.data(), static_cast<int>(vector.bytes.size()), &width, &height, &nrChannels, 4);
+
+                if(data){
+                    VkExtent3D imageSize;
+                    imageSize.width = width;
+                    imageSize.height = height;
+                    imageSize.depth = 1;
+
+                    newImage = create_image(data, imageSize, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT,false, engine);
+                    stbi_image_free(data);
+                }
+            },
+            [&](fastgltf::sources::BufferView& view) {
+                auto& bufferView = asset.bufferViews[view.bufferViewIndex];
+                auto& buffer = asset.buffers[bufferView.bufferIndex];
+
+                std::visit(fastgltf::visitor { // We only care about VectorWithMime here, because we
+                                               // specify LoadExternalBuffers, meaning all buffers
+                                               // are already loaded into a vector.
+                               [](auto& arg) {},
+                               [&](fastgltf::sources::Vector& vector) {
+                                   unsigned char* data = stbi_load_from_memory(vector.bytes.data() + bufferView.byteOffset,
+                                       static_cast<int>(bufferView.byteLength),
+                                       &width, &height, &nrChannels, 4);
+                                   if (data) {
+                                       VkExtent3D imagesize;
+                                       imagesize.width = width;
+                                       imagesize.height = height;
+                                       imagesize.depth = 1;
+
+                                       newImage = create_image(data, imagesize, VK_FORMAT_R8G8B8A8_UNORM,
+                                           VK_IMAGE_USAGE_SAMPLED_BIT,false, engine);
+
+                                       stbi_image_free(data);
+                                   }
+                               } },
+                    buffer.data);
+            },
+        },
+        image.data);
+
+    // if any of the attempts to load the data failed, we havent written the image
+    // so handle is null
+    if (newImage.image == VK_NULL_HANDLE) {
+        return {};
+    } else {
+        return newImage;
     }
-
-    // find what the size of the file is by looking up the location of the cursor
-    // because the cursor is at the end, it gives the size directly in bytes
-    size_t fileSize = (size_t)file.tellg(); // long unsigned int
-
-    // spirv expects the buffer to be on uint32, so make sure to reserve a int
-    // vector big enough for the entire file
-    std::vector<uint32_t> buffer(fileSize / sizeof(uint32_t));
-
-    // put file cursor at beginning
-    file.seekg(0);
-
-    // load the entire file into the buffer
-    file.read((char *) buffer.data(), fileSize);
-
-    // now that the file is loaded into the buffer, we can close it
-    file.close();
-
-    // create a new shader module,  using the buffer we loaded
-    VkShaderModuleCreateInfo createInfo = {};
-    createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    createInfo.pNext = nullptr;
-
-    // codeSize has to be in bytes, so multiply the ints in the buffer by size of
-    // int to know the real size of the buffer
-    createInfo.codeSize = buffer.size() * sizeof(uint32_t);
-    createInfo.pCode = buffer.data();
-
-    // check that the creation goes well
-    VkShaderModule shaderModule;
-    if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS){
-        return false;
-    }
-
-    *outShaderModule = shaderModule;
-    return true;
 }
+
+

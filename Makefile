@@ -28,17 +28,12 @@ $(TARGET): $(OBJS)
 
 # Run the program
 test: $(TARGET)
-	glslc shaders/gradient.comp -o shaders/shader.comp.spv
+	glslc shaders/gradient.comp -o shaders/shader.gradient.spv
 	glslc shaders/sky.comp -o shaders/shader.sky.spv
-	glslc shaders/gradient_color.comp -o shaders/shader.gradient_color.spv
-	glslc shaders/colored_triangle.frag -o shaders/shader.triangleFrag.spv
-	glslc shaders/colored_triangle.vert -o shaders/shader.triangleVertex.spv
-	glslc shaders/colored_triangle_mesh.vert -o shaders/shader.triangleMeshVertex.spv
-	glslc shaders/tex_image.frag -o shaders/shader.texImageFrag.spv
 	glslc shaders/mesh.vert -o shaders/shader.meshVert.spv
 	glslc shaders/mesh.frag -o shaders/shader.meshFrag.spv
 	./$(TARGET)
 
 # Clean up the build files
 clean:
-	rm -f $(TARGET) $(OBJS)
+	rm -f $(TARGET) $(OBJS) shaders/*.spv

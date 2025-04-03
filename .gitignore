@@ -1,0 +1,3 @@
+*.o
+VulkanTest
+*.spv

@@ -566,7 +566,7 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine& engine, std::f
         }
 
         nodes.push_back(newNode);
-        file.nodes[node.name.c_str()];
+        file.nodes[node.name.c_str()] = newNode;
 
         std::visit(fastgltf::visitor { [&](fastgltf::Node::TransformMatrix matrix) {
                         memcpy(&newNode->localTransform, matrix.data(), sizeof(matrix));

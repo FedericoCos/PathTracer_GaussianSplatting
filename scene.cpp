@@ -23,8 +23,15 @@ VulkanScene::VulkanScene(VulkanEngine& engine, std::vector<std::string> asset_pa
 
 void VulkanScene::update(float& deltatime){
     if(_update){
-        for(auto& asset : loadedAsset){
-            asset.second.get() ->updateNodesRotation(glm::radians(_angle) * deltatime);
+        glm::vec3 scaledRotation = _rotationVector * deltatime;
+
+        glm::mat4 rotationMatrix = glm::mat4(1.0f);
+        rotationMatrix = glm::rotate(rotationMatrix, glm::radians(scaledRotation[0]), glm::vec3(1.0f, 0.0f, 0.0f));
+        rotationMatrix = glm::rotate(rotationMatrix, glm::radians(scaledRotation[1]), glm::vec3(0.0f, 1.0f, 0.0f));
+        rotationMatrix = glm::rotate(rotationMatrix, glm::radians(scaledRotation[2]), glm::vec3(0.0f, 0.0f, 1.0f));
+
+        for (auto& asset : loadedAsset) {
+            asset.second.get()->updateNodesRotation(rotationMatrix);
         }
     }
 }
@@ -38,7 +45,7 @@ void VulkanScene::draw(DrawContext& drawContext){
 void VulkanScene::set_imgui(){
     ImGui::Begin("Scene Setting");
     ImGui::Checkbox("Update structure", &_update);
-    ImGui::InputFloat("rot", &_angle);
+    ImGui::InputFloat3("rot", (float*)&_rotationVector);
 
     ImGui::BeginChild("Objects", ImVec2(0, 0), true);
 

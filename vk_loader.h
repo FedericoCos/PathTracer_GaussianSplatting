@@ -166,6 +166,9 @@ struct Node : public IRenderable {
     std::vector<std::shared_ptr<Node>> children;
 
     glm::mat4 localTransform;
+    glm::mat4 translateMatrix;
+    glm::mat4 scaleMatrix;
+    glm::mat4 rotMatrix;
     glm::mat4 worldTransform;
 
     std::string name;
@@ -184,11 +187,8 @@ struct Node : public IRenderable {
         }
     }
 
-    void update(float angle) {
-        glm::mat4 rotationMatrix = glm::rotate(glm::mat4(1.0f), angle, glm::vec3(0.0f, 1.0f, 0.0f));
-        
-        // Apply rotation around the scene's origin
-        localTransform = rotationMatrix * localTransform;
+    void update(glm::mat4& rot) {
+        localTransform = rot * localTransform;
 
         refreshTransform(glm::mat4(1));
     }
@@ -229,9 +229,9 @@ struct LoadedGLTF : public IRenderable{
 
     virtual void Draw(const glm::mat4& topMatrix, DrawContext& ctx);
 
-    void updateNodesRotation(float angle) {
+    void updateNodesRotation(glm::mat4 rot) {
         for(auto& n : topNodes){
-            n -> update(angle);
+            n -> update(rot);
         }
     }
 

@@ -11,7 +11,9 @@ private:
     std::unordered_map<std::string, std::shared_ptr<Node>> topNodes;
 
     bool _update{false};
-    float _angle = 10.f;
+
+    glm::mat4 rotationMatrix = glm::mat4(1.f);
+    glm::vec3 _rotationVector = glm::vec3(0.f);
 
 
 public:

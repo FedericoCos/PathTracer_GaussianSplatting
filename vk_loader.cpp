@@ -564,7 +564,7 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine& engine, std::f
         else{
             newNode = std::make_shared<Node>();
         }
-
+        newNode.get() -> name = node.name.c_str();
         nodes.push_back(newNode);
         file.nodes[node.name.c_str()] = newNode;
 

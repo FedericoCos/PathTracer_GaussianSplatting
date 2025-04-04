@@ -168,6 +168,8 @@ struct Node : public IRenderable {
     glm::mat4 localTransform;
     glm::mat4 worldTransform;
 
+    std::string name;
+
     void refreshTransform(const glm::mat4& parentMatrix){
         worldTransform = parentMatrix * localTransform;
         for (auto c : children) {

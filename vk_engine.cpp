@@ -785,7 +785,7 @@ void VulkanEngine::init_imgui(){
 
 void VulkanEngine::init_scene(){
     std::filesystem::path path = std::filesystem::current_path();
-    std::string stringPath = path.generic_string() + "/assets/structure.glb";
+    std::string stringPath = path.generic_string() + "/assets/hand_sculpture.glb";
     /* auto structureFile = loadGltf(*this, stringPath);
 
     assert(structureFile.has_value());
@@ -795,7 +795,7 @@ void VulkanEngine::init_scene(){
     VulkanScene mainScene = VulkanScene(*this, std::vector<std::string>{stringPath});
     scenes.push_back(mainScene);
 
-    stringPath = path.generic_string() + "/assets/hand_sculpture.glb";
+    stringPath = path.generic_string() + "/assets/structure.glb";
     mainScene = VulkanScene(*this, std::vector<std::string>{stringPath});
     scenes.push_back(mainScene);
 

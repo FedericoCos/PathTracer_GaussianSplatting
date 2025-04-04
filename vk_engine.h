@@ -9,8 +9,14 @@
 #include "vk_images.h"
 
 #include "VkBootstrap.h"
+#include "imgui/imgui.h"
+#include "imgui/imgui_impl_sdl2.h"
+#include "imgui/imgui_impl_vulkan.h"
 
 #include "camera.h"
+#include "scene.h"
+
+class VulkanScene; // forwared declaration
 
 const int FRAME_OVERLAP = 2;
 
@@ -96,6 +102,10 @@ private:
     // holds structures per frame
     FrameData _frames[FRAME_OVERLAP];
     int _frameNumber = 0;
+
+    // Scene variables
+    std::vector<VulkanScene> scenes;
+    int _sceneIndex{0};
 
     // ------------------------------------------ DRAW VARIABLES
     Camera _mainCamera;

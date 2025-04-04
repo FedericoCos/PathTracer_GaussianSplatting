@@ -10,11 +10,6 @@
 #include "vk_mem_alloc.h"
 #endif
 
-
-#include "imgui/imgui.h"
-#include "imgui/imgui_impl_sdl2.h"
-#include "imgui/imgui_impl_vulkan.h"
-
 // --------- PUBLIC FUNCTIONS
 
 void VulkanEngine::init(){
@@ -791,11 +786,22 @@ void VulkanEngine::init_imgui(){
 void VulkanEngine::init_scene(){
     std::filesystem::path path = std::filesystem::current_path();
     std::string stringPath = path.generic_string() + "/assets/structure.glb";
-    auto structureFile = loadGltf(*this, stringPath);
+    /* auto structureFile = loadGltf(*this, stringPath);
 
     assert(structureFile.has_value());
 
-    loadedScenes["structure"]  = *structureFile;
+    loadedScenes["structure"]  = *structureFile; */
+
+    VulkanScene mainScene = VulkanScene(*this, std::vector<std::string>{stringPath});
+    scenes.push_back(mainScene);
+
+    stringPath = path.generic_string() + "/assets/hand_sculpture.glb";
+    mainScene = VulkanScene(*this, std::vector<std::string>{stringPath});
+    scenes.push_back(mainScene);
+
+    stringPath = path.generic_string() + "/assets/the_forgotten_knight.glb";
+    mainScene = VulkanScene(*this, std::vector<std::string>{stringPath});
+    scenes.push_back(mainScene);
 }
 
 
@@ -858,9 +864,17 @@ void VulkanEngine::update_scene(){
     _mainCamera.update(dt);
 
 
-    if(_updateStructure)
+    /* if(_updateStructure)
         loadedScenes["structure"] -> updateNodesRotation(glm::radians(_angle) * dt);
-    loadedScenes["structure"]->Draw(glm::mat4{ 1.f }, _mainDrawContext);
+    loadedScenes["structure"]->Draw(glm::mat4{ 1.f }, _mainDrawContext); */
+
+    /* for(VulkanScene& scene : scenes){
+        scene.update(dt);
+        scene.draw(_mainDrawContext);
+    } */
+
+    scenes[_sceneIndex].update(dt);
+    scenes[_sceneIndex].draw(_mainDrawContext);
 
     _sceneData.view = _mainCamera.getViewMatrix();;
 	_sceneData.proj = glm::perspective(glm::radians(70.f), (float)_windowExtent.width / (float)_windowExtent.height, 10000.f, 0.1f);
@@ -1173,6 +1187,7 @@ void VulkanEngine::set_imgui(){
     ImGui::Text("update time %f ms", _engineStats.scene_update_time);
     ImGui::Text("triangles %i", _engineStats.triangle_count);
     ImGui::Text("draws %i", _engineStats.drawcall_count);
+    ImGui::SliderInt("Effect Index", &_sceneIndex,0, scenes.size() - 1);
     ImGui::End();
 
     ImGui::Begin("Camera");
@@ -1185,10 +1200,7 @@ void VulkanEngine::set_imgui(){
     ImGui::InputFloat4("amb col",(float*)& _sceneData.ambientColor);
     ImGui::End();
 
-    ImGui::Begin("Structure");
-    ImGui::Checkbox("Update structure", &_updateStructure);
-    ImGui::InputFloat("rot", &_angle);
-    ImGui::End();
+    scenes[_sceneIndex].set_imgui();
 
     ImGui::Render();
 }

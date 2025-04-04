@@ -20,5 +20,14 @@ void VulkanScene::set_imgui(){
     ImGui::Begin("Scene Setting");
     ImGui::Checkbox("Update structure", &_update);
     ImGui::InputFloat("rot", &_angle);
+
+    ImGui::BeginChild("Objects");
+
+    for(auto& node : objects){
+        ImGui::Text("%s", node.first.c_str());
+    }
+
+    ImGui::EndChild();
+
     ImGui::End();
 }

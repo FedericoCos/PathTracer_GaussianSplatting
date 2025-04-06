@@ -32,6 +32,8 @@ test: $(TARGET)
 	glslc shaders/sky.comp -o shaders/shader.sky.spv
 	glslc shaders/mesh.vert -o shaders/shader.meshVert.spv
 	glslc shaders/mesh.frag -o shaders/shader.meshFrag.spv
+	glslc shaders/meshimpr.frag -o shaders/shader.meshimprFrag.spv
+	glslc shaders/meshToon.frag -o shaders/shader.meshToonFrag.spv
 	./$(TARGET)
 
 # Clean up the build files

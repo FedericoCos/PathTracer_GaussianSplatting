@@ -56,17 +56,9 @@ void VulkanEngine::init(){
     init_descriptors();
     std::cout << "Descriptors initialized!" << std::endl;
 
-    std::cout << "Initializing Meshes..." << std::endl;
-    init_mesh();
-    std::cout << "Mesh initialized!" << std::endl;
-
     std::cout << "Initializing Textures..." << std::endl;
     init_texture();
     std::cout << "Texture initialized!" << std::endl;
-
-    std::cout << "Initializing material..." << std::endl;
-    init_materials();
-    std::cout << "Material Initialized!" << std::endl;
 
     std::cout << "Initializing pipelines..." << std::endl;
     init_pipelines();
@@ -242,6 +234,10 @@ void VulkanEngine::run(){
         auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
         _engineStats.frametime = elapsed.count() / 1000.f;
     }
+}
+
+MatPipelines& VulkanEngine::getCurrentRasterPipeline(){
+    return pipelines[_currentRasterPipeline];
 }
 
 // --------- PRIVATE FUNCTIONS
@@ -457,13 +453,13 @@ void VulkanEngine::init_images(){
 	vkCreateImageView(_device, &dview_info, nullptr, &_depthImage.imageView);
 
     // add to deletion queues
-    /* _mainDeletionQueue.push_function([this]() {
+    _mainDeletionQueue.push_function([this]() {
         vkDestroyImageView(_device, _drawImage.imageView, nullptr);
         vmaDestroyImage(_allocator, _drawImage.image, _drawImage.allocation);
 
         vkDestroyImageView(_device, _depthImage.imageView, nullptr);
 	    vmaDestroyImage(_allocator, _depthImage.image, _depthImage.allocation);
-    }); */
+    });
 }
 
 void VulkanEngine::init_commands(){
@@ -562,12 +558,6 @@ void VulkanEngine::init_descriptors(){
 
 }
 
-void VulkanEngine::init_mesh(){
-    std::filesystem::path path = std::filesystem::current_path();
-    std::string stringPath = path.generic_string() + "/assets/structure.glb";
-    testMeshes = loadGltfMeshes(*this, stringPath).value();
-}
-
 void VulkanEngine::init_texture(){
     uint32_t white =glm::packUnorm4x8(glm::vec4(1, 1, 1, 1));
     _whiteImage = vkimage::create_image((void*)&white, VkExtent3D{1, 1, 1}, VK_FORMAT_R8G8B8A8_UNORM, 
@@ -613,45 +603,25 @@ void VulkanEngine::init_texture(){
     
 }
 
-void VulkanEngine::init_materials(){
-    GLTFMetallic_Roughness::MaterialResources materialResources;
-    materialResources.colorImage = _errorCheckerboardImage;
-    materialResources.colorSampler = _defaultSamplerLinear;
-	materialResources.metalRoughImage = _errorCheckerboardImage;
-	materialResources.metalRoughSampler = _defaultSamplerLinear;
-
-    AllocatedBuffer materialConstants = create_buffer(sizeof(GLTFMetallic_Roughness::MaterialConstants), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
-    GLTFMetallic_Roughness::MaterialConstants* sceneUniformData = (GLTFMetallic_Roughness::MaterialConstants*)materialConstants.allocation->GetMappedData();
-    sceneUniformData -> colorFactors = glm::vec4{1, 1, 1, 1};
-    sceneUniformData -> metal_rough_factors = glm::vec4{1, 0.5, 0, 0};
-
-    materialResources.dataBuffer = materialConstants.buffer;
-    materialResources.dataBufferOffset = 0;
-
-    defaultData = metalRoughMaterial.write_material(_device, MaterialPass::MainColor, materialResources, _globalDescriptorAllocator);
-
-    _mainDeletionQueue.push_function([=, this](){
-        destroy_buffer(materialConstants);
-    });
-
-    for (auto& m : testMeshes) {
-		std::shared_ptr<MeshNode> newNode = std::make_shared<MeshNode>();
-		newNode->mesh = m;
-
-		newNode->localTransform = glm::mat4{ 1.f };
-		newNode->worldTransform = glm::mat4{ 1.f };
-		for (auto& s : newNode->mesh->surfaces) {
-			s.material = std::make_shared<GLTFMaterial>(defaultData);
-		}
-
-		loadedNodes[m->name] = std::move(newNode);
-	}
+void VulkanEngine::init_materials(){ // TODO delete
     
 }
 
 void VulkanEngine::init_pipelines(){
     init_compute_pipeline();
-    metalRoughMaterial.build_pipelines(*this);
+
+    pipelines.resize(3);
+
+    std::filesystem::path path = std::filesystem::current_path();
+    std::string vertexPath = path.generic_string() + "/shaders/shader.meshVert.spv";
+    std::string fragPath = path.generic_string() + "/shaders/shader.meshFrag.spv";
+    pipelines[0] = build_pipelines(*this, vertexPath, fragPath, defaultMaterial);
+
+    fragPath = path.generic_string() + "/shaders/shader.meshimprFrag.spv";
+    pipelines[1] = build_pipelines(*this, vertexPath, fragPath, pbrMaterial);
+
+    fragPath = path.generic_string() + "/shaders/shader.meshToonFrag.spv";
+    pipelines[2] = build_pipelines(*this, vertexPath, fragPath, pbrMaterial);
 }
 
 void VulkanEngine::init_compute_pipeline(){
@@ -802,6 +772,14 @@ void VulkanEngine::init_scene(){
     stringPath = path.generic_string() + "/assets/the_forgotten_knight.glb";
     mainScene = VulkanScene(*this, std::vector<std::string>{stringPath});
     scenes.push_back(mainScene);
+
+    /* stringPath = path.generic_string() + "/assets/scifi_girl_v.01.glb";
+    mainScene = VulkanScene(*this, std::vector<std::string>{stringPath});
+    scenes.push_back(mainScene); */
+
+    stringPath = path.generic_string() + "/assets/dodge_charger_srt_police.glb";
+    mainScene = VulkanScene(*this, std::vector<std::string>{stringPath});
+    scenes.push_back(mainScene);
 }
 
 
@@ -917,7 +895,7 @@ void VulkanEngine::draw_geometry(VkCommandBuffer cmd){
     opaque_draws.reserve(_mainDrawContext.opaqueSurfaces.size());
 
     for (uint32_t i = 0; i < _mainDrawContext.opaqueSurfaces.size(); i++) {
-        if (is_visible(_mainDrawContext.opaqueSurfaces[i], _sceneData.viewproj)) {
+        if (is_visible(_mainDrawContext.opaqueSurfaces[i], _sceneData.viewproj) || !_performCulling) {
             opaque_draws.push_back(i);
         }
     }
@@ -983,11 +961,12 @@ void VulkanEngine::draw_geometry(VkCommandBuffer cmd){
         if (r.material != lastMaterial) {
             lastMaterial = r.material;
             //rebind pipeline and descriptors if the material changed
-            if (r.material->pipeline != lastPipeline) {
+            MaterialPipeline * currentPipeline = r.material->passType == MaterialPass::MainColor ? &getCurrentRasterPipeline().opaquePipeline : &getCurrentRasterPipeline().transparentPipeline;
+            if (currentPipeline != lastPipeline) {
    
-                lastPipeline = r.material->pipeline;
-                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.material->pipeline->pipeline);
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,r.material->pipeline->layout, 0, 1,
+                lastPipeline = currentPipeline;
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, lastPipeline ->pipeline);
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,lastPipeline->layout, 0, 1,
                     &globalDescriptor, 0, nullptr);
    
                VkViewport viewport = {};
@@ -1009,7 +988,7 @@ void VulkanEngine::draw_geometry(VkCommandBuffer cmd){
                vkCmdSetScissor(cmd, 0, 1, &scissor);
             }
    
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.material->pipeline->layout, 1, 1,
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, lastPipeline->layout, 1, 1,
                 &r.material->materialSet, 0, nullptr);
         }
        //rebind index buffer if needed
@@ -1022,7 +1001,7 @@ void VulkanEngine::draw_geometry(VkCommandBuffer cmd){
         push_constants.worldMatrix = r.transform;
         push_constants.vertexBuffer = r.vertexBufferAddress;
    
-        vkCmdPushConstants(cmd, r.material->pipeline->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(GPUDrawPushConstants), &push_constants);
+        vkCmdPushConstants(cmd, lastPipeline->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(GPUDrawPushConstants), &push_constants);
    
         vkCmdDrawIndexed(cmd, r.indexCount, 1, r.firstIndex, 0, 0);
         _engineStats.drawcall_count++;
@@ -1068,38 +1047,15 @@ void VulkanEngine::draw(){
 
     vkBeginCommandBuffer(cmd, &cmdBeginInfo);
 
-    // vkimage::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 1, 1);
-    vkimage::transition_image(cmd, _drawImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 1, 1);
-
-    draw_background(cmd);
-
-    vkimage::transition_image(cmd, _drawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, 1);
+    if(_renderCompute){
+        vkimage::transition_image(cmd, _drawImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 1, 1);
+        draw_background(cmd);
+        vkimage::transition_image(cmd, _drawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, 1);
+    }
+    else{
+        vkimage::transition_image(cmd, _drawImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1, 1);
+    }
     vkimage::transition_image(cmd, _depthImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, 1, 1);
-
-
-    /* // Create explicit memory barrier
-    VkMemoryBarrier2 memBarrier = {};
-    memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-    memBarrier.pNext = nullptr;
-    memBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    memBarrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
-    memBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    memBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-
-    // Configure the dependency info
-    VkDependencyInfo dependencyInfo = {};
-    dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dependencyInfo.pNext = nullptr;
-    dependencyInfo.dependencyFlags = 0;
-    dependencyInfo.memoryBarrierCount = 1;
-    dependencyInfo.pMemoryBarriers = &memBarrier;
-    dependencyInfo.bufferMemoryBarrierCount = 0;
-    dependencyInfo.pBufferMemoryBarriers = nullptr;
-    dependencyInfo.imageMemoryBarrierCount = 0;
-    dependencyInfo.pImageMemoryBarriers = nullptr;
-
-    // Execute the barrier
-    vkCmdPipelineBarrier2(cmd, &dependencyInfo); */
 
     draw_geometry(cmd);
 
@@ -1141,7 +1097,7 @@ void VulkanEngine::draw(){
 	vkQueuePresentKHR(_presentQueue, &presentInfo);
 
 	//increase the number of frames drawn
-	_frameNumber++;
+	_frameNumber = (_frameNumber + 1) % FRAME_OVERLAP;
 }
 
 void VulkanEngine::set_data_before_draw(){
@@ -1167,6 +1123,7 @@ void VulkanEngine::set_imgui(){
     if (ImGui::Begin("background")) {
         
         ComputeEffect& selected = _computePipelines[_currentComputePipeline];
+        ImGui::Checkbox("Render compute", &_renderCompute);
     
         ImGui::Text("Selected effect: %s", selected.name);
     
@@ -1187,14 +1144,16 @@ void VulkanEngine::set_imgui(){
     ImGui::Text("update time %f ms", _engineStats.scene_update_time);
     ImGui::Text("triangles %i", _engineStats.triangle_count);
     ImGui::Text("draws %i", _engineStats.drawcall_count);
-    ImGui::SliderInt("Effect Index", &_sceneIndex,0, scenes.size() - 1);
+    ImGui::SliderInt("Scene Index", &_sceneIndex,0, scenes.size() - 1);
     ImGui::End();
 
     ImGui::Begin("Camera");
+    ImGui::Checkbox("Frustum cull", &_performCulling);
     ImGui::InputFloat("Cam vel", &_mainCamera.speed);
     ImGui::End();
 
     ImGui::Begin("General Lighting");
+    ImGui::SliderInt("Pipeline Index", &_currentRasterPipeline,0, pipelines.size() - 1);
     ImGui::InputFloat4("sun dir",(float*)& _sceneData.sunlightDirection);
     ImGui::InputFloat4("sun col",(float*)& _sceneData.sunlightColor);
     ImGui::InputFloat4("amb col",(float*)& _sceneData.ambientColor);

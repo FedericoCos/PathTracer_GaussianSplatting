@@ -72,8 +72,6 @@ private:
     VkDescriptorSetLayout _gpuSceneDataDescriptorLayout;
     VkDescriptorSetLayout _singleImageDescriptorLayout;
 
-    // meshes
-    std::vector<std::shared_ptr<MeshAsset>> testMeshes;
 
     // Textures
     AllocatedImage _whiteImage;
@@ -86,7 +84,8 @@ private:
 
     // Materials
     MaterialInstance defaultData;
-    GLTFMetallic_Roughness metalRoughMaterial;
+    GLTFMetallic_Roughness defaultMaterial;
+    GLTFMetallic_Roughness pbrMaterial;
 
     // To be Rendered
     std::unordered_map<std::string, std::shared_ptr<Node>> loadedNodes;
@@ -98,6 +97,11 @@ private:
     std::vector<ComputeEffect> _computePipelines;
     VkPipelineLayout _computePipelineLayout;
     int _currentComputePipeline{0};
+    bool _renderCompute{ true };
+
+    // Raster pipelines
+    std::vector<MatPipelines> pipelines;
+    int _currentRasterPipeline{0};
 
     // holds structures per frame
     FrameData _frames[FRAME_OVERLAP];
@@ -115,6 +119,9 @@ private:
 
     DrawContext _mainDrawContext;
     GPUSceneData _sceneData;
+
+    /// to perfomr frustum culling
+    bool _performCulling {true};
 
     // for stats
     EngineStats _engineStats;
@@ -170,8 +177,6 @@ private:
      */
     void init_descriptors();
 
-    void init_mesh();
-
     void init_texture();
 
     void init_materials();
@@ -188,7 +193,7 @@ private:
     void destroy_swapchain();
     void recreate_swapchain();
 
-    FrameData& get_current_frame() { return _frames[_frameNumber % FRAME_OVERLAP]; };
+    FrameData& get_current_frame() { return _frames[_frameNumber]; };
 
     void set_data_before_draw();
 
@@ -240,13 +245,15 @@ public:
     }
 
     // Get materials
-    GLTFMetallic_Roughness& getMetalRoughMaterial(){
-        return metalRoughMaterial;
+    GLTFMetallic_Roughness& getDefaultMaterial(){
+        return defaultMaterial;
     }
 
     MaterialInstance& getDefaultData(){
         return defaultData;
     }
+
+    MatPipelines& getCurrentRasterPipeline();
 
 
     void run();

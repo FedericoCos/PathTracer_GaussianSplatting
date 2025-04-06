@@ -3,7 +3,7 @@
 
 VulkanScene::VulkanScene(VulkanEngine& engine, std::vector<std::string> asset_paths){
     for(std::string& path : asset_paths){
-        auto loaded = loadGltf(engine, path);
+        auto loaded = loadGltf(engine, path, engine.getDefaultMaterial());
         assert(loaded.has_value());
 
         size_t lastSlash = path.find_last_of('/');

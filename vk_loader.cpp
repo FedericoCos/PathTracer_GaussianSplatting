@@ -176,19 +176,12 @@ std::optional<std::vector<std::shared_ptr<MeshAsset>>> loadGltfMeshes(VulkanEngi
 MaterialInstance GLTFMetallic_Roughness::write_material(VkDevice device, MaterialPass pass, const MaterialResources& resources, DescriptorAllocatorGrowable& descriptorAllocator){
     MaterialInstance matData;
     matData.passType = pass;
-    if(pass == MaterialPass::Transparent){
+    /* if(pass == MaterialPass::Transparent){
         matData.pipeline = &transparentPipeline;
     }
     else{
         matData.pipeline = &opaquePipeline;
-    }
-
-    DescriptorLayoutBuilder layoutBuilder;
-    layoutBuilder.add_binding(0,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
-    layoutBuilder.add_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
-	layoutBuilder.add_binding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
-
-    materialLayout = layoutBuilder.build(device, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
+    } */
 
     matData.materialSet = descriptorAllocator.allocate(device, materialLayout);
 
@@ -201,17 +194,16 @@ MaterialInstance GLTFMetallic_Roughness::write_material(VkDevice device, Materia
 	return matData;
 }
 
-void GLTFMetallic_Roughness::build_pipelines(VulkanEngine& engine){
+MatPipelines build_pipelines(VulkanEngine& engine, std::string& vertexPath, std::string& fragPath, GLTFMetallic_Roughness& material){
+    MatPipelines pipelines;
+
     VkShaderModule meshFragShader;
-    std::filesystem::path path = std::filesystem::current_path();
-    std::string stringPath = path.generic_string() + "/shaders/shader.meshFrag.spv";
-    if(!engine.load_shader_module(stringPath.c_str(), &meshFragShader)){
+    if(!engine.load_shader_module(fragPath.c_str(), &meshFragShader)){
         std::cout << "Error in loading shader \n" << std::endl;
     }
 
     VkShaderModule meshVertexShader;
-    stringPath = path.generic_string() + "/shaders/shader.meshVert.spv";
-    if(!engine.load_shader_module(stringPath.c_str(), &meshVertexShader)){
+    if(!engine.load_shader_module(vertexPath.c_str(), &meshVertexShader)){
         std::cout << "Error in loading shader \n" << std::endl;
     }
 
@@ -220,14 +212,17 @@ void GLTFMetallic_Roughness::build_pipelines(VulkanEngine& engine){
     matrixRange.size = sizeof(GPUDrawPushConstants);
     matrixRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
-    /* DescriptorLayoutBuilder layoutBuilder;
+    DescriptorLayoutBuilder layoutBuilder;
     layoutBuilder.add_binding(0,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
     layoutBuilder.add_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
 	layoutBuilder.add_binding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
 
-    materialLayout = layoutBuilder.build(engine.getDevice(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT); */
+    VkDescriptorSetLayout materialLayout = layoutBuilder.build(engine.getDevice(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
 
     VkDescriptorSetLayout layouts[] = {engine.getGpuSceneDataDescriptorLayout(), materialLayout};
+
+    pipelines.materialLayout = materialLayout;
+    material.materialLayout = materialLayout;
 
     VkPipelineLayoutCreateInfo mesh_layout_info = vkinit::pipeline_layout_create_info();
     mesh_layout_info.setLayoutCount = 2;
@@ -238,8 +233,8 @@ void GLTFMetallic_Roughness::build_pipelines(VulkanEngine& engine){
     VkPipelineLayout newLayout;
     vkCreatePipelineLayout(engine.getDevice(), &mesh_layout_info, nullptr, &newLayout);
 
-    opaquePipeline.layout = newLayout;
-    transparentPipeline.layout = newLayout;
+    pipelines.opaquePipeline.layout = newLayout;
+    pipelines.transparentPipeline.layout = newLayout;
 
     PipelineBuilder pipelineBuilder;
     pipelineBuilder.set_shaders(meshVertexShader, meshFragShader);
@@ -255,15 +250,17 @@ void GLTFMetallic_Roughness::build_pipelines(VulkanEngine& engine){
 
     pipelineBuilder._pipelineLayout = newLayout;
 
-    opaquePipeline.pipeline = pipelineBuilder.build_pipeline(engine.getDevice());
+    pipelines.opaquePipeline.pipeline = pipelineBuilder.build_pipeline(engine.getDevice());
 
     pipelineBuilder.enable_blending_additive();
     pipelineBuilder.enable_depthtest(false, VK_COMPARE_OP_GREATER_OR_EQUAL);
 
-    transparentPipeline.pipeline = pipelineBuilder.build_pipeline(engine.getDevice());
+    pipelines.transparentPipeline.pipeline = pipelineBuilder.build_pipeline(engine.getDevice());
 
     vkDestroyShaderModule(engine.getDevice(), meshFragShader, nullptr);
     vkDestroyShaderModule(engine.getDevice(), meshVertexShader, nullptr);
+
+    return pipelines;
 }
 
 void MeshNode::Draw(const glm::mat4& topMatrix, DrawContext& ctx){
@@ -293,7 +290,7 @@ void MeshNode::Draw(const glm::mat4& topMatrix, DrawContext& ctx){
 
 // Improved version
 
-std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine& engine, std::filesystem::path path){
+std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine& engine, std::filesystem::path path, GLTFMetallic_Roughness& materialObj){
     std::cout << "Loading GLTF: " << path << std::endl;
     std::shared_ptr<LoadedGLTF> scene = std::make_shared<LoadedGLTF>();
     scene -> creator = &engine;
@@ -439,8 +436,7 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine& engine, std::f
             materialResources.colorSampler = file.samplers[sampler];
         }
         // build material
-        newMat -> data = engine.getMetalRoughMaterial().write_material(engine.getDevice(), passType, materialResources, file.descriptorPool);
-        // newMat -> data = engine.getDefaultData();
+        newMat -> data = materialObj.write_material(engine.getDevice(), passType, materialResources, file.descriptorPool);
         data_index++;
     }
 
@@ -638,6 +634,10 @@ VkSamplerMipmapMode extract_mipmap_mode(fastgltf::Filter filter)
     default:
         return VK_SAMPLER_MIPMAP_MODE_LINEAR;
     }
+}
+
+void LoadedGLTF::updateMaterial(){
+    
 }
 
 void LoadedGLTF::Draw(const glm::mat4& topMatrix, DrawContext& ctx)

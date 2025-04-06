@@ -44,6 +44,18 @@ struct MaterialPipeline
 };
 
 /**
+ * 
+ */
+struct MatPipelines
+{
+    MaterialPipeline transparentPipeline;
+    MaterialPipeline opaquePipeline;
+    VkDescriptorSetLayout materialLayout;
+};
+
+
+
+/**
  * A material instance
  * Contains a MaterialPipeline obj
  * A descriptor set
@@ -109,22 +121,24 @@ struct GLTFMetallic_Roughness{
 
     struct MaterialResources
     {
-    AllocatedImage colorImage;
-    VkSampler colorSampler;
-    AllocatedImage metalRoughImage;
-    VkSampler metalRoughSampler;
-    VkBuffer dataBuffer;
-    uint32_t dataBufferOffset;
+        AllocatedImage colorImage;
+        VkSampler colorSampler;
+        AllocatedImage metalRoughImage;
+        VkSampler metalRoughSampler;
+        VkBuffer dataBuffer;
+        uint32_t dataBufferOffset;
     };
 
     DescriptorWriter writer;
 
-    void build_pipelines(VulkanEngine& engine);
+    // void build_pipelines(VulkanEngine& engine, std::string&, std::string&);
     void clear_resources(VkDevice device); // TODO
 
     MaterialInstance write_material(VkDevice device, MaterialPass pass, const MaterialResources& resources, DescriptorAllocatorGrowable& descriptorAllocator);
     
 };
+
+MatPipelines build_pipelines(VulkanEngine& engine, std::string&, std::string&, GLTFMetallic_Roughness& material);
 
 /**
  * Load the meshes from file
@@ -229,6 +243,8 @@ struct LoadedGLTF : public IRenderable{
 
     virtual void Draw(const glm::mat4& topMatrix, DrawContext& ctx);
 
+    void updateMaterial();
+
     void updateNodesRotation(glm::mat4 rot) {
         for(auto& n : topNodes){
             n -> update(rot);
@@ -240,7 +256,7 @@ private:
 };
 
 
-std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine& engine, std::filesystem::path filePath);
+std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine& engine, std::filesystem::path filePath, GLTFMetallic_Roughness& materialObj);
 
 VkFilter extract_filter(fastgltf::Filter filter);
 

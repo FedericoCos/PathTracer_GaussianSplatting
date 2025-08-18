@@ -77,3 +77,14 @@ void Swapchain::createImageViews(vk::raii::Device * logical_device){
     }
 }
 
+
+void Swapchain::recreateSwapChain(vk::raii::PhysicalDevice& physical_device, vk::raii::Device * logical_device,vk::raii::SurfaceKHR& surface, GLFWwindow * window){
+    swapchain_image_views.clear();
+    swapchain = nullptr;
+
+    createSwapChain(physical_device, logical_device, surface, window);
+    createImageViews(logical_device);
+}
+
+
+

@@ -22,6 +22,8 @@ constexpr bool enableValidationLayers = false;
 constexpr bool enableValidationLayers = true;
 #endif
 
+constexpr int MAX_FRAMES_IN_FLIGHT = 2;
+
 
 class Engine{
 public:
@@ -81,12 +83,17 @@ private:
 
     // Command pools variables
     vk::raii::CommandPool command_pool = nullptr;
-    vk::raii::CommandBuffer command_buffer = nullptr;
+    std::vector<vk::raii::CommandBuffer> command_buffers;
 
     // Synchronization variables
-    vk::raii::Semaphore present_complete_semaphore = nullptr;
-    vk::raii::Semaphore render_finished_semaphore = nullptr;
-    vk::raii::Fence draw_fence = nullptr;
+    std::vector<vk::raii::Semaphore> present_complete_semaphores;
+    std::vector<vk::raii::Semaphore> render_finished_semaphores;
+    std::vector<vk::raii::Fence> in_flight_fences;
+
+    // Frame variables
+    uint32_t semaphore_index = 0;
+    uint32_t current_frame = 0;
+    bool framebuffer_resized = false;
 
 
     // ----- Helper functions
@@ -110,6 +117,9 @@ private:
         vk::PipelineStageFlags2 dst_stage_mask
     );
 
+
+    static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
+
     // ----- Init functions
     bool initWindow();
     bool initVulkan();
@@ -123,6 +133,8 @@ private:
     // Drawing functions
     void recordCommandBuffer(uint32_t image_index);
     void drawFrame();
+
+    void recreateSwapChain();
 
 
     // ---- Closing functions

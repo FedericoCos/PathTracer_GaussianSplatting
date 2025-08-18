@@ -61,14 +61,21 @@ void Engine::transition_image_layout(
         dependency_info.imageMemoryBarrierCount = 1;
         dependency_info.pImageMemoryBarriers = &barrier;
 
-        command_buffer.pipelineBarrier2(dependency_info);
+        command_buffers[current_frame].pipelineBarrier2(dependency_info);
     }
 
+
+void Engine::framebufferResizeCallback(GLFWwindow * window, int width, int height){
+    auto engine = reinterpret_cast<Engine*>(glfwGetWindowUserPointer(window));
+    engine -> framebuffer_resized = true;
+}
 
 // ------ Init Functions
 
 bool Engine::initWindow(){
     window = initWindowGLFW("Engine", win_width, win_height);
+    glfwSetWindowUserPointer(window, this);
+    glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 
     if(!window){
         return false;
@@ -182,6 +189,8 @@ void Engine::createCommandPool(){
 }
 
 void Engine::createCommandBuffer(){
+    command_buffers.clear();
+
     vk::CommandBufferAllocateInfo alloc_info;
     alloc_info.commandPool = command_pool;
     /**
@@ -190,15 +199,24 @@ void Engine::createCommandBuffer(){
      * secondary -> cannot be submitted directly, but can be called from primary command buffers
      */
     alloc_info.level = vk::CommandBufferLevel::ePrimary; 
-    alloc_info.commandBufferCount = 1;
+    alloc_info.commandBufferCount = MAX_FRAMES_IN_FLIGHT;
 
-    command_buffer = std::move(vk::raii::CommandBuffers(*logical_device, alloc_info).front());
+    command_buffers = vk::raii::CommandBuffers(*logical_device, alloc_info);
 }
 
 void Engine::createSyncObjects(){
-    present_complete_semaphore = vk::raii::Semaphore(*logical_device, vk::SemaphoreCreateInfo());
-    render_finished_semaphore = vk::raii::Semaphore(*logical_device, vk::SemaphoreCreateInfo());
-    draw_fence = vk::raii::Fence(*logical_device, {vk::FenceCreateFlagBits::eSignaled});
+    present_complete_semaphores.clear();
+    render_finished_semaphores.clear();
+    in_flight_fences.clear();
+
+    for(size_t i = 0; i < swapchain_images.size(); i++){
+        present_complete_semaphores.emplace_back(vk::raii::Semaphore(*logical_device, vk::SemaphoreCreateInfo()));
+        render_finished_semaphores.emplace_back(vk::raii::Semaphore(*logical_device, vk::SemaphoreCreateInfo()));
+    }
+
+    for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
+        in_flight_fences.emplace_back(vk::raii::Fence(*logical_device, {vk::FenceCreateFlagBits::eSignaled}));
+    }
 }
 
 
@@ -218,7 +236,7 @@ void Engine::run(){
 }
 
 void Engine::recordCommandBuffer(uint32_t image_index){
-    command_buffer.begin({});
+    command_buffers[current_frame].begin({});
 
     transition_image_layout(
         image_index,
@@ -245,22 +263,22 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     rendering_info.colorAttachmentCount = 1;
     rendering_info.pColorAttachments = &attachment_info;
 
-    command_buffer.beginRendering(rendering_info);
+    command_buffers[current_frame].beginRendering(rendering_info);
 
-    command_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *graphics_pipeline);
+    command_buffers[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *graphics_pipeline);
 
-    command_buffer.setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain_extent.width), static_cast<float>(swapchain_extent.height), 0.f, 1.f));
-    command_buffer.setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain_extent));
+    command_buffers[current_frame].setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain_extent.width), static_cast<float>(swapchain_extent.height), 0.f, 1.f));
+    command_buffers[current_frame].setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain_extent));
     /**
      * vertexCount -> number of vertices
      * instanceCount -> used for instanced rendering, use 1 if not using it
      * firstVertex -> used as an offset into the vertex buffer, defines the lowest value of SV_VertexId
      * firstInstance -> used as an offset for instanced rendering, defines the lowest value of SV_InstanceID
      */
-    command_buffer.draw(3, 1, 0, 0);
+    command_buffers[current_frame].draw(3, 1, 0, 0);
 
 
-    command_buffer.endRendering();
+    command_buffers[current_frame].endRendering();
 
     transition_image_layout(
         image_index,
@@ -272,34 +290,48 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         vk::PipelineStageFlagBits2::eBottomOfPipe // a "sink" stage that ensures all prior work is finished before transitioning
     );
 
-    command_buffer.end();
+    command_buffers[current_frame].end();
 }
 
 void Engine::drawFrame(){
-    graphics_presentation_queue.waitIdle();
+    while( vk::Result::eTimeout == logical_device -> waitForFences(*in_flight_fences[current_frame], vk::True, UINT64_MAX));
     
-    // Waiting for the previous frame to complete
-    auto [result, image_index] = swapchain->acquireNextImage(UINT64_MAX, *present_complete_semaphore, nullptr);
+    if (framebuffer_resized) {
+        framebuffer_resized = false;
+        recreateSwapChain();
+    }
 
+    // Waiting for the previous frame to complete
+    auto [result, image_index] = swapchain->acquireNextImage(UINT64_MAX, *present_complete_semaphores[semaphore_index], nullptr);
+
+    if(result == vk::Result::eErrorOutOfDateKHR){
+        framebuffer_resized = false;
+        recreateSwapChain();
+        return;
+    }
+    if(result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR){
+        throw std::runtime_error("failed to acquire swap chain image!");
+    }
+
+    logical_device -> resetFences(*in_flight_fences[current_frame]);
+    command_buffers[current_frame].reset();
     recordCommandBuffer(image_index);
 
-    logical_device -> resetFences(*draw_fence);
     vk::PipelineStageFlags wait_destination_stage_mask(vk::PipelineStageFlagBits::eColorAttachmentOutput);
     vk::SubmitInfo submit_info;
     submit_info.waitSemaphoreCount = 1;
-    submit_info.pWaitSemaphores = &*present_complete_semaphore;
+    submit_info.pWaitSemaphores = &*present_complete_semaphores[semaphore_index];
     submit_info.pWaitDstStageMask = &wait_destination_stage_mask;
     submit_info.commandBufferCount = 1;
-    submit_info.pCommandBuffers = &*command_buffer;
+    submit_info.pCommandBuffers = &*command_buffers[current_frame];
     submit_info.signalSemaphoreCount = 1;
-    submit_info.pSignalSemaphores = &*render_finished_semaphore;
+    submit_info.pSignalSemaphores = &*render_finished_semaphores[image_index];
 
-    graphics_presentation_queue.submit(submit_info, *draw_fence);
-    while(vk::Result::eTimeout == logical_device -> waitForFences(*draw_fence, vk::True, UINT64_MAX));
+    graphics_presentation_queue.submit(submit_info, *in_flight_fences[current_frame]);
 
     vk::PresentInfoKHR present_info_KHR;
     present_info_KHR.waitSemaphoreCount = 1;
-    present_info_KHR.pWaitSemaphores = &*render_finished_semaphore;
+    present_info_KHR.pWaitSemaphores = &*render_finished_semaphores[image_index];
     present_info_KHR.swapchainCount = 1;
     present_info_KHR.pSwapchains = &**swapchain;
     present_info_KHR.pImageIndices = &image_index;
@@ -313,6 +345,33 @@ void Engine::drawFrame(){
         default: break; // an unexpected result is returned
     }
 
+    current_frame = (current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
+    semaphore_index = (semaphore_index + 1) % present_complete_semaphores.size();
+
+
+}
+
+void Engine::recreateSwapChain(){
+    int width = 0, height = 0;
+    glfwGetFramebufferSize(window, &width, &height);
+    while (width == 0 || height == 0){
+        glfwGetFramebufferSize(window, &width, &height);
+        glfwWaitEvents();
+    }
+
+    logical_device -> waitIdle();
+
+    swapchain_image_views.clear();
+    swapchain_obj.recreateSwapChain(physical_device, logical_device, surface, window);
+    
+
+    swapchain = swapchain_obj.getSwapchain();
+    swapchain_images = swapchain_obj.getSwapchainImages();
+    swapchain_image_format = swapchain_obj.getSwapchainImageFormat();
+    swapchain_extent = swapchain_obj.getSwapchainExtent();
+    for (auto& iv : swapchain_obj.getSwapchainImageViews()) {
+        swapchain_image_views.push_back(std::move(iv));
+    }
 
 }
 
@@ -323,12 +382,12 @@ void Engine::drawFrame(){
 
 void Engine::cleanup(){
     // Destroying sync objects
-    draw_fence = nullptr;
-    render_finished_semaphore = nullptr;
-    present_complete_semaphore = nullptr;
+    in_flight_fences.clear();
+    render_finished_semaphores.clear();
+    present_complete_semaphores.clear();
 
     // Destroying sync objects
-    command_buffer = nullptr;
+    command_buffers.clear();
     command_pool = nullptr;
 
     // Delete pipeline objs

@@ -59,6 +59,8 @@ public:
         return swapchain_image_views;
     }
 
+    void recreateSwapChain(vk::raii::PhysicalDevice& physical_device, vk::raii::Device * logical_device,vk::raii::SurfaceKHR& surface, GLFWwindow * window);
+
 
 
 private:

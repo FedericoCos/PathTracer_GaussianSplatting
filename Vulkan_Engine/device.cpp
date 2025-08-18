@@ -59,6 +59,7 @@ bool Device::isDeviceSuitable(vk::raii::PhysicalDevice& device){
 
     bool supportsRequiredFeatures =
         features.template get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering &&
+        features.template get<vk::PhysicalDeviceVulkan13Features>().synchronization2 &&
         features.template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState;
 
 
@@ -75,6 +76,7 @@ void Device::pickPhysicalDevice(vk::raii::Instance& instance){
     }
 
     for(vk::raii::PhysicalDevice& device : devices){
+        std::cout << "Checking device: " << device.getProperties().deviceName << std::endl;
         if(isDeviceSuitable(device)){
             physical_device = device;
             std::cout << "Picked device: "<< device.getProperties().deviceName << std::endl;
@@ -88,33 +90,40 @@ void Device::pickPhysicalDevice(vk::raii::Instance& instance){
 }
 
 
-uint32_t Device::findQueueFamilies(){
+uint32_t Device::findQueueFamilies(vk::raii::SurfaceKHR& surface){
     // Get all queue families available on the physical device
     std::vector<vk::QueueFamilyProperties> queue_family_properties = physical_device.getQueueFamilyProperties();
 
     // find first queue family in the list whose queueFlag contains the eGraphics
     // eGraphics means it can submit graphics draw calls
-    auto graphics_queue_family_property =
-      std::find_if( queue_family_properties.begin(),
-                    queue_family_properties.end(),
-                    []( vk::QueueFamilyProperties const & qfp ) { return qfp.queueFlags & vk::QueueFlagBits::eGraphics; } );
+    for(uint32_t i = 0; i < queue_family_properties.size(); i++){
+        if((queue_family_properties[i].queueFlags & vk::QueueFlagBits::eGraphics) && 
+                physical_device.getSurfaceSupportKHR(i, surface)){
+                    return i;
+                }
+    }
 
     // return the index of the found queue family
-    return static_cast<uint32_t>( std::distance( queue_family_properties.begin(), graphics_queue_family_property ) );
+    throw std::runtime_error("There is not a queu with both graphic and presentation");
+    return -1;
 }
 
-void Device::createLogicalDevice(){
+void Device::createLogicalDevice(vk::raii::SurfaceKHR& surface){
     // find the index of the first queue fammily that supports graphics
-    auto graphics_index = findQueueFamilies();
+    graphics_index = findQueueFamilies(surface);
 
     // query for Vulkan 1.3 features
+    vk::PhysicalDeviceVulkan13Features vulkan13features;
+    vulkan13features.synchronization2 = true;
+    vulkan13features.dynamicRendering = true;
+
     vk::StructureChain<
     vk::PhysicalDeviceFeatures2,
     vk::PhysicalDeviceVulkan13Features,
     vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT
     > feature_chain{
         vk::PhysicalDeviceFeatures2{},                           // No core features for now
-        vk::PhysicalDeviceVulkan13Features{ VK_TRUE },           // dynamicRendering = true
+        vulkan13features,           // dynamicRendering = true
         vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT{ VK_TRUE } // extendedDynamicState = true
     };
 
@@ -135,10 +144,10 @@ void Device::createLogicalDevice(){
         static_cast<uint32_t>(device_extensions.size()), // enabledExtensionCount
         device_extensions.data(),         // ppEnabledExtensionNames
         nullptr,                          // pEnabledFeatures (null because we use pNext for feature chain)
-        &feature_chain                    // pNext -> features chain
+        &feature_chain.get<vk::PhysicalDeviceFeatures2>()    // pNext -> features chain
     };
 
     logical_device = vk::raii::Device(physical_device, device_create_info);
-    graphics_queue = vk::raii::Queue( logical_device, graphics_index, 0 );
+    graphics_presentation_queue = vk::raii::Queue( logical_device, graphics_index, 0 );
 }
 

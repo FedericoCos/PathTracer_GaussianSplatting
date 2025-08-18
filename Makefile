@@ -28,6 +28,8 @@ $(TARGET): $(OBJS)
 
 # Run the program
 test: $(TARGET)
+	glslc shaders/basic/vertex.vert -o shaders/basic/vertex.spv
+	glslc shaders/basic/fragment.frag -o shaders/basic/fragment.spv
 	./$(TARGET)
 
 # Clean up the build files

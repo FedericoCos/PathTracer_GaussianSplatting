@@ -204,6 +204,7 @@ bool Engine::initVulkan(){
     pipeline_obj.init(logical_device, swapchain_image_format);
     graphics_pipeline_layout = pipeline_obj.getGraphicsPipelineLayout();
     graphics_pipeline = pipeline_obj.getGraphicsPipeline();
+    descriptor_set_layout = pipeline_obj.getDescriptorSetLayout();
 
     VmaAllocatorCreateInfo allocator_info{};
     allocator_info.physicalDevice = *physical_device;
@@ -219,6 +220,9 @@ bool Engine::initVulkan(){
     // Command creation
     createCommandPool();
     createDataBuffer();
+    createUniformBuffers();
+    createDescriptorPool();
+    createDescriptorSets();
     createCommandBuffer();
     createSyncObjects();
 
@@ -284,6 +288,7 @@ void Engine::createSurface(){
     }
     surface = vk::raii::SurfaceKHR(instance, _surface);
 }
+
 
 void Engine::createCommandPool(){
     vk::CommandPoolCreateInfo pool_info;
@@ -356,6 +361,65 @@ void Engine::createDataBuffer()
     vmaDestroyBuffer(vma_allocator,staging_allocated_buffer.buffer, staging_allocated_buffer.allocation);
 }
 
+void Engine::createUniformBuffers()
+{
+    uniform_buffers.clear();
+    uniform_buffers_mapped.clear();
+
+    uniform_buffers.resize(MAX_FRAMES_IN_FLIGHT);
+    uniform_buffers_mapped.resize(MAX_FRAMES_IN_FLIGHT);
+
+    for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
+        vk::DeviceSize buffer_size = sizeof(UniformBufferObject);
+        createBuffer(buffer_size, vk::BufferUsageFlagBits::eUniformBuffer,
+                    vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                uniform_buffers[i]);
+        vmaMapMemory(vma_allocator, uniform_buffers[i].allocation, &uniform_buffers_mapped[i]);
+    }
+}
+
+void Engine::createDescriptorPool()
+{
+    vk::DescriptorPoolSize pool_size(vk::DescriptorType::eUniformBuffer, MAX_FRAMES_IN_FLIGHT);
+    vk::DescriptorPoolCreateInfo pool_info;
+    pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
+    pool_info.maxSets = MAX_FRAMES_IN_FLIGHT;
+    pool_info.poolSizeCount = 1;
+    pool_info.pPoolSizes = &pool_size;
+
+    descriptor_pool = vk::raii::DescriptorPool(*logical_device, pool_info);
+}
+
+void Engine::createDescriptorSets()
+{
+    std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, **descriptor_set_layout);
+    vk::DescriptorSetAllocateInfo alloc_info;
+    alloc_info.descriptorPool = descriptor_pool;
+    alloc_info.descriptorSetCount = static_cast<uint32_t>(layouts.size());
+    alloc_info.pSetLayouts = layouts.data();
+
+    descriptor_sets.clear();
+
+    descriptor_sets = logical_device -> allocateDescriptorSets(alloc_info);
+
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        vk::DescriptorBufferInfo buffer_info;
+        buffer_info.buffer = uniform_buffers[i].buffer;
+        buffer_info.offset = 0;
+        buffer_info.range = sizeof(UniformBufferObject);
+
+        vk::WriteDescriptorSet descriptor_write;
+        descriptor_write.dstSet = descriptor_sets[i];
+        descriptor_write.dstBinding = 0;
+        descriptor_write.dstArrayElement = 0;
+        descriptor_write.descriptorCount = 1;
+        descriptor_write.descriptorType = vk::DescriptorType::eUniformBuffer;
+        descriptor_write.pBufferInfo = &buffer_info;
+
+        logical_device -> updateDescriptorSets(descriptor_write, {});
+    }
+}
+
 // ------ Render Loop Functions
 
 void Engine::run(){
@@ -414,6 +478,7 @@ void Engine::recordCommandBuffer(uint32_t image_index){
      */
     //command_buffers[current_frame].draw(vertices.size(), 1, 0, 0);
 
+    command_buffers[current_frame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *graphics_pipeline_layout, 0, *descriptor_sets[current_frame], nullptr);
     command_buffers[current_frame].drawIndexed(indices.size(), 1, 0, 0, 0);
 
 
@@ -456,6 +521,8 @@ void Engine::drawFrame(){
     command_buffers[current_frame].reset();
     recordCommandBuffer(image_index);
 
+    updateUniformBuffer(current_frame);
+
     vk::PipelineStageFlags wait_destination_stage_mask(vk::PipelineStageFlagBits::eColorAttachmentOutput);
     vk::SubmitInfo submit_info;
     submit_info.waitSemaphoreCount = 1;
@@ -488,6 +555,25 @@ void Engine::drawFrame(){
     semaphore_index = (semaphore_index + 1) % present_complete_semaphores.size();
 
 
+}
+
+void Engine::updateUniformBuffer(uint32_t current_image)
+{
+    static auto start_time = std::chrono::high_resolution_clock::now();
+
+    auto current_time = std::chrono::high_resolution_clock::now();
+    float time = std::chrono::duration<float, std::chrono::seconds::period>(current_time - start_time).count();
+
+    UniformBufferObject ubo{};
+    ubo.model = rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+
+    ubo.view = lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+
+    ubo.proj = glm::perspective(glm::radians(45.0f), static_cast<float>(swapchain_extent.width) / static_cast<float>(swapchain_extent.height), 0.1f, 10.0f);
+
+    ubo.proj[1][1] *= -1;
+
+    memcpy(uniform_buffers_mapped[current_image], &ubo, sizeof(ubo));
 }
 
 void Engine::recreateSwapChain(){
@@ -526,6 +612,15 @@ void Engine::cleanup(){
     command_buffers.clear();
     command_pool = nullptr;
     command_pool_copy = nullptr;
+
+    // Destroying uniform buffers objects
+    for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
+        vmaUnmapMemory(vma_allocator, uniform_buffers[i].allocation);
+        vmaDestroyBuffer(vma_allocator,uniform_buffers[i].buffer, uniform_buffers[i].allocation);
+
+        descriptor_sets[i] = nullptr;
+    }
+    descriptor_pool = nullptr;
 
     // Destroying vertex/index data
     vmaDestroyBuffer(vma_allocator,data_buffer.buffer, data_buffer.allocation);

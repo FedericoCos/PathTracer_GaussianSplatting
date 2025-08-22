@@ -46,7 +46,7 @@ void Pipeline::createGraphicsPipeline(vk::raii::Device * logical_device, vk::For
     rasterizer.rasterizerDiscardEnable = vk::False;
     rasterizer.cullMode = vk::CullModeFlagBits::eBack;
     rasterizer.polygonMode = vk::PolygonMode::eFill;
-    rasterizer.frontFace = vk::FrontFace::eClockwise;
+    rasterizer.frontFace = vk::FrontFace::eCounterClockwise;
     rasterizer.depthBiasEnable = vk::False,
     rasterizer.depthBiasSlopeFactor = 1.f;
     rasterizer.lineWidth = 1.f; // Any thickness larger than 1.f requires to enable the widelines GPU feature
@@ -76,8 +76,9 @@ void Pipeline::createGraphicsPipeline(vk::raii::Device * logical_device, vk::For
     dynamic_state.dynamicStateCount = static_cast<uint32_t>(dynamic_states.size());
     dynamic_state.pDynamicStates = dynamic_states.data();
 
-    vk::PipelineLayoutCreateInfo pipeline_layout_info;
-    pipeline_layout_info.setLayoutCount = 0;
+    vk::PipelineLayoutCreateInfo pipeline_layout_info; 
+    pipeline_layout_info.setLayoutCount = 1;
+    pipeline_layout_info.pSetLayouts = &*descriptor_set_layout;
     pipeline_layout_info.pushConstantRangeCount = 0;
 
     graphics_pipeline_layout = vk::raii::PipelineLayout(*logical_device, pipeline_layout_info);
@@ -110,6 +111,15 @@ vk::raii::ShaderModule Pipeline::createShaderModule(const std::vector<char>& cod
 
     vk::raii::ShaderModule shader_module{ *logical_device, create_info };
     return shader_module;
+}
+
+void Pipeline::createDescriptorSetLayout(vk::raii::Device *logical_device)
+{
+    vk::DescriptorSetLayoutBinding uboLayoutBinding(0, vk::DescriptorType::eUniformBuffer, // position and type in shader
+                                            1, //Descriptor count ->Can be Array
+                                            vk::ShaderStageFlagBits::eVertex, nullptr);
+    vk::DescriptorSetLayoutCreateInfo layout_info({}, 1, &uboLayoutBinding);
+    descriptor_set_layout=vk::raii::DescriptorSetLayout(*logical_device, layout_info);
 }
 
 std::vector<char> Pipeline::readFile(const std::string& filename){

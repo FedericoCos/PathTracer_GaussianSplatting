@@ -85,6 +85,7 @@ private:
     Pipeline pipeline_obj;
     vk::raii::PipelineLayout* graphics_pipeline_layout = nullptr;
     vk::raii::Pipeline* graphics_pipeline = nullptr;
+    vk::raii::DescriptorSetLayout* descriptor_set_layout = nullptr;
 
     // Command pools variables
     vk::raii::CommandPool command_pool = nullptr;
@@ -116,6 +117,14 @@ private:
     };
     AllocatedBuffer data_buffer;
     vk::DeviceSize index_offset;
+
+    // Uniform buffer variables
+    std::vector<AllocatedBuffer> uniform_buffers;
+    std::vector<void *> uniform_buffers_mapped;
+
+    // Descriptor Pool variables
+    vk::raii::DescriptorPool descriptor_pool = nullptr;
+    std::vector<vk::raii::DescriptorSet> descriptor_sets;
 
 
     // ----- Helper functions
@@ -157,10 +166,14 @@ private:
     void createCommandBuffer();
     void createSyncObjects();
     void createDataBuffer();
+    void createUniformBuffers();
+    void createDescriptorPool();
+    void createDescriptorSets();
 
     // Drawing functions
     void recordCommandBuffer(uint32_t image_index);
     void drawFrame();
+    void updateUniformBuffer(uint32_t current_image);
 
     void recreateSwapChain();
 

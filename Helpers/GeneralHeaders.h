@@ -8,12 +8,14 @@
 #include <memory>
 #include <algorithm>
 #include <stdio.h>
+#include <chrono>
 
 #include <vulkan/vulkan_raii.hpp> // this library handles for us the vkCreateXXX
                                   // vkAllocateXXX, vkDestroyXXX, and vkFreeXXX
 #include <vulkan/vk_platform.h>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 
 // Taskflow is used for multithreading on the CPU side
@@ -49,4 +51,11 @@ struct AllocatedBuffer{
     VkBuffer buffer;
     VmaAllocation allocation;
     VmaAllocationInfo info;
+};
+
+
+struct UniformBufferObject {
+    glm::mat4 model;
+    glm::mat4 view;
+    glm::mat4 proj;
 };

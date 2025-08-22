@@ -24,6 +24,8 @@
 // Dynamic Memory Allocation
 #include "vk_mem_alloc.h"
 
+#include "stb_image.h"
+
 
 
 // Structures used in all the project

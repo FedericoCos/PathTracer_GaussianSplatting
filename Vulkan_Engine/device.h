@@ -60,7 +60,7 @@ private:
         vk::KHRCreateRenderpass2ExtensionName
     };
 
-    bool isDeviceSuitable(vk::raii::PhysicalDevice& device);
+    bool isDeviceSuitable(vk::raii::PhysicalDevice& device, bool descrete);
     void pickPhysicalDevice(vk::raii::Instance& instance);
     void createLogicalDevice(vk::raii::SurfaceKHR& surface);
     uint32_t findQueueFamilies(vk::raii::SurfaceKHR& surface);

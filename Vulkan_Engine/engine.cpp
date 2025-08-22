@@ -6,6 +6,10 @@
 #include "vk_mem_alloc.h"
 #endif
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "../Helpers/stb_image.h"
+
+
 // ------ Helper Functions
 std::vector<const char*> Engine::getRequiredExtensions(){
     uint32_t glfw_extension_count = 0;

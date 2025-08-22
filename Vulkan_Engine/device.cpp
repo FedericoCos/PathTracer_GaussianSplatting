@@ -1,6 +1,6 @@
 #include "device.h"
 
-bool Device::isDeviceSuitable(vk::raii::PhysicalDevice& device){
+bool Device::isDeviceSuitable(vk::raii::PhysicalDevice& device, bool descrete){
     auto device_properties = device.getProperties();
     auto device_features = device.getFeatures();
 
@@ -10,7 +10,7 @@ bool Device::isDeviceSuitable(vk::raii::PhysicalDevice& device){
     }
 
     // Picking only Discrete GPU
-    if(device_properties.deviceType != vk::PhysicalDeviceType::eDiscreteGpu ||
+    if(!(device_properties.deviceType == vk::PhysicalDeviceType::eDiscreteGpu || !descrete) ||
         !device_features.geometryShader){
         return false;
     }
@@ -77,10 +77,21 @@ void Device::pickPhysicalDevice(vk::raii::Instance& instance){
 
     for(vk::raii::PhysicalDevice& device : devices){
         std::cout << "Checking device: " << device.getProperties().deviceName << std::endl;
-        if(isDeviceSuitable(device)){
+        if(isDeviceSuitable(device, true)){
             physical_device = device;
             std::cout << "Picked device: "<< device.getProperties().deviceName << std::endl;
             break;
+        }
+    }
+
+    if(physical_device == nullptr){
+        for(vk::raii::PhysicalDevice& device : devices){
+            std::cout << "Checking device: " << device.getProperties().deviceName << std::endl;
+            if(isDeviceSuitable(device, false)){
+                physical_device = device;
+                std::cout << "Picked device: "<< device.getProperties().deviceName << std::endl;
+                break;
+            }
         }
     }
 

@@ -20,8 +20,15 @@ void Pipeline::createGraphicsPipeline(vk::raii::Device * logical_device, vk::For
         vert_shader_stage_info, frag_shader_stage_info
     };
 
+
+    auto binding_description = Vertex::getBindingDescription();
+    auto attribute_descriptions = Vertex::getAttributeDescriptions();
     vk::PipelineVertexInputStateCreateInfo vertex_input_info; // Describes the fromat of the vartex data
                                                               // that will be passed to the vertex shader
+    vertex_input_info.vertexBindingDescriptionCount = 1;
+    vertex_input_info.pVertexBindingDescriptions = &binding_description;
+    vertex_input_info.vertexAttributeDescriptionCount = attribute_descriptions.size();
+    vertex_input_info.pVertexAttributeDescriptions = attribute_descriptions.data();
     
     vk::PipelineInputAssemblyStateCreateInfo input_assembly; // describes what kind of geometry will be drawn
                                                              // and if primitive restart is enabled

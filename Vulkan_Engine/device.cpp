@@ -120,11 +120,13 @@ void Device::createLogicalDevice(vk::raii::SurfaceKHR& surface){
     vk::StructureChain<
     vk::PhysicalDeviceFeatures2,
     vk::PhysicalDeviceVulkan13Features,
-    vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT
+    vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,
+    vk::PhysicalDeviceBufferDeviceAddressFeatures
     > feature_chain{
         vk::PhysicalDeviceFeatures2{},                           // No core features for now
         vulkan13features,           // dynamicRendering = true
-        vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT{ VK_TRUE } // extendedDynamicState = true
+        vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT{ VK_TRUE }, // extendedDynamicState = true
+        vk::PhysicalDeviceBufferDeviceAddressFeatures { VK_TRUE }
     };
 
     // create a Device

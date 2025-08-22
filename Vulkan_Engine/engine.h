@@ -11,6 +11,8 @@
 #include "swapchain.h"
 #include "pipeline.h"
 
+#include "vk_mem_alloc.h"
+
 
 
 const std::vector validationLayers = {
@@ -59,6 +61,9 @@ private:
     // Instance variable
     vk::raii::Instance instance = nullptr;
 
+    // Memory variable
+    VmaAllocator vma_allocator;
+
     // Device variables
     Device device_obj;
     vk::raii::PhysicalDevice physical_device = nullptr;
@@ -84,6 +89,7 @@ private:
     // Command pools variables
     vk::raii::CommandPool command_pool = nullptr;
     std::vector<vk::raii::CommandBuffer> command_buffers;
+    vk::raii::CommandPool command_pool_copy = nullptr;
 
     // Synchronization variables
     std::vector<vk::raii::Semaphore> present_complete_semaphores;
@@ -94,6 +100,22 @@ private:
     uint32_t semaphore_index = 0;
     uint32_t current_frame = 0;
     bool framebuffer_resized = false;
+
+
+    // Vertex data
+    const std::vector<Vertex> vertices = {
+        {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+        {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+        {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+        {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
+    };
+
+    const std::vector<uint16_t> indices = {
+        0, 1, 2,
+        2, 3, 0
+    };
+    AllocatedBuffer data_buffer;
+    vk::DeviceSize index_offset;
 
 
     // ----- Helper functions
@@ -120,6 +142,11 @@ private:
 
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
 
+    uint32_t findMemoryType(uint32_t type_filter, vk::MemoryPropertyFlags properties);
+
+    void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties, AllocatedBuffer& buffer_memory);
+    void copyBuffer(VkBuffer& src_buffer, VkBuffer& dst_buffer, vk::DeviceSize size);
+
     // ----- Init functions
     bool initWindow();
     bool initVulkan();
@@ -129,6 +156,7 @@ private:
     void createCommandPool();
     void createCommandBuffer();
     void createSyncObjects();
+    void createDataBuffer();
 
     // Drawing functions
     void recordCommandBuffer(uint32_t image_index);

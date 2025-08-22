@@ -1,5 +1,11 @@
 #include "engine.h"
 
+
+#ifndef VMA_IMPLEMENTATION
+#define VMA_IMPLEMENTATION
+#include "vk_mem_alloc.h"
+#endif
+
 // ------ Helper Functions
 std::vector<const char*> Engine::getRequiredExtensions(){
     uint32_t glfw_extension_count = 0;
@@ -70,6 +76,93 @@ void Engine::framebufferResizeCallback(GLFWwindow * window, int width, int heigh
     engine -> framebuffer_resized = true;
 }
 
+uint32_t Engine::findMemoryType(uint32_t type_filter, vk::MemoryPropertyFlags properties)
+{
+    /**
+     * Below structure has two arrays
+     * - memoryTypes: each type belong to one heap, and specifies how it can be used
+     * - memoryHeaps: like GPU VRAM, or system RAM
+     */
+    vk::PhysicalDeviceMemoryProperties mem_properties = physical_device.getMemoryProperties();
+
+    for (uint32_t i = 0; i < mem_properties.memoryTypeCount; i++) {
+        if ((type_filter & (1 << i)) && (mem_properties.memoryTypes[i].propertyFlags & properties) == properties) {
+            return i;
+        }
+    }
+    
+    throw std::runtime_error("failed to find suitable memory type!");
+}
+
+static const char* VmaResultToString(VkResult r) {
+    switch (r) {
+        case VK_SUCCESS: return "VK_SUCCESS";
+        case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+        case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+        // add others if needed
+        default: return "VkResult(unknown)";
+    }
+}
+
+void Engine::createBuffer(
+    vk::DeviceSize size,
+    vk::BufferUsageFlags usage,
+    vk::MemoryPropertyFlags properties,
+    AllocatedBuffer &allocated_buffer)
+{
+    // Prepare VMA alloc info
+    VmaAllocationCreateInfo alloc_info = {};
+    alloc_info.usage = VMA_MEMORY_USAGE_AUTO;
+
+    // Decide flags by host-visible property
+    if ((properties & vk::MemoryPropertyFlagBits::eHostVisible) != vk::MemoryPropertyFlags{}) {
+        // Staging-like buffer: request mapped & sequential write host access
+        alloc_info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+    } else {
+        // Device-only buffer: no special flags (not mapped)
+        alloc_info.flags = 0;
+    }
+
+    // Fill VkBufferCreateInfo (use raw Vulkan struct via cast)
+    vk::BufferCreateInfo buffer_info{};
+    buffer_info.size = size;
+    buffer_info.usage = usage;
+    buffer_info.sharingMode = vk::SharingMode::eExclusive;
+
+
+    VkResult r = vmaCreateBuffer(vma_allocator, reinterpret_cast<VkBufferCreateInfo const*>(&buffer_info), 
+            &alloc_info, &allocated_buffer.buffer, &allocated_buffer.allocation, &allocated_buffer.info);
+    if (r != VK_SUCCESS) {
+        std::stringstream ss;
+        ss << "vmaCreateBuffer failed: " << VmaResultToString(r) << " (" << r << ")";
+        throw std::runtime_error(ss.str());
+    }
+}
+
+void Engine::copyBuffer(VkBuffer &src_buffer,VkBuffer &dst_buffer, vk::DeviceSize size)
+{
+    vk::CommandBufferAllocateInfo alloc_info;
+    alloc_info.commandPool = command_pool_copy;
+    alloc_info.level = vk::CommandBufferLevel::ePrimary;
+    alloc_info.commandBufferCount = 1;
+    vk::raii::CommandBuffer command_copy_buffer = std::move(logical_device -> allocateCommandBuffers(alloc_info).front());
+
+    vk::CommandBufferBeginInfo command_buffer_begin_info;
+    command_buffer_begin_info.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
+
+    command_copy_buffer.begin(command_buffer_begin_info);
+
+    command_copy_buffer.copyBuffer(src_buffer, dst_buffer, vk::BufferCopy(0, 0, size));
+
+    command_copy_buffer.end();
+
+    vk::SubmitInfo submit_info;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &*command_copy_buffer;
+    graphics_presentation_queue.submit(submit_info, nullptr);
+    graphics_presentation_queue.waitIdle();
+}
+
 // ------ Init Functions
 
 bool Engine::initWindow(){
@@ -112,9 +205,20 @@ bool Engine::initVulkan(){
     graphics_pipeline_layout = pipeline_obj.getGraphicsPipelineLayout();
     graphics_pipeline = pipeline_obj.getGraphicsPipeline();
 
+    VmaAllocatorCreateInfo allocator_info{};
+    allocator_info.physicalDevice = *physical_device;
+    allocator_info.device = **logical_device;
+    allocator_info.instance = *instance;              
+    allocator_info.vulkanApiVersion = VK_API_VERSION_1_4;
+    allocator_info.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    VkResult res = vmaCreateAllocator(&allocator_info, &vma_allocator);
+    if (res != VK_SUCCESS) {
+        throw std::runtime_error("vmaCreateAllocator failed");
+    }
 
     // Command creation
     createCommandPool();
+    createDataBuffer();
     createCommandBuffer();
     createSyncObjects();
 
@@ -172,6 +276,7 @@ void Engine::createInstance(){
     instance = vk::raii::Instance(context, createInfo);
 }
 
+
 void Engine::createSurface(){
     VkSurfaceKHR _surface;
     if(glfwCreateWindowSurface(*instance, window, nullptr, &_surface) != 0){
@@ -186,6 +291,10 @@ void Engine::createCommandPool(){
     pool_info.queueFamilyIndex = device_obj.getGraphicsIndex();
 
     command_pool = vk::raii::CommandPool(*logical_device, pool_info);
+
+    pool_info.flags = vk::CommandPoolCreateFlagBits::eTransient;
+
+    command_pool_copy = vk::raii::CommandPool(*logical_device, pool_info);
 }
 
 void Engine::createCommandBuffer(){
@@ -219,8 +328,33 @@ void Engine::createSyncObjects(){
     }
 }
 
+void Engine::createDataBuffer()
+{
+    vk::DeviceSize vertex_size = sizeof(vertices[0]) * vertices.size();
+    vk::DeviceSize index_size = sizeof(indices[0]) * indices.size();
+    vk::DeviceSize total_size = vertex_size + index_size;
+    index_offset = vertex_size;
 
+    AllocatedBuffer staging_allocated_buffer;
 
+    createBuffer(total_size, vk::BufferUsageFlagBits::eTransferSrc, 
+        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+    staging_allocated_buffer);
+
+    void *data;
+    vmaMapMemory(vma_allocator, staging_allocated_buffer.allocation, &data);
+
+    memcpy(data, vertices.data(), vertex_size);
+    memcpy((char *)data + vertex_size, indices.data(), index_size);
+
+    createBuffer(total_size, vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eIndexBuffer,
+                vk::MemoryPropertyFlagBits::eDeviceLocal, data_buffer);
+        
+    copyBuffer(staging_allocated_buffer.buffer, data_buffer.buffer, total_size);
+
+    vmaUnmapMemory(vma_allocator, staging_allocated_buffer.allocation);
+    vmaDestroyBuffer(vma_allocator,staging_allocated_buffer.buffer, staging_allocated_buffer.allocation);
+}
 
 // ------ Render Loop Functions
 
@@ -267,6 +401,9 @@ void Engine::recordCommandBuffer(uint32_t image_index){
 
     command_buffers[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *graphics_pipeline);
 
+    command_buffers[current_frame].bindVertexBuffers(0, {data_buffer.buffer}, {0});
+    command_buffers[current_frame].bindIndexBuffer(data_buffer.buffer, index_offset, vk::IndexType::eUint16);
+
     command_buffers[current_frame].setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain_extent.width), static_cast<float>(swapchain_extent.height), 0.f, 1.f));
     command_buffers[current_frame].setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain_extent));
     /**
@@ -275,7 +412,9 @@ void Engine::recordCommandBuffer(uint32_t image_index){
      * firstVertex -> used as an offset into the vertex buffer, defines the lowest value of SV_VertexId
      * firstInstance -> used as an offset for instanced rendering, defines the lowest value of SV_InstanceID
      */
-    command_buffers[current_frame].draw(3, 1, 0, 0);
+    //command_buffers[current_frame].draw(vertices.size(), 1, 0, 0);
+
+    command_buffers[current_frame].drawIndexed(indices.size(), 1, 0, 0, 0);
 
 
     command_buffers[current_frame].endRendering();
@@ -375,9 +514,6 @@ void Engine::recreateSwapChain(){
 
 }
 
-
-
-
 // ------ Closing functions
 
 void Engine::cleanup(){
@@ -389,6 +525,10 @@ void Engine::cleanup(){
     // Destroying sync objects
     command_buffers.clear();
     command_pool = nullptr;
+    command_pool_copy = nullptr;
+
+    // Destroying vertex/index data
+    vmaDestroyBuffer(vma_allocator,data_buffer.buffer, data_buffer.allocation);
 
     // Delete pipeline objs
     pipeline_obj = {};
@@ -396,6 +536,9 @@ void Engine::cleanup(){
     // Delete swapchain
     swapchain_obj = {};
     swapchain_image_views.clear();
+
+    // Destroying the allocator
+    vmaDestroyAllocator(vma_allocator);
 
     // delete device
     device_obj = {};

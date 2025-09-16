@@ -5,13 +5,13 @@
 
 class Pipeline{
 public:
-    void init(vk::raii::Device *logical_device, vk::Format& swapchain_image_format){
+    void init(vk::raii::PhysicalDevice& physical_device, vk::raii::Device *logical_device, vk::Format& swapchain_image_format){
         if(instantiated){
             return;
         }
 
         createDescriptorSetLayout(logical_device);
-        createGraphicsPipeline(logical_device, swapchain_image_format);
+        createGraphicsPipeline(physical_device, logical_device, swapchain_image_format);
         instantiated = true;
     }
 
@@ -49,7 +49,7 @@ private:
 
     bool instantiated = false;
 
-    void createGraphicsPipeline(vk::raii::Device * logical_device, vk::Format& swapchain_image_format);
+    void createGraphicsPipeline(vk::raii::PhysicalDevice& physical_device, vk::raii::Device * logical_device, vk::Format& swapchain_image_format);
     vk::raii::ShaderModule createShaderModule(const std::vector<char>& code, vk::raii::Device * logical_device) const;
     void createDescriptorSetLayout(vk::raii::Device *logical_device);
 

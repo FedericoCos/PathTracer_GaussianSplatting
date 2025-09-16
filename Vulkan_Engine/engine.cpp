@@ -98,75 +98,6 @@ uint32_t Engine::findMemoryType(uint32_t type_filter, vk::MemoryPropertyFlags pr
     throw std::runtime_error("failed to find suitable memory type!");
 }
 
-static const char* VmaResultToString(VkResult r) {
-    switch (r) {
-        case VK_SUCCESS: return "VK_SUCCESS";
-        case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
-        case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
-        // add others if needed
-        default: return "VkResult(unknown)";
-    }
-}
-
-void Engine::createBuffer(
-    vk::DeviceSize size,
-    vk::BufferUsageFlags usage,
-    vk::MemoryPropertyFlags properties,
-    AllocatedBuffer &allocated_buffer)
-{
-    // Prepare VMA alloc info
-    VmaAllocationCreateInfo alloc_info = {};
-    alloc_info.usage = VMA_MEMORY_USAGE_AUTO;
-
-    // Decide flags by host-visible property
-    if ((properties & vk::MemoryPropertyFlagBits::eHostVisible) != vk::MemoryPropertyFlags{}) {
-        // Staging-like buffer: request mapped & sequential write host access
-        alloc_info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-    } else {
-        // Device-only buffer: no special flags (not mapped)
-        alloc_info.flags = 0;
-    }
-
-    // Fill VkBufferCreateInfo (use raw Vulkan struct via cast)
-    vk::BufferCreateInfo buffer_info{};
-    buffer_info.size = size;
-    buffer_info.usage = usage;
-    buffer_info.sharingMode = vk::SharingMode::eExclusive;
-
-
-    VkResult r = vmaCreateBuffer(vma_allocator, reinterpret_cast<VkBufferCreateInfo const*>(&buffer_info), 
-            &alloc_info, &allocated_buffer.buffer, &allocated_buffer.allocation, &allocated_buffer.info);
-    if (r != VK_SUCCESS) {
-        std::stringstream ss;
-        ss << "vmaCreateBuffer failed: " << VmaResultToString(r) << " (" << r << ")";
-        throw std::runtime_error(ss.str());
-    }
-}
-
-void Engine::copyBuffer(VkBuffer &src_buffer,VkBuffer &dst_buffer, vk::DeviceSize size)
-{
-    vk::CommandBufferAllocateInfo alloc_info;
-    alloc_info.commandPool = command_pool_copy;
-    alloc_info.level = vk::CommandBufferLevel::ePrimary;
-    alloc_info.commandBufferCount = 1;
-    vk::raii::CommandBuffer command_copy_buffer = std::move(logical_device -> allocateCommandBuffers(alloc_info).front());
-
-    vk::CommandBufferBeginInfo command_buffer_begin_info;
-    command_buffer_begin_info.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
-
-    command_copy_buffer.begin(command_buffer_begin_info);
-
-    command_copy_buffer.copyBuffer(src_buffer, dst_buffer, vk::BufferCopy(0, 0, size));
-
-    command_copy_buffer.end();
-
-    vk::SubmitInfo submit_info;
-    submit_info.commandBufferCount = 1;
-    submit_info.pCommandBuffers = &*command_copy_buffer;
-    graphics_presentation_queue.submit(submit_info, nullptr);
-    graphics_presentation_queue.waitIdle();
-}
-
 // ------ Init Functions
 
 bool Engine::initWindow(){
@@ -205,7 +136,7 @@ bool Engine::initVulkan(){
     }
 
     // Pipeline stage
-    pipeline_obj.init(logical_device, swapchain_image_format);
+    pipeline_obj.init(physical_device, logical_device, swapchain_image_format);
     graphics_pipeline_layout = pipeline_obj.getGraphicsPipelineLayout();
     graphics_pipeline = pipeline_obj.getGraphicsPipeline();
     descriptor_set_layout = pipeline_obj.getDescriptorSetLayout();
@@ -223,6 +154,13 @@ bool Engine::initVulkan(){
 
     // Command creation
     createCommandPool();
+
+    texture = image_obj.createTextureImage(vma_allocator, "resources/images/statue-1275469_960_720.jpg",
+                        logical_device, command_pool_copy, graphics_presentation_queue);
+    texture_sampler = image_obj.createTextureSampler(physical_device, logical_device);
+
+    image_obj.createDepthResources(physical_device, depth_image, swapchain_extent.width, swapchain_extent.height, vma_allocator, logical_device);
+
     createDataBuffer();
     createUniformBuffers();
     createDescriptorPool();
@@ -346,7 +284,7 @@ void Engine::createDataBuffer()
 
     AllocatedBuffer staging_allocated_buffer;
 
-    createBuffer(total_size, vk::BufferUsageFlagBits::eTransferSrc, 
+    createBuffer(vma_allocator, total_size, vk::BufferUsageFlagBits::eTransferSrc, 
         vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
     staging_allocated_buffer);
 
@@ -356,10 +294,11 @@ void Engine::createDataBuffer()
     memcpy(data, vertices.data(), vertex_size);
     memcpy((char *)data + vertex_size, indices.data(), index_size);
 
-    createBuffer(total_size, vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eIndexBuffer,
+    createBuffer(vma_allocator, total_size, vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eIndexBuffer,
                 vk::MemoryPropertyFlagBits::eDeviceLocal, data_buffer);
         
-    copyBuffer(staging_allocated_buffer.buffer, data_buffer.buffer, total_size);
+    copyBuffer(staging_allocated_buffer.buffer, data_buffer.buffer, total_size, 
+                command_pool_copy, logical_device, graphics_presentation_queue);
 
     vmaUnmapMemory(vma_allocator, staging_allocated_buffer.allocation);
     vmaDestroyBuffer(vma_allocator,staging_allocated_buffer.buffer, staging_allocated_buffer.allocation);
@@ -375,7 +314,7 @@ void Engine::createUniformBuffers()
 
     for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
         vk::DeviceSize buffer_size = sizeof(UniformBufferObject);
-        createBuffer(buffer_size, vk::BufferUsageFlagBits::eUniformBuffer,
+        createBuffer(vma_allocator, buffer_size, vk::BufferUsageFlagBits::eUniformBuffer,
                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
                 uniform_buffers[i]);
         vmaMapMemory(vma_allocator, uniform_buffers[i].allocation, &uniform_buffers_mapped[i]);
@@ -384,12 +323,15 @@ void Engine::createUniformBuffers()
 
 void Engine::createDescriptorPool()
 {
-    vk::DescriptorPoolSize pool_size(vk::DescriptorType::eUniformBuffer, MAX_FRAMES_IN_FLIGHT);
+    std::array bindings = {
+        vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, MAX_FRAMES_IN_FLIGHT),
+        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, MAX_FRAMES_IN_FLIGHT)
+    };
     vk::DescriptorPoolCreateInfo pool_info;
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     pool_info.maxSets = MAX_FRAMES_IN_FLIGHT;
-    pool_info.poolSizeCount = 1;
-    pool_info.pPoolSizes = &pool_size;
+    pool_info.poolSizeCount = bindings.size();
+    pool_info.pPoolSizes = bindings.data();
 
     descriptor_pool = vk::raii::DescriptorPool(*logical_device, pool_info);
 }
@@ -412,15 +354,32 @@ void Engine::createDescriptorSets()
         buffer_info.offset = 0;
         buffer_info.range = sizeof(UniformBufferObject);
 
-        vk::WriteDescriptorSet descriptor_write;
-        descriptor_write.dstSet = descriptor_sets[i];
-        descriptor_write.dstBinding = 0;
-        descriptor_write.dstArrayElement = 0;
-        descriptor_write.descriptorCount = 1;
-        descriptor_write.descriptorType = vk::DescriptorType::eUniformBuffer;
-        descriptor_write.pBufferInfo = &buffer_info;
+        vk::DescriptorImageInfo image_info = {};
+        image_info.sampler = texture_sampler;
+        image_info.imageView = texture.image_view;
+        image_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
-        logical_device -> updateDescriptorSets(descriptor_write, {});
+        vk::WriteDescriptorSet d1 = {};
+        d1.dstSet = descriptor_sets[i];
+        d1.dstBinding = 0;
+        d1.dstArrayElement = 0;
+        d1.descriptorCount = 1;
+        d1.descriptorType = vk::DescriptorType::eUniformBuffer;
+        d1.pBufferInfo = &buffer_info;
+
+        vk::WriteDescriptorSet d2 = {};
+        d2.dstSet = descriptor_sets[i];
+        d2.dstBinding = 1;
+        d2.dstArrayElement = 0;
+        d2.descriptorCount = 1;
+        d2.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        d2.pImageInfo = &image_info;
+
+        std::array descriptor_writes{
+            d1, d2
+        };
+
+        logical_device -> updateDescriptorSets(descriptor_writes, {});
     }
 }
 
@@ -451,6 +410,8 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     );
 
     vk::ClearValue clear_color = vk::ClearColorValue(0.f, 0.f, 0.f, 1.f);
+    vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
+
     vk::RenderingAttachmentInfo attachment_info;
     attachment_info.imageView = swapchain_image_views[image_index];
     attachment_info.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
@@ -458,12 +419,20 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     attachment_info.storeOp = vk::AttachmentStoreOp::eStore; // What to do at the image after operations
     attachment_info.clearValue = clear_color;
 
+    vk::RenderingAttachmentInfo depth_attachment_info = {};
+    depth_attachment_info.imageView = depth_image.image_view;
+    depth_attachment_info.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+    depth_attachment_info.loadOp = vk::AttachmentLoadOp::eClear;
+    depth_attachment_info.storeOp = vk::AttachmentStoreOp::eDontCare;
+    depth_attachment_info.clearValue = clear_depth;
+
     vk::RenderingInfo rendering_info;
     rendering_info.renderArea.offset = vk::Offset2D{0, 0};
     rendering_info.renderArea.extent = swapchain_extent;
     rendering_info.layerCount = 1;
     rendering_info.colorAttachmentCount = 1;
     rendering_info.pColorAttachments = &attachment_info;
+    rendering_info.pDepthAttachment = &depth_attachment_info;
 
     command_buffers[current_frame].beginRendering(rendering_info);
 
@@ -611,6 +580,14 @@ void Engine::cleanup(){
     in_flight_fences.clear();
     render_finished_semaphores.clear();
     present_complete_semaphores.clear();
+
+    // Destroying images and textures
+    vkDestroyImageView(**logical_device, texture.image_view, nullptr);
+    vmaDestroyImage(vma_allocator, texture.image, texture.allocation);
+
+    image_obj = {};
+
+    texture_sampler = nullptr;
 
     // Destroying sync objects
     command_buffers.clear();

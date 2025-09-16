@@ -9,11 +9,13 @@
 #include <algorithm>
 #include <stdio.h>
 #include <chrono>
+#include <array>
 
 #include <vulkan/vulkan_raii.hpp> // this library handles for us the vkCreateXXX
                                   // vkAllocateXXX, vkDestroyXXX, and vkFreeXXX
 #include <vulkan/vk_platform.h>
 
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -30,8 +32,9 @@
 
 // Structures used in all the project
 struct Vertex{
-    glm::vec2 pos;
+    glm::vec3 pos;
     glm::vec3 color;
+    glm::vec2 tex_coord;
 
     // Info needed to tell VUlkan how to pass Vertex data to the shader
     static vk::VertexInputBindingDescription getBindingDescription() {
@@ -40,10 +43,11 @@ struct Vertex{
         return {0, sizeof(Vertex), vk::VertexInputRate::eVertex};
     }
 
-    static std::array<vk::VertexInputAttributeDescription, 2> getAttributeDescriptions() {
+    static std::array<vk::VertexInputAttributeDescription, 3> getAttributeDescriptions() {
         return{
-            vk::VertexInputAttributeDescription(0, 0, vk::Format::eR32G32Sfloat, offsetof(Vertex, pos)),
-            vk::VertexInputAttributeDescription(1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, color))
+            vk::VertexInputAttributeDescription(0, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, pos)),
+            vk::VertexInputAttributeDescription(1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, color)),
+            vk::VertexInputAttributeDescription(2, 0, vk::Format::eR32G32Sfloat, offsetof(Vertex, tex_coord))
         };
     }
 };
@@ -55,9 +59,59 @@ struct AllocatedBuffer{
     VmaAllocationInfo info;
 };
 
+struct AllocatedImage{
+    VkImage image;
+    VmaAllocation allocation;
+    VkImageView image_view;
+    VkExtent3D image_extent;
+    VkFormat image_format;
+};
+
 
 struct UniformBufferObject {
     glm::mat4 model;
     glm::mat4 view;
     glm::mat4 proj;
 };
+
+
+// ------ Helper Functions
+
+static const char* VmaResultToString(VkResult r);
+
+vk::raii::CommandBuffer beginSingleTimeCommands(vk::raii::CommandPool& command_pool, vk::raii::Device *logical_device);
+
+void endSingleTimeCommands(vk::raii::CommandBuffer& command_buffer, vk::raii::Queue& queue);
+
+vk::Format findSupportedFormat(vk::raii::PhysicalDevice& physical_device, const std::vector<vk::Format>& candidates, vk::ImageTiling tiling, vk::FormatFeatureFlags features);
+
+bool hasStencilComponent(vk::Format format);
+
+vk::Format findDepthFormat(vk::raii::PhysicalDevice& physical_device);
+
+// ------ General Functions
+
+void createBuffer(
+    VmaAllocator& vma_allocator,
+    vk::DeviceSize size,
+    vk::BufferUsageFlags usage,
+    vk::MemoryPropertyFlags properties,
+    AllocatedBuffer &allocated_buffer);
+
+void copyBuffer(
+    VkBuffer &src_buffer,VkBuffer &dst_buffer, vk::DeviceSize size,
+    vk::raii::CommandPool& command_pool,
+    vk::raii::Device *logical_device,
+    vk::raii::Queue& queue
+);
+
+void copyBufferToImage(
+    const VkBuffer& buffer,
+    VkImage& image,
+    uint32_t width,
+    uint32_t height,
+    vk::raii::Device *logical_device, 
+    vk::raii::CommandPool &command_pool, 
+    vk::raii::Queue &queue
+);
+

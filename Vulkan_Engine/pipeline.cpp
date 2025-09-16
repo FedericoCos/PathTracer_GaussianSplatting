@@ -1,7 +1,7 @@
 #include "pipeline.h"
 
 
-void Pipeline::createGraphicsPipeline(vk::raii::Device * logical_device, vk::Format& swapchain_image_format){
+void Pipeline::createGraphicsPipeline(vk::raii::PhysicalDevice& physical_device, vk::raii::Device * logical_device, vk::Format& swapchain_image_format){
     vk::raii::ShaderModule vertex_shader_module = createShaderModule(readFile("shaders/basic/vertex.spv"), logical_device);
     vk::raii::ShaderModule frag_shader_module = createShaderModule(readFile("shaders/basic/fragment.spv"), logical_device);
 
@@ -56,6 +56,14 @@ void Pipeline::createGraphicsPipeline(vk::raii::Device * logical_device, vk::For
     multisampling.rasterizationSamples = vk::SampleCountFlagBits::e1;
     multisampling.sampleShadingEnable = vk::False; // Disabled for now
 
+    // Depth stencil information, for depth ordering
+    vk::PipelineDepthStencilStateCreateInfo depth_stencil = {};
+    depth_stencil.depthTestEnable = vk::True;
+    depth_stencil.depthWriteEnable = vk::True;
+    depth_stencil.depthCompareOp = vk::CompareOp::eLess;
+    depth_stencil.depthBoundsTestEnable = vk::False;
+    depth_stencil.stencilTestEnable = vk::False;
+
     vk::PipelineColorBlendAttachmentState color_blend_attachment;
     color_blend_attachment.blendEnable = vk::False;
     color_blend_attachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
@@ -83,9 +91,12 @@ void Pipeline::createGraphicsPipeline(vk::raii::Device * logical_device, vk::For
 
     graphics_pipeline_layout = vk::raii::PipelineLayout(*logical_device, pipeline_layout_info);
 
+    vk::Format depth_format = findDepthFormat(physical_device);
+
     vk::PipelineRenderingCreateInfo pipeline_rendering_create_info;
     pipeline_rendering_create_info.colorAttachmentCount = 1;
     pipeline_rendering_create_info.pColorAttachmentFormats = &swapchain_image_format;
+    pipeline_rendering_create_info.depthAttachmentFormat = depth_format;
 
     vk::GraphicsPipelineCreateInfo pipeline_info;
     pipeline_info.pNext = &pipeline_rendering_create_info;
@@ -99,6 +110,7 @@ void Pipeline::createGraphicsPipeline(vk::raii::Device * logical_device, vk::For
     pipeline_info.pColorBlendState = &color_blending;
     pipeline_info.pDynamicState = &dynamic_state;
     pipeline_info.layout = graphics_pipeline_layout;
+    pipeline_info.pDepthStencilState = &depth_stencil;
     pipeline_info.renderPass = nullptr; // Since I am using dynamic rendering instead of a traditional render pass
 
     graphics_pipeline = vk::raii::Pipeline(*logical_device, nullptr, pipeline_info);
@@ -115,10 +127,13 @@ vk::raii::ShaderModule Pipeline::createShaderModule(const std::vector<char>& cod
 
 void Pipeline::createDescriptorSetLayout(vk::raii::Device *logical_device)
 {
-    vk::DescriptorSetLayoutBinding uboLayoutBinding(0, vk::DescriptorType::eUniformBuffer, // position and type in shader
-                                            1, //Descriptor count ->Can be Array
-                                            vk::ShaderStageFlagBits::eVertex, nullptr);
-    vk::DescriptorSetLayoutCreateInfo layout_info({}, 1, &uboLayoutBinding);
+    std::array bindings = {
+        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBuffer, // position and type in buffer 
+            1, // Decriptor count -> Can be array
+            vk::ShaderStageFlagBits::eVertex, nullptr),
+        vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment)
+    };
+    vk::DescriptorSetLayoutCreateInfo layout_info({}, bindings.size(), bindings.data());
     descriptor_set_layout=vk::raii::DescriptorSetLayout(*logical_device, layout_info);
 }
 

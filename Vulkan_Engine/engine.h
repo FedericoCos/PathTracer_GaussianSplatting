@@ -10,6 +10,7 @@
 #include "device.h"
 #include "swapchain.h"
 #include "pipeline.h"
+#include "image.h"
 
 #include "vk_mem_alloc.h"
 
@@ -92,6 +93,13 @@ private:
     std::vector<vk::raii::CommandBuffer> command_buffers;
     vk::raii::CommandPool command_pool_copy = nullptr;
 
+    // Texture variables
+    Image image_obj;
+    AllocatedImage texture;
+    vk::raii::Sampler texture_sampler = nullptr;
+
+    AllocatedImage depth_image;
+
     // Synchronization variables
     std::vector<vk::raii::Semaphore> present_complete_semaphores;
     std::vector<vk::raii::Semaphore> render_finished_semaphores;
@@ -105,15 +113,23 @@ private:
 
     // Vertex data
     const std::vector<Vertex> vertices = {
-        {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-        {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-        {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
-        {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
+        {{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
+        {{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+        {{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
+        {{-0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}},
+
+        {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
+        {{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+        {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
+        {{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}}
     };
 
     const std::vector<uint16_t> indices = {
         0, 1, 2,
-        2, 3, 0
+        2, 3, 0,
+
+        4, 5, 6,
+        6, 7, 4
     };
     AllocatedBuffer data_buffer;
     vk::DeviceSize index_offset;
@@ -152,9 +168,6 @@ private:
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
 
     uint32_t findMemoryType(uint32_t type_filter, vk::MemoryPropertyFlags properties);
-
-    void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties, AllocatedBuffer& buffer_memory);
-    void copyBuffer(VkBuffer& src_buffer, VkBuffer& dst_buffer, vk::DeviceSize size);
 
     // ----- Init functions
     bool initWindow();

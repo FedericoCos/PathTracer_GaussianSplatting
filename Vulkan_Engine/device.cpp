@@ -58,6 +58,7 @@ bool Device::isDeviceSuitable(vk::raii::PhysicalDevice& device, bool descrete){
     >();
 
     bool supportsRequiredFeatures =
+        features.template get<vk::PhysicalDeviceFeatures2>().features.samplerAnisotropy &&
         features.template get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering &&
         features.template get<vk::PhysicalDeviceVulkan13Features>().synchronization2 &&
         features.template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState;
@@ -128,13 +129,16 @@ void Device::createLogicalDevice(vk::raii::SurfaceKHR& surface){
     vulkan13features.synchronization2 = true;
     vulkan13features.dynamicRendering = true;
 
+    vk::PhysicalDeviceFeatures2 deviceFeatures2 = {};
+    deviceFeatures2.features.samplerAnisotropy = true;
+
     vk::StructureChain<
     vk::PhysicalDeviceFeatures2,
     vk::PhysicalDeviceVulkan13Features,
     vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,
     vk::PhysicalDeviceBufferDeviceAddressFeatures
     > feature_chain{
-        vk::PhysicalDeviceFeatures2{},                           // No core features for now
+        deviceFeatures2,
         vulkan13features,           // dynamicRendering = true
         vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT{ VK_TRUE }, // extendedDynamicState = true
         vk::PhysicalDeviceBufferDeviceAddressFeatures { VK_TRUE }

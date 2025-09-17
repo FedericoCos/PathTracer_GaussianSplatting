@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <chrono>
 #include <array>
+#include <unordered_map>
 
 #include <vulkan/vulkan_raii.hpp> // this library handles for us the vkCreateXXX
                                   // vkAllocateXXX, vkDestroyXXX, and vkFreeXXX
@@ -28,6 +29,7 @@
 
 #include "stb_image.h"
 
+#include "tiny_obj_loader.h"
 
 
 // Structures used in all the project
@@ -50,7 +52,37 @@ struct Vertex{
             vk::VertexInputAttributeDescription(2, 0, vk::Format::eR32G32Sfloat, offsetof(Vertex, tex_coord))
         };
     }
+
+    bool operator==(const Vertex& other) const {
+        return pos == other.pos && color == other.color && tex_coord == other.tex_coord;
+    }
 };
+
+namespace std {
+    template<> struct hash<glm::vec2> {
+        std::size_t operator()(const glm::vec2& v) const {
+            return std::hash<float>()(v.x) ^ (std::hash<float>()(v.y) << 1);
+        }
+    };
+
+    template<> struct hash<glm::vec3> {
+        std::size_t operator()(const glm::vec3& v) const {
+            return std::hash<float>()(v.x) ^ (std::hash<float>()(v.y) << 1) ^ (std::hash<float>()(v.z) << 2);
+        }
+    };
+
+    // Custom specialization of std::hash for Vertex
+    template<> struct hash<Vertex> {
+        std::size_t operator()(const Vertex& vertex) const {
+            std::size_t h1 = std::hash<glm::vec3>()(vertex.pos);
+            std::size_t h2 = std::hash<glm::vec3>()(vertex.color);
+            std::size_t h3 = std::hash<glm::vec2>()(vertex.tex_coord);
+
+            // Combine the hash values
+            return h1 ^ (h2 << 1) ^ (h3 << 2);
+        }
+    };
+}
 
 
 struct AllocatedBuffer{

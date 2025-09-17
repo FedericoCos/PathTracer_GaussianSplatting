@@ -56,6 +56,9 @@ private:
     uint32_t win_width = 1280;
     uint32_t win_height = 800;
 
+    const std::string MODEL_PATH = "resources/Models/Test_models/HouseSuburban.obj";
+    const std::string TEXTURE_PATH = "resources/Models/Test_models/HouseSuburban_Base.png";
+
     // RAII context
     vk::raii::Context context;
 
@@ -112,25 +115,8 @@ private:
 
 
     // Vertex data
-    const std::vector<Vertex> vertices = {
-        {{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
-        {{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
-        {{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
-        {{-0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}},
-
-        {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
-        {{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
-        {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
-        {{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}}
-    };
-
-    const std::vector<uint16_t> indices = {
-        0, 1, 2,
-        2, 3, 0,
-
-        4, 5, 6,
-        6, 7, 4
-    };
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
     AllocatedBuffer data_buffer;
     vk::DeviceSize index_offset;
 
@@ -178,6 +164,7 @@ private:
     void createCommandPool();
     void createCommandBuffer();
     void createSyncObjects();
+    void loadModel();
     void createDataBuffer();
     void createUniformBuffers();
     void createDescriptorPool();

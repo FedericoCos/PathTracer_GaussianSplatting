@@ -9,6 +9,9 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "../Helpers/stb_image.h"
 
+#define TINYOBJLOADER_IMPLEMENTATION
+#include "../Helpers/tiny_obj_loader.h"
+
 
 // ------ Helper Functions
 std::vector<const char*> Engine::getRequiredExtensions(){
@@ -155,12 +158,13 @@ bool Engine::initVulkan(){
     // Command creation
     createCommandPool();
 
-    texture = image_obj.createTextureImage(vma_allocator, "resources/images/statue-1275469_960_720.jpg",
+    texture = image_obj.createTextureImage(vma_allocator, TEXTURE_PATH.c_str(),
                         logical_device, command_pool_copy, graphics_presentation_queue);
     texture_sampler = image_obj.createTextureSampler(physical_device, logical_device);
 
     image_obj.createDepthResources(physical_device, depth_image, swapchain_extent.width, swapchain_extent.height, vma_allocator, logical_device);
 
+    loadModel();
     createDataBuffer();
     createUniformBuffers();
     createDescriptorPool();
@@ -272,6 +276,47 @@ void Engine::createSyncObjects(){
 
     for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
         in_flight_fences.emplace_back(vk::raii::Fence(*logical_device, {vk::FenceCreateFlagBits::eSignaled}));
+    }
+}
+
+void Engine::loadModel()
+{
+    tinyobj::attrib_t attrib; // COntains all the positions, normals and texture coord
+    std::vector<tinyobj::shape_t> shapes; // Contains all the separate objects and their faces
+    std::vector<tinyobj::material_t> materials;
+    std::string warn, err;
+
+    if(!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, MODEL_PATH.c_str())){
+        throw std::runtime_error(warn + err);
+    }
+
+    std::unordered_map<Vertex, uint32_t> unique_vertices{};
+
+    for(const auto& shape : shapes){
+        for(const auto& index : shape.mesh.indices){
+            Vertex vertex{};
+
+            vertex.pos = {
+                attrib.vertices[3 * index.vertex_index + 0],
+                attrib.vertices[3 * index.vertex_index + 1],
+                attrib.vertices[3 * index.vertex_index + 2]
+            };
+
+            vertex.tex_coord = {
+                attrib.texcoords[2 * index.texcoord_index + 0],
+                1.0f - attrib.texcoords[2 * index.texcoord_index + 1]
+            };
+
+            vertex.color = {1.f, 1.f, 1.f};
+
+            if(unique_vertices.count(vertex) == 0){
+                unique_vertices[vertex] = static_cast<uint32_t>(vertices.size());
+                vertices.push_back(vertex);
+            }
+            indices.push_back(unique_vertices[vertex]);
+
+
+        }
     }
 }
 
@@ -439,7 +484,7 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     command_buffers[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *graphics_pipeline);
 
     command_buffers[current_frame].bindVertexBuffers(0, {data_buffer.buffer}, {0});
-    command_buffers[current_frame].bindIndexBuffer(data_buffer.buffer, index_offset, vk::IndexType::eUint16);
+    command_buffers[current_frame].bindIndexBuffer(data_buffer.buffer, index_offset, vk::IndexType::eUint32);
 
     command_buffers[current_frame].setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain_extent.width), static_cast<float>(swapchain_extent.height), 0.f, 1.f));
     command_buffers[current_frame].setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain_extent));
@@ -538,9 +583,11 @@ void Engine::updateUniformBuffer(uint32_t current_image)
     float time = std::chrono::duration<float, std::chrono::seconds::period>(current_time - start_time).count();
 
     UniformBufferObject ubo{};
-    ubo.model = rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    ubo.model = glm::scale(glm::mat4(1.0f), glm::vec3(0.3f, 0.3f, 0.3f));
+    ubo.model = glm::rotate(ubo.model, glm::radians(90.0f), glm::vec3(1.f, 0.f, 0.f));
+    // ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 
-    ubo.view = lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 
     ubo.proj = glm::perspective(glm::radians(45.0f), static_cast<float>(swapchain_extent.width) / static_cast<float>(swapchain_extent.height), 0.1f, 10.0f);
 
@@ -570,6 +617,10 @@ void Engine::recreateSwapChain(){
     for (auto& iv : swapchain_obj.getSwapchainImageViews()) {
         swapchain_image_views.push_back(std::move(iv));
     }
+
+    vkDestroyImageView(**logical_device, depth_image.image_view, nullptr);
+    vmaDestroyImage(vma_allocator, depth_image.image, depth_image.allocation);
+    image_obj.createDepthResources(physical_device, depth_image, swapchain_extent.width, swapchain_extent.height, vma_allocator, logical_device);
 
 }
 

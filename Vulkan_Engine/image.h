@@ -8,7 +8,7 @@ public:
     AllocatedImage createTextureImage(VmaAllocator& vma_allocator, const char * path, vk::raii::Device *logical_device,
                             vk::raii::CommandPool &command_pool, vk::raii::Queue &queue);
 
-    void createImage(uint32_t width, uint32_t height, uint32_t mip_levels, vk::Format format,vk::ImageTiling tiling, 
+    void createImage(uint32_t width, uint32_t height, uint32_t mip_levels, vk::SampleCountFlagBits num_samples, vk::Format format,vk::ImageTiling tiling, 
         vk::ImageUsageFlags usage, vk::MemoryPropertyFlags properties, AllocatedImage& image,
         VmaAllocator& vma_allocator, vk::raii::Device *logical_device);
 

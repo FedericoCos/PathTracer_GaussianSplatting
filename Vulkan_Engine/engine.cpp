@@ -166,6 +166,21 @@ void Engine::generateMipmaps(VkImage &image, VkFormat image_format, int32_t tex_
 
 }
 
+vk::SampleCountFlagBits Engine::getMaxUsableSampleCount()
+{
+    vk::PhysicalDeviceProperties physicalDeviceProperties = physical_device.getProperties();
+
+    vk::SampleCountFlags counts = physicalDeviceProperties.limits.framebufferColorSampleCounts & physicalDeviceProperties.limits.framebufferDepthSampleCounts;
+    if (counts & vk::SampleCountFlagBits::e64) { return vk::SampleCountFlagBits::e64; }
+    if (counts & vk::SampleCountFlagBits::e32) { return vk::SampleCountFlagBits::e32; }
+    if (counts & vk::SampleCountFlagBits::e16) { return vk::SampleCountFlagBits::e16; }
+    if (counts & vk::SampleCountFlagBits::e8) { return vk::SampleCountFlagBits::e8; }
+    if (counts & vk::SampleCountFlagBits::e4) { return vk::SampleCountFlagBits::e4; }
+    if (counts & vk::SampleCountFlagBits::e2) { return vk::SampleCountFlagBits::e2; }
+
+    return vk::SampleCountFlagBits::e1;
+}
+
 // ------ Init Functions
 
 bool Engine::initWindow(){
@@ -187,6 +202,7 @@ bool Engine::initVulkan(){
     // Get device and queues
     device_obj.init(instance, surface);
     physical_device = device_obj.getPhysicalDevice();
+    mssa_samples = getMaxUsableSampleCount();
     logical_device = device_obj.getLogicalDevice(); // It is a pointer, because a copy/move would cause a destruction of the logical device
                                                 // IMPORTANT !!!! If physical_device and logical_deice do not need to be accessed here, 
                                                 // remove and leave them in device

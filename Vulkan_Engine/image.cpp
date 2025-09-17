@@ -25,7 +25,7 @@ AllocatedImage Image::createTextureImage(VmaAllocator& vma_allocator, const char
 
     AllocatedImage texture_image;
     texture_image.mip_levels = static_cast<uint32_t>(std::floor(std::log2(std::max(tex_width, tex_height)))) + 1;
-    createImage(tex_width, tex_height, texture_image.mip_levels, vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal,
+    createImage(tex_width, tex_height, texture_image.mip_levels, vk::SampleCountFlagBits::e1, vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal,
                 vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
             vk::MemoryPropertyFlagBits::eDeviceLocal, texture_image, vma_allocator, logical_device);
     
@@ -42,7 +42,7 @@ AllocatedImage Image::createTextureImage(VmaAllocator& vma_allocator, const char
     return texture_image;
 }
 
-void Image::createImage(uint32_t width, uint32_t height, uint32_t mip_levels, vk::Format format, vk::ImageTiling tiling, vk::ImageUsageFlags usage, vk::MemoryPropertyFlags properties, AllocatedImage &image, VmaAllocator &vma_allocator, vk::raii::Device *logical_device)
+void Image::createImage(uint32_t width, uint32_t height, uint32_t mip_levels, vk::SampleCountFlagBits num_samples, vk::Format format, vk::ImageTiling tiling, vk::ImageUsageFlags usage, vk::MemoryPropertyFlags properties, AllocatedImage &image, VmaAllocator &vma_allocator, vk::raii::Device *logical_device)
 {
     vk::ImageCreateInfo image_info{};
     image_info.imageType = vk::ImageType::e2D;
@@ -56,6 +56,7 @@ void Image::createImage(uint32_t width, uint32_t height, uint32_t mip_levels, vk
     image_info.sharingMode = vk::SharingMode::eExclusive;
     image_info.initialLayout = vk::ImageLayout::eUndefined;
     image_info.mipLevels = mip_levels;
+    image_info.samples = num_samples;
 
     image.image_format = static_cast<VkFormat>(format);
     image.image_extent = vk::Extent3D{width, height, 1};
@@ -127,7 +128,7 @@ void Image::createDepthResources(vk::raii::PhysicalDevice& physical_device,
     vk::Format depthFormat = findDepthFormat(physical_device);
 
     depth_image.mip_levels = 1;
-    createImage(width, height, 1, depthFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, 
+    createImage(width, height, 1, vk::SampleCountFlagBits::e1, depthFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, 
                 vk::MemoryPropertyFlagBits::eDeviceLocal, depth_image, vma_allocator, logical_device);
 
 }

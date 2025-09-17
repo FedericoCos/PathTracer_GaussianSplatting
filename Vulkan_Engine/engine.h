@@ -128,6 +128,12 @@ private:
     vk::raii::DescriptorPool descriptor_pool = nullptr;
     std::vector<vk::raii::DescriptorSet> descriptor_sets;
 
+    // For multisampling
+    vk::SampleCountFlagBits mssa_samples = vk::SampleCountFlagBits::e1;
+    vk::raii::Image color_image = nullptr;
+    vk::raii::DeviceMemory color_image_memory = nullptr;
+    vk::raii::ImageView color_image_view = nullptr;
+
 
     // ----- Helper functions
     std::vector<const char*> getRequiredExtensions();
@@ -157,6 +163,8 @@ private:
 
     void generateMipmaps(VkImage& image, VkFormat image_format,
                         int32_t tex_width, int32_t tex_height, uint32_t mip_lvels);
+
+    vk::SampleCountFlagBits getMaxUsableSampleCount();
 
     // ----- Init functions
     bool initWindow();

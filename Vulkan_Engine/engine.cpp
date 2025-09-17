@@ -244,6 +244,15 @@ bool Engine::initVulkan(){
     generateMipmaps(texture.image, texture.image_format, texture.image_extent.width, texture.image_extent.height, texture.mip_levels);
     texture_sampler = image_obj.createTextureSampler(physical_device, logical_device, texture.mip_levels);
 
+    color_image.image_format = static_cast<VkFormat>(swapchain_image_format);
+    color_image.mip_levels = 1;
+    image_obj.createImage(swapchain_extent.width, swapchain_extent.height,
+                        1, mssa_samples, swapchain_image_format, vk::ImageTiling::eOptimal, 
+                    vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment, 
+                vk::MemoryPropertyFlagBits::eDeviceLocal, color_image, vma_allocator, logical_device);
+
+
+
     image_obj.createDepthResources(physical_device, depth_image, swapchain_extent.width, swapchain_extent.height, vma_allocator, logical_device);
 
     loadModel();
@@ -396,8 +405,6 @@ void Engine::loadModel()
                 vertices.push_back(vertex);
             }
             indices.push_back(unique_vertices[vertex]);
-
-
         }
     }
 }
@@ -538,13 +545,23 @@ void Engine::recordCommandBuffer(uint32_t image_index){
 
     vk::ClearValue clear_color = vk::ClearColorValue(0.f, 0.f, 0.f, 1.f);
     vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
+    vk::RenderingAttachmentInfo color_attachment_info{};
+    color_attachment_info.imageView = color_image.image_view;
+    color_attachment_info.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+    color_attachment_info.loadOp = vk::AttachmentLoadOp::eClear;
+    color_attachment_info.storeOp = vk::AttachmentStoreOp::eDontCare;
+    color_attachment_info.clearValue = clear_color;
 
-    vk::RenderingAttachmentInfo attachment_info;
+    color_attachment_info.resolveMode = vk::ResolveModeFlagBits::eAverage;
+    color_attachment_info.resolveImageView = swapchain_image_views[image_index];
+    color_attachment_info.resolveImageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+
+    /* vk::RenderingAttachmentInfo attachment_info;
     attachment_info.imageView = swapchain_image_views[image_index];
     attachment_info.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
     attachment_info.loadOp = vk::AttachmentLoadOp::eClear; // What to do at the image upon loading
     attachment_info.storeOp = vk::AttachmentStoreOp::eStore; // What to do at the image after operations
-    attachment_info.clearValue = clear_color;
+    attachment_info.clearValue = clear_color; */
 
     vk::RenderingAttachmentInfo depth_attachment_info = {};
     depth_attachment_info.imageView = depth_image.image_view;
@@ -558,7 +575,7 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     rendering_info.renderArea.extent = swapchain_extent;
     rendering_info.layerCount = 1;
     rendering_info.colorAttachmentCount = 1;
-    rendering_info.pColorAttachments = &attachment_info;
+    rendering_info.pColorAttachments = &color_attachment_info;
     rendering_info.pDepthAttachment = &depth_attachment_info;
 
     command_buffers[current_frame].beginRendering(rendering_info);

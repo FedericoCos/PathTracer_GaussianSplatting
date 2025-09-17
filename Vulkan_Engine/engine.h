@@ -130,9 +130,7 @@ private:
 
     // For multisampling
     vk::SampleCountFlagBits mssa_samples = vk::SampleCountFlagBits::e1;
-    vk::raii::Image color_image = nullptr;
-    vk::raii::DeviceMemory color_image_memory = nullptr;
-    vk::raii::ImageView color_image_view = nullptr;
+    AllocatedImage color_image;
 
 
     // ----- Helper functions

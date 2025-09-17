@@ -128,8 +128,8 @@ void Image::createDepthResources(vk::raii::PhysicalDevice& physical_device,
     vk::Format depthFormat = findDepthFormat(physical_device);
 
     depth_image.mip_levels = 1;
-    createImage(width, height, 1, vk::SampleCountFlagBits::e1, depthFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, 
-                vk::MemoryPropertyFlagBits::eDeviceLocal, depth_image, vma_allocator, logical_device);
+    createImage(width, height, 1, vk::SampleCountFlagBits::e8, depthFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, 
+                vk::MemoryPropertyFlagBits::eDeviceLocal, depth_image, vma_allocator, logical_device); // TO FIX HERE WITH MSAA
 
 }
 

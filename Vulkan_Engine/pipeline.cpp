@@ -53,7 +53,7 @@ void Pipeline::createGraphicsPipeline(vk::raii::PhysicalDevice& physical_device,
 
     // Important for antialiasing
     vk::PipelineMultisampleStateCreateInfo multisampling;
-    multisampling.rasterizationSamples = vk::SampleCountFlagBits::e1;
+    multisampling.rasterizationSamples = vk::SampleCountFlagBits::e8; // TO FIX!!!!!
     multisampling.sampleShadingEnable = vk::False; // Disabled for now
 
     // Depth stencil information, for depth ordering

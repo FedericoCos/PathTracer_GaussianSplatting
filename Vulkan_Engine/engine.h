@@ -155,6 +155,9 @@ private:
 
     uint32_t findMemoryType(uint32_t type_filter, vk::MemoryPropertyFlags properties);
 
+    void generateMipmaps(VkImage& image, VkFormat image_format,
+                        int32_t tex_width, int32_t tex_height, uint32_t mip_lvels);
+
     // ----- Init functions
     bool initWindow();
     bool initVulkan();

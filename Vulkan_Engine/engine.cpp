@@ -101,6 +101,71 @@ uint32_t Engine::findMemoryType(uint32_t type_filter, vk::MemoryPropertyFlags pr
     throw std::runtime_error("failed to find suitable memory type!");
 }
 
+void Engine::generateMipmaps(VkImage &image, VkFormat image_format, int32_t tex_width, int32_t tex_height, uint32_t mip_levels)
+{
+    vk::FormatProperties format_properties = physical_device.getFormatProperties(static_cast<vk::Format>(image_format));
+    if(!(format_properties.optimalTilingFeatures & vk::FormatFeatureFlagBits::eSampledImageFilterLinear)){
+        throw std::runtime_error("texture image format does not support linear blitting!");
+    }
+
+
+    vk::raii::CommandBuffer command_buffer = beginSingleTimeCommands(command_pool_copy, logical_device);
+    vk::ImageMemoryBarrier barrier(vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eTransferRead,
+                                vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal,
+                                vk::QueueFamilyIgnored, vk::QueueFamilyIgnored, image);
+    barrier.subresourceRange.aspectMask = static_cast<vk::ImageAspectFlags>(VK_IMAGE_ASPECT_COLOR_BIT);
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.subresourceRange.levelCount = 1;
+
+    int32_t mip_width = tex_width;
+    int32_t mip_height = tex_height;
+
+    for(uint32_t i = 1; i < mip_levels; i++){
+        barrier.subresourceRange.baseMipLevel = i - 1;
+        barrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+        barrier.newLayout = vk::ImageLayout::eTransferSrcOptimal;
+        barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+        barrier.dstAccessMask = vk::AccessFlagBits::eTransferRead;
+
+        command_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, barrier);
+
+        vk::ArrayWrapper1D<vk::Offset3D, 2> offsets, dst_offsets;
+        offsets[0] = vk::Offset3D(0, 0, 0);
+        offsets[1] = vk::Offset3D(mip_width, mip_height, 1);
+        dst_offsets[0] = vk::Offset3D(0, 0, 0);
+        dst_offsets[1] = vk::Offset3D(mip_width > 1 ? mip_width / 2 : 1, mip_height > 1 ? mip_height / 2 : 1, 1);
+        vk::ImageBlit blit = {};
+        blit.srcOffsets = offsets;
+        blit.dstOffsets = dst_offsets;
+        blit.srcSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, i - 1, 0, 1);
+        blit.dstSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, i, 0, 1);
+
+        command_buffer.blitImage(image, vk::ImageLayout::eTransferSrcOptimal, image, vk::ImageLayout::eTransferDstOptimal, { blit }, vk::Filter::eLinear);
+
+        barrier.oldLayout = vk::ImageLayout::eTransferSrcOptimal;
+        barrier.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        barrier.srcAccessMask = vk::AccessFlagBits::eTransferRead;
+        barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+        command_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, barrier);
+
+        if(mip_width > 1) mip_width /= 2;
+        if(mip_height > 1) mip_height /= 2;
+    }
+
+    barrier.subresourceRange.baseMipLevel = mip_levels - 1;
+    barrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+    barrier.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+    barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+
+    command_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, barrier);
+
+    endSingleTimeCommands(command_buffer, graphics_presentation_queue);
+
+
+}
+
 // ------ Init Functions
 
 bool Engine::initWindow(){
@@ -160,7 +225,8 @@ bool Engine::initVulkan(){
 
     texture = image_obj.createTextureImage(vma_allocator, TEXTURE_PATH.c_str(),
                         logical_device, command_pool_copy, graphics_presentation_queue);
-    texture_sampler = image_obj.createTextureSampler(physical_device, logical_device);
+    generateMipmaps(texture.image, texture.image_format, texture.image_extent.width, texture.image_extent.height, texture.mip_levels);
+    texture_sampler = image_obj.createTextureSampler(physical_device, logical_device, texture.mip_levels);
 
     image_obj.createDepthResources(physical_device, depth_image, swapchain_extent.width, swapchain_extent.height, vma_allocator, logical_device);
 

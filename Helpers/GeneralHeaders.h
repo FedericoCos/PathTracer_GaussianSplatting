@@ -97,6 +97,7 @@ struct AllocatedImage{
     VkImageView image_view;
     VkExtent3D image_extent;
     VkFormat image_format;
+    uint32_t mip_levels;
 };
 
 

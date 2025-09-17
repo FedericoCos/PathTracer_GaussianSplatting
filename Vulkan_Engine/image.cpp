@@ -24,21 +24,25 @@ AllocatedImage Image::createTextureImage(VmaAllocator& vma_allocator, const char
     stbi_image_free(pixels);
 
     AllocatedImage texture_image;
-    createImage(tex_width, tex_height, vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal,
-                vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
+    texture_image.mip_levels = static_cast<uint32_t>(std::floor(std::log2(std::max(tex_width, tex_height)))) + 1;
+    createImage(tex_width, tex_height, texture_image.mip_levels, vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal,
+                vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
             vk::MemoryPropertyFlagBits::eDeviceLocal, texture_image, vma_allocator, logical_device);
     
-    transitionImageLayout(texture_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, command_pool, logical_device, queue);
+    transitionImageLayout(texture_image.image, texture_image.mip_levels, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, command_pool, logical_device, queue);
     copyBufferToImage(staging_buffer.buffer, texture_image.image, static_cast<uint32_t>(tex_width), static_cast<uint32_t>(tex_height), logical_device, command_pool, queue);
-    transitionImageLayout(texture_image.image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, command_pool, logical_device, queue);
-
+    // transitionImageLayout(texture_image.image, texture_image.mip_levels, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, command_pool, logical_device, queue);
+    /**
+     * Each level will be transitioned to VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL 
+     * after the blit command reading from it is finished.
+     */
 
     vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
 
     return texture_image;
 }
 
-void Image::createImage(uint32_t width, uint32_t height, vk::Format format, vk::ImageTiling tiling, vk::ImageUsageFlags usage, vk::MemoryPropertyFlags properties, AllocatedImage &image, VmaAllocator &vma_allocator, vk::raii::Device *logical_device)
+void Image::createImage(uint32_t width, uint32_t height, uint32_t mip_levels, vk::Format format, vk::ImageTiling tiling, vk::ImageUsageFlags usage, vk::MemoryPropertyFlags properties, AllocatedImage &image, VmaAllocator &vma_allocator, vk::raii::Device *logical_device)
 {
     vk::ImageCreateInfo image_info{};
     image_info.imageType = vk::ImageType::e2D;
@@ -51,6 +55,7 @@ void Image::createImage(uint32_t width, uint32_t height, vk::Format format, vk::
     image_info.usage = usage;
     image_info.sharingMode = vk::SharingMode::eExclusive;
     image_info.initialLayout = vk::ImageLayout::eUndefined;
+    image_info.mipLevels = mip_levels;
 
     image.image_format = static_cast<VkFormat>(format);
     image.image_extent = vk::Extent3D{width, height, 1};
@@ -80,16 +85,18 @@ void Image::createImageView(AllocatedImage &image, VkImageAspectFlags aspect_fla
     view_info.image = image.image;
     view_info.format = image.image_format;
     view_info.subresourceRange.baseMipLevel = 0;
-    view_info.subresourceRange.levelCount = 1;
+    view_info.subresourceRange.levelCount = image.mip_levels;
     view_info.subresourceRange.baseArrayLayer = 0;
     view_info.subresourceRange.layerCount = 1;
     view_info.subresourceRange.aspectMask = aspect_flags;
+
+    std::cout << image.mip_levels << std::endl;
 
     vkCreateImageView(**logical_device, &view_info, nullptr, &image.image_view);
 
 }
 
-vk::raii::Sampler Image::createTextureSampler(vk::raii::PhysicalDevice& physical_device, vk::raii::Device *logical_device)
+vk::raii::Sampler Image::createTextureSampler(vk::raii::PhysicalDevice& physical_device, vk::raii::Device *logical_device, uint32_t mip_levels)
 {
     vk::PhysicalDeviceProperties properties = physical_device.getProperties();
     vk::SamplerCreateInfo sampl = {};
@@ -99,11 +106,13 @@ vk::raii::Sampler Image::createTextureSampler(vk::raii::PhysicalDevice& physical
     sampl.addressModeU = vk::SamplerAddressMode::eRepeat;
     sampl.addressModeV = vk::SamplerAddressMode::eRepeat;
     sampl.addressModeW = vk::SamplerAddressMode::eRepeat;
-    sampl.mipLodBias = 0.0f;
+    sampl.mipLodBias = 1;
     sampl.anisotropyEnable = vk::True;
     sampl.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
     sampl.compareEnable = vk::False;
     sampl.compareOp = vk::CompareOp::eAlways;
+    sampl.minLod = 1;
+    sampl.maxLod = static_cast<float>(mip_levels);
 
     return vk::raii::Sampler(*logical_device, sampl);
 
@@ -117,12 +126,13 @@ void Image::createDepthResources(vk::raii::PhysicalDevice& physical_device,
 {
     vk::Format depthFormat = findDepthFormat(physical_device);
 
-    createImage(width, height, depthFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, 
+    depth_image.mip_levels = 1;
+    createImage(width, height, 1, depthFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, 
                 vk::MemoryPropertyFlagBits::eDeviceLocal, depth_image, vma_allocator, logical_device);
 
 }
 
-void Image::transitionImageLayout(const vk::Image &image, vk::ImageLayout old_layout, vk::ImageLayout new_layout, vk::raii::CommandPool &command_pool, vk::raii::Device *logical_device, vk::raii::Queue &queue)
+void Image::transitionImageLayout(const vk::Image &image, uint32_t mip_levels, vk::ImageLayout old_layout, vk::ImageLayout new_layout, vk::raii::CommandPool &command_pool, vk::raii::Device *logical_device, vk::raii::Queue &queue)
 {
     auto command_buffer = beginSingleTimeCommands(command_pool, logical_device);
 
@@ -131,6 +141,7 @@ void Image::transitionImageLayout(const vk::Image &image, vk::ImageLayout old_la
     barrier.newLayout = new_layout;
     barrier.image = image;
     barrier.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+    barrier.subresourceRange.levelCount = mip_levels;
 
     vk::PipelineStageFlags source_stage;
     vk::PipelineStageFlags destination_stage;

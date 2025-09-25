@@ -74,7 +74,7 @@ void Engine::transition_image_layout(
         dependency_info.imageMemoryBarrierCount = 1;
         dependency_info.pImageMemoryBarriers = &barrier;
 
-        command_buffers[current_frame].pipelineBarrier2(dependency_info);
+        graphics_command_buffer[current_frame].pipelineBarrier2(dependency_info);
     }
 
 
@@ -109,7 +109,7 @@ void Engine::generateMipmaps(VkImage &image, VkFormat image_format, int32_t tex_
     }
 
 
-    vk::raii::CommandBuffer command_buffer = beginSingleTimeCommands(command_pool_copy, logical_device);
+    vk::raii::CommandBuffer command_buffer = beginSingleTimeCommands(command_pool_graphics, logical_device);
     vk::ImageMemoryBarrier barrier(vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eTransferRead,
                                 vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal,
                                 vk::QueueFamilyIgnored, vk::QueueFamilyIgnored, image);
@@ -161,7 +161,7 @@ void Engine::generateMipmaps(VkImage &image, VkFormat image_format, int32_t tex_
 
     command_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, barrier);
 
-    endSingleTimeCommands(command_buffer, graphics_presentation_queue);
+    endSingleTimeCommands(command_buffer, graphics_queue); // CHECK HERE
 
 
 }
@@ -200,13 +200,15 @@ bool Engine::initVulkan(){
     createSurface();
 
     // Get device and queues
-    device_obj.init(instance, surface);
-    physical_device = device_obj.getPhysicalDevice();
+    physical_device = Device::pickPhysicalDevice(*this);
     mssa_samples = getMaxUsableSampleCount();
-    logical_device = device_obj.getLogicalDevice(); // It is a pointer, because a copy/move would cause a destruction of the logical device
-                                                // IMPORTANT !!!! If physical_device and logical_deice do not need to be accessed here, 
-                                                // remove and leave them in device
-    graphics_presentation_queue = device_obj.getGraphicsQueue();
+    logical_device_bll = Device::createLogicalDevice(*this, queue_indices); 
+    graphics_queue = Device::getQueue(*this, queue_indices.graphics_family.value());
+    present_queue = Device::getQueue(*this, queue_indices.present_family.value());
+    transfer_queue = Device::getQueue(*this, queue_indices.transfer_family.value());
+
+
+    logical_device = &logical_device_bll; // TO REMOVE
 
 
     // Get swapchain and swapchain images
@@ -240,7 +242,7 @@ bool Engine::initVulkan(){
     createCommandPool();
 
     texture = image_obj.createTextureImage(vma_allocator, TEXTURE_PATH.c_str(),
-                        logical_device, command_pool_copy, graphics_presentation_queue);
+                        logical_device, command_pool_transfer, transfer_queue); // CHECK HERE
     generateMipmaps(texture.image, texture.image_format, texture.image_extent.width, texture.image_extent.height, texture.mip_levels);
     texture_sampler = image_obj.createTextureSampler(physical_device, logical_device, texture.mip_levels);
 
@@ -260,7 +262,7 @@ bool Engine::initVulkan(){
     createUniformBuffers();
     createDescriptorPool();
     createDescriptorSets();
-    createCommandBuffer();
+    createGraphicsCommandBuffers();
     createSyncObjects();
 
 
@@ -330,20 +332,21 @@ void Engine::createSurface(){
 void Engine::createCommandPool(){
     vk::CommandPoolCreateInfo pool_info;
     pool_info.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
-    pool_info.queueFamilyIndex = device_obj.getGraphicsIndex();
+    pool_info.queueFamilyIndex = queue_indices.graphics_family.value();
 
-    command_pool = vk::raii::CommandPool(*logical_device, pool_info);
+    command_pool_graphics = vk::raii::CommandPool(*logical_device, pool_info);
 
     pool_info.flags = vk::CommandPoolCreateFlagBits::eTransient;
+    pool_info.queueFamilyIndex = queue_indices.transfer_family.value();
 
-    command_pool_copy = vk::raii::CommandPool(*logical_device, pool_info);
+    command_pool_transfer = vk::raii::CommandPool(*logical_device, pool_info);
 }
 
-void Engine::createCommandBuffer(){
-    command_buffers.clear();
+void Engine::createGraphicsCommandBuffers(){
+    graphics_command_buffer.clear();
 
     vk::CommandBufferAllocateInfo alloc_info;
-    alloc_info.commandPool = command_pool;
+    alloc_info.commandPool = command_pool_graphics;
     /**
      * Level parameter specifies if the allocated command buffers are primary or secondary
      * primary -> can be submitted to a queue for execution, but cannot bel called from other command buffers
@@ -352,7 +355,7 @@ void Engine::createCommandBuffer(){
     alloc_info.level = vk::CommandBufferLevel::ePrimary; 
     alloc_info.commandBufferCount = MAX_FRAMES_IN_FLIGHT;
 
-    command_buffers = vk::raii::CommandBuffers(*logical_device, alloc_info);
+    graphics_command_buffer = vk::raii::CommandBuffers(*logical_device, alloc_info);
 }
 
 void Engine::createSyncObjects(){
@@ -432,7 +435,7 @@ void Engine::createDataBuffer()
                 vk::MemoryPropertyFlagBits::eDeviceLocal, data_buffer);
         
     copyBuffer(staging_allocated_buffer.buffer, data_buffer.buffer, total_size, 
-                command_pool_copy, logical_device, graphics_presentation_queue);
+                command_pool_transfer, logical_device, transfer_queue); // CHECK HERE
 
     vmaUnmapMemory(vma_allocator, staging_allocated_buffer.allocation);
     vmaDestroyBuffer(vma_allocator,staging_allocated_buffer.buffer, staging_allocated_buffer.allocation);
@@ -531,7 +534,7 @@ void Engine::run(){
 }
 
 void Engine::recordCommandBuffer(uint32_t image_index){
-    command_buffers[current_frame].begin({});
+    graphics_command_buffer[current_frame].begin({});
 
     transition_image_layout(
         image_index,
@@ -578,15 +581,15 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     rendering_info.pColorAttachments = &color_attachment_info;
     rendering_info.pDepthAttachment = &depth_attachment_info;
 
-    command_buffers[current_frame].beginRendering(rendering_info);
+    graphics_command_buffer[current_frame].beginRendering(rendering_info);
 
-    command_buffers[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *graphics_pipeline);
+    graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *graphics_pipeline);
 
-    command_buffers[current_frame].bindVertexBuffers(0, {data_buffer.buffer}, {0});
-    command_buffers[current_frame].bindIndexBuffer(data_buffer.buffer, index_offset, vk::IndexType::eUint32);
+    graphics_command_buffer[current_frame].bindVertexBuffers(0, {data_buffer.buffer}, {0});
+    graphics_command_buffer[current_frame].bindIndexBuffer(data_buffer.buffer, index_offset, vk::IndexType::eUint32);
 
-    command_buffers[current_frame].setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain_extent.width), static_cast<float>(swapchain_extent.height), 0.f, 1.f));
-    command_buffers[current_frame].setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain_extent));
+    graphics_command_buffer[current_frame].setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain_extent.width), static_cast<float>(swapchain_extent.height), 0.f, 1.f));
+    graphics_command_buffer[current_frame].setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain_extent));
     /**
      * vertexCount -> number of vertices
      * instanceCount -> used for instanced rendering, use 1 if not using it
@@ -595,11 +598,11 @@ void Engine::recordCommandBuffer(uint32_t image_index){
      */
     //command_buffers[current_frame].draw(vertices.size(), 1, 0, 0);
 
-    command_buffers[current_frame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *graphics_pipeline_layout, 0, *descriptor_sets[current_frame], nullptr);
-    command_buffers[current_frame].drawIndexed(indices.size(), 1, 0, 0, 0);
+    graphics_command_buffer[current_frame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *graphics_pipeline_layout, 0, *descriptor_sets[current_frame], nullptr);
+    graphics_command_buffer[current_frame].drawIndexed(indices.size(), 1, 0, 0, 0);
 
 
-    command_buffers[current_frame].endRendering();
+    graphics_command_buffer[current_frame].endRendering();
 
     transition_image_layout(
         image_index,
@@ -611,7 +614,7 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         vk::PipelineStageFlagBits2::eBottomOfPipe // a "sink" stage that ensures all prior work is finished before transitioning
     );
 
-    command_buffers[current_frame].end();
+    graphics_command_buffer[current_frame].end();
 }
 
 void Engine::drawFrame(){
@@ -635,7 +638,7 @@ void Engine::drawFrame(){
     }
 
     logical_device -> resetFences(*in_flight_fences[current_frame]);
-    command_buffers[current_frame].reset();
+    graphics_command_buffer[current_frame].reset();
     recordCommandBuffer(image_index);
 
     updateUniformBuffer(current_frame);
@@ -646,11 +649,11 @@ void Engine::drawFrame(){
     submit_info.pWaitSemaphores = &*present_complete_semaphores[semaphore_index];
     submit_info.pWaitDstStageMask = &wait_destination_stage_mask;
     submit_info.commandBufferCount = 1;
-    submit_info.pCommandBuffers = &*command_buffers[current_frame];
+    submit_info.pCommandBuffers = &*graphics_command_buffer[current_frame];
     submit_info.signalSemaphoreCount = 1;
     submit_info.pSignalSemaphores = &*render_finished_semaphores[image_index];
 
-    graphics_presentation_queue.submit(submit_info, *in_flight_fences[current_frame]);
+    graphics_queue.submit(submit_info, *in_flight_fences[current_frame]);
 
     vk::PresentInfoKHR present_info_KHR;
     present_info_KHR.waitSemaphoreCount = 1;
@@ -659,7 +662,7 @@ void Engine::drawFrame(){
     present_info_KHR.pSwapchains = &**swapchain;
     present_info_KHR.pImageIndices = &image_index;
 
-    result = graphics_presentation_queue.presentKHR(present_info_KHR);
+    result = present_queue.presentKHR(present_info_KHR);
     switch(result){
         case vk::Result::eSuccess: break;
         case vk::Result::eSuboptimalKHR:
@@ -740,9 +743,9 @@ void Engine::cleanup(){
     texture_sampler = nullptr;
 
     // Destroying sync objects
-    command_buffers.clear();
-    command_pool = nullptr;
-    command_pool_copy = nullptr;
+    graphics_command_buffer.clear();
+    command_pool_graphics = nullptr;
+    command_pool_transfer = nullptr;
 
     // Destroying uniform buffers objects
     for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
@@ -765,9 +768,6 @@ void Engine::cleanup(){
 
     // Destroying the allocator
     vmaDestroyAllocator(vma_allocator);
-
-    // delete device
-    device_obj = {};
 
     // Delete instance and windowig
     surface = nullptr;

@@ -46,6 +46,16 @@ public:
 
     void run();
 
+    // Instance variable
+    vk::raii::Instance instance = nullptr;
+
+    // Surface variables
+    vk::raii::SurfaceKHR surface = nullptr;
+
+    // Device Variables
+    vk::raii::PhysicalDevice physical_device = nullptr;
+    vk::raii::Device logical_device_bll = nullptr;
+
 
 
 
@@ -62,20 +72,16 @@ private:
     // RAII context
     vk::raii::Context context;
 
-    // Instance variable
-    vk::raii::Instance instance = nullptr;
-
     // Memory variable
     VmaAllocator vma_allocator;
 
     // Device variables
-    Device device_obj;
-    vk::raii::PhysicalDevice physical_device = nullptr;
-    vk::raii::Device * logical_device;
-    vk::raii::Queue graphics_presentation_queue = nullptr;
+    vk::raii::Queue graphics_queue = nullptr;
+    vk::raii::Queue present_queue = nullptr;
+    vk::raii::Queue transfer_queue = nullptr;
+    QueueFamilyIndices queue_indices;
 
-    // Surface variables
-    vk::raii::SurfaceKHR surface = nullptr;
+    vk::raii::Device *logical_device; // TODO 0001: REMOVE
 
     // Swapchain variables
     Swapchain swapchain_obj;
@@ -92,9 +98,9 @@ private:
     vk::raii::DescriptorSetLayout* descriptor_set_layout = nullptr;
 
     // Command pools variables
-    vk::raii::CommandPool command_pool = nullptr;
-    std::vector<vk::raii::CommandBuffer> command_buffers;
-    vk::raii::CommandPool command_pool_copy = nullptr;
+    vk::raii::CommandPool command_pool_graphics = nullptr;
+    std::vector<vk::raii::CommandBuffer> graphics_command_buffer;
+    vk::raii::CommandPool command_pool_transfer = nullptr;
 
     // Texture variables
     Image image_obj;
@@ -170,8 +176,10 @@ private:
 
     void createInstance();
     void createSurface();
+
     void createCommandPool();
-    void createCommandBuffer();
+    void createGraphicsCommandBuffers();
+
     void createSyncObjects();
     void loadModel();
     void createDataBuffer();

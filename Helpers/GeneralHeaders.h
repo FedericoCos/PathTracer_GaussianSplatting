@@ -11,6 +11,7 @@
 #include <chrono>
 #include <array>
 #include <unordered_map>
+#include <optional>
 
 #include <vulkan/vulkan_raii.hpp> // this library handles for us the vkCreateXXX
                                   // vkAllocateXXX, vkDestroyXXX, and vkFreeXXX
@@ -105,6 +106,18 @@ struct UniformBufferObject {
     glm::mat4 model;
     glm::mat4 view;
     glm::mat4 proj;
+};
+
+struct QueueFamilyIndices {
+    std::optional<uint32_t> graphics_family;
+    std::optional<uint32_t> present_family;
+    std::optional<uint32_t> transfer_family;
+
+    bool isComplete() const{
+        return graphics_family.has_value() && 
+            present_family.has_value() &&
+            transfer_family.has_value();
+    }
 };
 
 

@@ -1,6 +1,15 @@
 #include "device.h"
+#include "engine.h"
 
-bool Device::isDeviceSuitable(vk::raii::PhysicalDevice& device, bool descrete){
+std::vector<const char*> device_extensions = {
+    vk::KHRSwapchainExtensionName, // extension required for presenting rendered images to the window
+    vk::KHRSpirv14ExtensionName,
+    vk::KHRSynchronization2ExtensionName,
+    vk::KHRCreateRenderpass2ExtensionName
+};
+
+bool Device::isDeviceSuitable(const vk::raii::PhysicalDevice &device, bool descrete)
+{
     auto device_properties = device.getProperties();
     auto device_features = device.getFeatures();
 
@@ -31,22 +40,14 @@ bool Device::isDeviceSuitable(vk::raii::PhysicalDevice& device, bool descrete){
 
     // Check if all required device extensions are available
     auto available_device_extensions = device.enumerateDeviceExtensionProperties();
-    bool supports_all_required_extensions = true;
-    for(auto const& required_ext : device_extensions){
-        bool found = false;
-        for (auto const& available_ext : available_device_extensions){
-            if(strcmp(available_ext.extensionName, required_ext) == 0){
-                found = true;
-                break;
-            }
-        }
-        if(!found){
-            supports_all_required_extensions = false;
-            break;
-        }
+    
+    std::set<std::string> required_extensions(device_extensions.begin(), device_extensions.end());
+
+    for(const auto& extension : available_device_extensions){
+        required_extensions.erase(extension.extensionName);
     }
 
-    if(!supports_all_required_extensions){
+    if(!required_extensions.empty()){
         return false;
     }
 
@@ -68,61 +69,82 @@ bool Device::isDeviceSuitable(vk::raii::PhysicalDevice& device, bool descrete){
     return supportsRequiredFeatures;
 }
 
-
-void Device::pickPhysicalDevice(vk::raii::Instance& instance){
-    auto devices = instance.enumeratePhysicalDevices();
+vk::raii::PhysicalDevice Device::pickPhysicalDevice(const Engine& engine){
+    auto devices = engine.instance.enumeratePhysicalDevices();
 
     if(devices.empty()){
         throw std::runtime_error("failed to find GPUs with Vulkan support!");
     }
 
-    for(vk::raii::PhysicalDevice& device : devices){
+    // First, we look for a discrete GPU, generally much better than integrated
+    for(const vk::raii::PhysicalDevice& device : devices){
         std::cout << "Checking device: " << device.getProperties().deviceName << std::endl;
         if(isDeviceSuitable(device, true)){
-            physical_device = device;
             std::cout << "Picked device: "<< device.getProperties().deviceName << std::endl;
+            return device;
+        }
+    }
+
+    // If Discrete graphic not found, we look for an integrated one
+    for(const vk::raii::PhysicalDevice& device : devices){
+        std::cout << "Checking device: " << device.getProperties().deviceName << std::endl;
+        if(isDeviceSuitable(device, false)){
+            std::cout << "Picked device: "<< device.getProperties().deviceName << std::endl;
+            return device;
+        }
+    }
+
+    throw std::runtime_error("failed to find GPU with all the necessary features");
+}
+
+
+QueueFamilyIndices Device::findQueueFamilies(const Engine& engine){
+    QueueFamilyIndices indices;
+
+    // Get all queue families available on the physical device
+    std::vector<vk::QueueFamilyProperties> queue_family_properties = engine.physical_device.getQueueFamilyProperties();
+
+    uint32_t i = 0;
+    for(const auto& queue_family : queue_family_properties){
+        // Find a graphics queue
+        if(queue_family.queueFlags & vk::QueueFlagBits::eGraphics){
+            indices.graphics_family = i;
+        }
+
+        // Find a dedicated transfer queue (one that supports transfer but not graphics)
+        // usually faster for transfers because of DMA engine
+        if((queue_family.queueFlags & vk::QueueFlagBits::eTransfer) &&
+            !(queue_family.queueFlags & vk::QueueFlagBits::eGraphics)){
+            indices.transfer_family = i;
+        }
+
+        // Find a presentation queue
+        if(engine.physical_device.getSurfaceSupportKHR(i, *engine.surface)){
+            indices.present_family = i;
+        }
+
+        if(indices.isComplete()){
             break;
         }
+        i++;
     }
 
-    if(physical_device == nullptr){
-        for(vk::raii::PhysicalDevice& device : devices){
-            std::cout << "Checking device: " << device.getProperties().deviceName << std::endl;
-            if(isDeviceSuitable(device, false)){
-                physical_device = device;
-                std::cout << "Picked device: "<< device.getProperties().deviceName << std::endl;
-                break;
-            }
-        }
+    // Falling back to 
+    if(!indices.transfer_family.has_value() && indices.graphics_family.has_value()){
+        indices.transfer_family = indices.graphics_family;
     }
-
-    if(physical_device == nullptr){
-        throw std::runtime_error("failed to find GPU with all the necessary features");
-    }
+    return indices;
 }
 
-
-uint32_t Device::findQueueFamilies(vk::raii::SurfaceKHR& surface){
-    // Get all queue families available on the physical device
-    std::vector<vk::QueueFamilyProperties> queue_family_properties = physical_device.getQueueFamilyProperties();
-
-    // find first queue family in the list whose queueFlag contains the eGraphics
-    // eGraphics means it can submit graphics draw calls
-    for(uint32_t i = 0; i < queue_family_properties.size(); i++){
-        if((queue_family_properties[i].queueFlags & vk::QueueFlagBits::eGraphics) && 
-                physical_device.getSurfaceSupportKHR(i, surface)){
-                    return i;
-                }
-    }
-
-    // return the index of the found queue family
-    throw std::runtime_error("There is not a queu with both graphic and presentation");
-    return -1;
-}
-
-void Device::createLogicalDevice(vk::raii::SurfaceKHR& surface){
+vk::raii::Device Device::createLogicalDevice(const Engine &engine, QueueFamilyIndices &indices){
     // find the index of the first queue fammily that supports graphics
-    graphics_index = findQueueFamilies(surface);
+    indices = findQueueFamilies(engine);
+    std::set<uint32_t> unique_queue_families = {
+        indices.graphics_family.value(),
+        indices.present_family.value(),
+        indices.transfer_family.value()
+    };
+
 
     // query for Vulkan 1.3 features
     vk::PhysicalDeviceVulkan13Features vulkan13features;
@@ -145,17 +167,22 @@ void Device::createLogicalDevice(vk::raii::SurfaceKHR& surface){
     };
 
     // create a Device
-    float queue_priority = 0.0f; // priority goes from 0.0 to 1.0, it is required even for only 1
-    vk::DeviceQueueCreateInfo device_queue_create_info{
-        {},                // flags (usually none)
-        graphics_index,    // queue family index
-        1,                 // number of queues
-        &queue_priority    // pointer to priorities array
+    float queue_priority = 1.0f; // priority goes from 0.0 to 1.0, it is required even for only 1
+    std::vector<vk::DeviceQueueCreateInfo> device_queue_create_infos;
+    for(const uint32_t index : unique_queue_families){
+        device_queue_create_infos.push_back({
+            {}, // flags (usually none)
+            index, // queue family index
+            1, // number of queues from this family
+            &queue_priority // priority
+        });
     };
+
+
     vk::DeviceCreateInfo device_create_info{
         {},                               // flags (usually none)
-        1,                                // queueCreateInfoCount
-        &device_queue_create_info,        // pQueueCreateInfos
+        static_cast<uint32_t>(device_queue_create_infos.size()),                                // queueCreateInfoCount
+        device_queue_create_infos.data(),        // pQueueCreateInfos
         0,                                // enabledLayerCount (deprecated in Vulkan 1.0+)
         nullptr,                          // ppEnabledLayerNames (deprecated)
         static_cast<uint32_t>(device_extensions.size()), // enabledExtensionCount
@@ -164,7 +191,10 @@ void Device::createLogicalDevice(vk::raii::SurfaceKHR& surface){
         &feature_chain.get<vk::PhysicalDeviceFeatures2>()    // pNext -> features chain
     };
 
-    logical_device = vk::raii::Device(physical_device, device_create_info);
-    graphics_presentation_queue = vk::raii::Queue( logical_device, graphics_index, 0 );
+    return std::move(vk::raii::Device(engine.physical_device, device_create_info));
+}
+
+vk::raii::Queue Device::getQueue(const Engine &engine, const uint32_t &index){
+    return std::move(vk::raii::Queue(engine.logical_device_bll, index, 0));
 }
 

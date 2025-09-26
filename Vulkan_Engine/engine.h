@@ -46,6 +46,9 @@ public:
 
     void run();
 
+    // Window variables
+    GLFWwindow *window;
+
     // Instance variable
     vk::raii::Instance instance = nullptr;
 
@@ -56,13 +59,19 @@ public:
     vk::raii::PhysicalDevice physical_device = nullptr;
     vk::raii::Device logical_device_bll = nullptr;
 
+    // Swapchain variables
+    std::vector<vk::Image> swapchain_images;
+    vk::Format swapchain_image_format;
+    std::vector<vk::raii::ImageView> swapchain_image_views;
+    vk::raii::SwapchainKHR swapchain = nullptr;
+    vk::Extent2D swapchain_extent;
+
 
 
 
 private:
 
     // Window variables
-    GLFWwindow *window;
     uint32_t win_width = 1280;
     uint32_t win_height = 800;
 
@@ -82,14 +91,6 @@ private:
     QueueFamilyIndices queue_indices;
 
     vk::raii::Device *logical_device; // TODO 0001: REMOVE
-
-    // Swapchain variables
-    Swapchain swapchain_obj;
-    vk::raii::SwapchainKHR * swapchain;
-    std::vector<vk::Image> swapchain_images;
-    vk::Format swapchain_image_format;
-    vk::Extent2D swapchain_extent;
-    std::vector<vk::raii::ImageView> swapchain_image_views;
 
     // Pipeline variables
     Pipeline pipeline_obj;

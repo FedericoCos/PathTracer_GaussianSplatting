@@ -1,4 +1,5 @@
 #include "swapchain.h"
+#include "engine.h"
 
 
 vk::Format Swapchain::chooseSwapSurfaceFormat(const std::vector<vk::SurfaceFormatKHR>& available_formats){
@@ -31,17 +32,17 @@ vk::PresentModeKHR Swapchain::chooseSwapPresentMode(const std::vector<vk::Presen
 }
 
 
-void Swapchain::createSwapChain(vk::raii::PhysicalDevice& physical_device, vk::raii::Device * logical_device, vk::raii::SurfaceKHR& surface, GLFWwindow * window){
-    auto surface_capabilities = physical_device.getSurfaceCapabilitiesKHR(surface);
-    swapchain_image_format = chooseSwapSurfaceFormat(physical_device.getSurfaceFormatsKHR(surface));
-    swapchain_extent = chooseSwapExtent(surface_capabilities, window);
+vk::raii::SwapchainKHR Swapchain::createSwapChain(Engine &engine, vk::Format &swapchain_image_format, vk::Extent2D &swapchain_extent){
+    auto surface_capabilities = engine.physical_device.getSurfaceCapabilitiesKHR(engine.surface);
+    swapchain_image_format = chooseSwapSurfaceFormat(engine.physical_device.getSurfaceFormatsKHR(engine.surface));
+    swapchain_extent = chooseSwapExtent(surface_capabilities, engine.window);
 
     auto min_image_count = std::max(3u, surface_capabilities.minImageCount);
     min_image_count = (surface_capabilities.maxImageCount > 0 && min_image_count > surface_capabilities.maxImageCount) ?
                         surface_capabilities.maxImageCount : min_image_count;
     
     vk::SwapchainCreateInfoKHR swapchain_create_info;
-    swapchain_create_info.surface = surface;
+    swapchain_create_info.surface = engine.surface;
     swapchain_create_info.minImageCount = min_image_count;
     swapchain_create_info.imageFormat = swapchain_image_format;
     swapchain_create_info.imageColorSpace = vk::ColorSpaceKHR::eSrgbNonlinear;
@@ -51,14 +52,14 @@ void Swapchain::createSwapChain(vk::raii::PhysicalDevice& physical_device, vk::r
     swapchain_create_info.imageSharingMode = vk::SharingMode::eExclusive;
     swapchain_create_info.preTransform = surface_capabilities.currentTransform;
     swapchain_create_info.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
-    swapchain_create_info.presentMode = chooseSwapPresentMode(physical_device.getSurfacePresentModesKHR(surface));
+    swapchain_create_info.presentMode = chooseSwapPresentMode(engine.physical_device.getSurfacePresentModesKHR(engine.surface));
     swapchain_create_info.clipped = true;
 
-    swapchain = vk::raii::SwapchainKHR(*logical_device,  swapchain_create_info);
-    swapchain_images = swapchain.getImages();
+    return std::move(vk::raii::SwapchainKHR(engine.logical_device_bll, swapchain_create_info));
 }
 
-void Swapchain::createImageViews(vk::raii::Device * logical_device){
+std::vector<vk::raii::ImageView> Swapchain::createImageViews(Engine &engine, const vk::Format &swapchain_image_format, const std::vector<vk::Image> &swapchain_images){
+    std::vector<vk::raii::ImageView> swapchain_image_views;
     swapchain_image_views.clear();
 
     vk::ImageViewCreateInfo imageview_create_info;
@@ -66,24 +67,17 @@ void Swapchain::createImageViews(vk::raii::Device * logical_device){
     imageview_create_info.format = swapchain_image_format;
     imageview_create_info.subresourceRange = { 
         vk::ImageAspectFlagBits::eColor, // aspectMask
-        0, // baseMipLevel
+        0, // baseMipLevel 
         1, // levelCount
         0, // baseArrayLayer
         1};// layerCount -> how many images compose the single image (multiple needed for stereographic app)
 
     for(auto image : swapchain_images){
         imageview_create_info.image = image;
-        swapchain_image_views.emplace_back(*logical_device, imageview_create_info);
+        swapchain_image_views.emplace_back(engine.logical_device_bll, imageview_create_info);
     }
-}
 
-
-void Swapchain::recreateSwapChain(vk::raii::PhysicalDevice& physical_device, vk::raii::Device * logical_device,vk::raii::SurfaceKHR& surface, GLFWwindow * window){
-    swapchain_image_views.clear();
-    swapchain = nullptr;
-
-    createSwapChain(physical_device, logical_device, surface, window);
-    createImageViews(logical_device);
+    return swapchain_image_views;
 }
 
 

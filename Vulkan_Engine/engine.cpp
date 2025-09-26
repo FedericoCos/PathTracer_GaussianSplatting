@@ -212,14 +212,9 @@ bool Engine::initVulkan(){
 
 
     // Get swapchain and swapchain images
-    swapchain_obj.init(physical_device, logical_device, surface, window);
-    swapchain = swapchain_obj.getSwapchain();
-    swapchain_images = swapchain_obj.getSwapchainImages();
-    swapchain_image_format = swapchain_obj.getSwapchainImageFormat();
-    swapchain_extent = swapchain_obj.getSwapchainExtent();
-    for (auto& iv : swapchain_obj.getSwapchainImageViews()) {
-        swapchain_image_views.push_back(std::move(iv));
-    }
+    swapchain = Swapchain::createSwapChain(*this, swapchain_image_format, swapchain_extent);
+    swapchain_images = swapchain.getImages();
+    swapchain_image_views = Swapchain::createImageViews(*this, swapchain_image_format, swapchain_images);
 
     // Pipeline stage
     pipeline_obj.init(physical_device, logical_device, swapchain_image_format);
@@ -626,7 +621,7 @@ void Engine::drawFrame(){
     }
 
     // Waiting for the previous frame to complete
-    auto [result, image_index] = swapchain->acquireNextImage(UINT64_MAX, *present_complete_semaphores[semaphore_index], nullptr);
+    auto [result, image_index] = swapchain.acquireNextImage(UINT64_MAX, *present_complete_semaphores[semaphore_index], nullptr);
 
     if(result == vk::Result::eErrorOutOfDateKHR){
         framebuffer_resized = false;
@@ -659,7 +654,7 @@ void Engine::drawFrame(){
     present_info_KHR.waitSemaphoreCount = 1;
     present_info_KHR.pWaitSemaphores = &*render_finished_semaphores[image_index];
     present_info_KHR.swapchainCount = 1;
-    present_info_KHR.pSwapchains = &**swapchain;
+    present_info_KHR.pSwapchains = &*swapchain;
     present_info_KHR.pImageIndices = &image_index;
 
     result = present_queue.presentKHR(present_info_KHR);
@@ -709,16 +704,12 @@ void Engine::recreateSwapChain(){
     logical_device -> waitIdle();
 
     swapchain_image_views.clear();
-    swapchain_obj.recreateSwapChain(physical_device, logical_device, surface, window);
+    swapchain = nullptr;
     
 
-    swapchain = swapchain_obj.getSwapchain();
-    swapchain_images = swapchain_obj.getSwapchainImages();
-    swapchain_image_format = swapchain_obj.getSwapchainImageFormat();
-    swapchain_extent = swapchain_obj.getSwapchainExtent();
-    for (auto& iv : swapchain_obj.getSwapchainImageViews()) {
-        swapchain_image_views.push_back(std::move(iv));
-    }
+    swapchain = Swapchain::createSwapChain(*this, swapchain_image_format, swapchain_extent);
+    swapchain_images = swapchain.getImages();
+    swapchain_image_views = Swapchain::createImageViews(*this, swapchain_image_format, swapchain_images);
 
     vkDestroyImageView(**logical_device, depth_image.image_view, nullptr);
     vmaDestroyImage(vma_allocator, depth_image.image, depth_image.allocation);
@@ -763,8 +754,8 @@ void Engine::cleanup(){
     pipeline_obj = {};
 
     // Delete swapchain
-    swapchain_obj = {};
     swapchain_image_views.clear();
+    swapchain = nullptr;
 
     // Destroying the allocator
     vmaDestroyAllocator(vma_allocator);

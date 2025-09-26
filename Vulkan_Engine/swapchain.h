@@ -10,8 +10,7 @@ class Engine;
 
 
 namespace Swapchain{
-    vk::raii::SwapchainKHR createSwapChain(Engine &engine, vk::Format &swapchain_image_format, vk::Extent2D &swapchain_extent);
-    std::vector<vk::raii::ImageView> createImageViews(Engine &engine, const vk::Format &swapchain_image_format, const std::vector<vk::Image> &swapchain_images);
+    SwapChainBundle createSwapChain(Engine &engine);
 
     vk::Format chooseSwapSurfaceFormat(const std::vector<vk::SurfaceFormatKHR>& available_formats);
     vk::Extent2D chooseSwapExtent(const vk::SurfaceCapabilitiesKHR& capabilities, GLFWwindow * window);

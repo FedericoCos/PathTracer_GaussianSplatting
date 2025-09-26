@@ -58,13 +58,13 @@ public:
     // Device Variables
     vk::raii::PhysicalDevice physical_device = nullptr;
     vk::raii::Device logical_device_bll = nullptr;
+    QueueFamilyIndices queue_indices;
 
     // Swapchain variables
-    std::vector<vk::Image> swapchain_images;
-    vk::Format swapchain_image_format;
-    std::vector<vk::raii::ImageView> swapchain_image_views;
-    vk::raii::SwapchainKHR swapchain = nullptr;
-    vk::Extent2D swapchain_extent;
+    SwapChainBundle swapchain;
+
+    // Pipeline variables
+    vk::raii::DescriptorSetLayout descriptor_set_layout = nullptr;
 
 
 
@@ -88,15 +88,12 @@ private:
     vk::raii::Queue graphics_queue = nullptr;
     vk::raii::Queue present_queue = nullptr;
     vk::raii::Queue transfer_queue = nullptr;
-    QueueFamilyIndices queue_indices;
 
     vk::raii::Device *logical_device; // TODO 0001: REMOVE
 
     // Pipeline variables
-    Pipeline pipeline_obj;
-    vk::raii::PipelineLayout* graphics_pipeline_layout = nullptr;
-    vk::raii::Pipeline* graphics_pipeline = nullptr;
-    vk::raii::DescriptorSetLayout* descriptor_set_layout = nullptr;
+    vk::raii::PipelineLayout graphics_pipeline_layout = nullptr;
+    vk::raii::Pipeline graphics_pipeline = nullptr;
 
     // Command pools variables
     vk::raii::CommandPool command_pool_graphics = nullptr;

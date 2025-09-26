@@ -32,39 +32,54 @@ vk::PresentModeKHR Swapchain::chooseSwapPresentMode(const std::vector<vk::Presen
 }
 
 
-vk::raii::SwapchainKHR Swapchain::createSwapChain(Engine &engine, vk::Format &swapchain_image_format, vk::Extent2D &swapchain_extent){
+SwapChainBundle Swapchain::createSwapChain(Engine &engine){
+    SwapChainBundle swapchain;
+
     auto surface_capabilities = engine.physical_device.getSurfaceCapabilitiesKHR(engine.surface);
-    swapchain_image_format = chooseSwapSurfaceFormat(engine.physical_device.getSurfaceFormatsKHR(engine.surface));
-    swapchain_extent = chooseSwapExtent(surface_capabilities, engine.window);
+    swapchain.format = chooseSwapSurfaceFormat(engine.physical_device.getSurfaceFormatsKHR(engine.surface));
+    swapchain.extent = chooseSwapExtent(surface_capabilities, engine.window);
 
     auto min_image_count = std::max(3u, surface_capabilities.minImageCount);
     min_image_count = (surface_capabilities.maxImageCount > 0 && min_image_count > surface_capabilities.maxImageCount) ?
                         surface_capabilities.maxImageCount : min_image_count;
     
+
+    uint32_t queue_family_indices[] = {engine.queue_indices.graphics_family.value(),
+                                        engine.queue_indices.present_family.value()};
+
     vk::SwapchainCreateInfoKHR swapchain_create_info;
     swapchain_create_info.surface = engine.surface;
     swapchain_create_info.minImageCount = min_image_count;
-    swapchain_create_info.imageFormat = swapchain_image_format;
+    swapchain_create_info.imageFormat = swapchain.format;
     swapchain_create_info.imageColorSpace = vk::ColorSpaceKHR::eSrgbNonlinear;
-    swapchain_create_info.imageExtent = swapchain_extent;
+    swapchain_create_info.imageExtent = swapchain.extent;
     swapchain_create_info.imageArrayLayers = 1;
     swapchain_create_info.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
-    swapchain_create_info.imageSharingMode = vk::SharingMode::eExclusive;
     swapchain_create_info.preTransform = surface_capabilities.currentTransform;
     swapchain_create_info.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
     swapchain_create_info.presentMode = chooseSwapPresentMode(engine.physical_device.getSurfacePresentModesKHR(engine.surface));
     swapchain_create_info.clipped = true;
 
-    return std::move(vk::raii::SwapchainKHR(engine.logical_device_bll, swapchain_create_info));
-}
+    if(queue_family_indices[0] != queue_family_indices[1]){
+        swapchain_create_info.imageSharingMode = vk::SharingMode::eConcurrent;
+        swapchain_create_info.queueFamilyIndexCount = 2;
+        swapchain_create_info.pQueueFamilyIndices = queue_family_indices;
+    }
+    else{
+        swapchain_create_info.imageSharingMode = vk::SharingMode::eExclusive;
+        swapchain_create_info.queueFamilyIndexCount = 0;
+        swapchain_create_info.pQueueFamilyIndices = nullptr;
+    }
 
-std::vector<vk::raii::ImageView> Swapchain::createImageViews(Engine &engine, const vk::Format &swapchain_image_format, const std::vector<vk::Image> &swapchain_images){
-    std::vector<vk::raii::ImageView> swapchain_image_views;
-    swapchain_image_views.clear();
+    swapchain.swapchain = vk::raii::SwapchainKHR(engine.logical_device_bll, swapchain_create_info);
+
+    swapchain.images = swapchain.swapchain.getImages();
+
+    swapchain.image_views.clear();
 
     vk::ImageViewCreateInfo imageview_create_info;
     imageview_create_info.viewType = vk::ImageViewType::e2D;
-    imageview_create_info.format = swapchain_image_format;
+    imageview_create_info.format = swapchain.format;
     imageview_create_info.subresourceRange = { 
         vk::ImageAspectFlagBits::eColor, // aspectMask
         0, // baseMipLevel 
@@ -72,12 +87,12 @@ std::vector<vk::raii::ImageView> Swapchain::createImageViews(Engine &engine, con
         0, // baseArrayLayer
         1};// layerCount -> how many images compose the single image (multiple needed for stereographic app)
 
-    for(auto image : swapchain_images){
+    for(auto image : swapchain.images){
         imageview_create_info.image = image;
-        swapchain_image_views.emplace_back(engine.logical_device_bll, imageview_create_info);
+        swapchain.image_views.emplace_back(engine.logical_device_bll, imageview_create_info);
     }
 
-    return swapchain_image_views;
+    return std::move(swapchain);
 }
 
 

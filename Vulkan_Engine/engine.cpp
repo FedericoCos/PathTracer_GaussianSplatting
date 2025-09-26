@@ -62,7 +62,7 @@ void Engine::transition_image_layout(
         barrier.newLayout = new_layout;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = swapchain_images[image_index];
+        barrier.image = swapchain.images[image_index];
         barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
         barrier.subresourceRange.baseMipLevel = 0;
         barrier.subresourceRange.levelCount = 1;
@@ -212,15 +212,18 @@ bool Engine::initVulkan(){
 
 
     // Get swapchain and swapchain images
-    swapchain = Swapchain::createSwapChain(*this, swapchain_image_format, swapchain_extent);
-    swapchain_images = swapchain.getImages();
-    swapchain_image_views = Swapchain::createImageViews(*this, swapchain_image_format, swapchain_images);
+    swapchain = Swapchain::createSwapChain(*this);
+
+    if(swapchain.image_views.empty() || swapchain.image_views.size() <= 0){
+        std::cout << "Problem with the image views" << std::endl;
+    }
+    if(swapchain.images.empty() || swapchain.images.size() <= 0){
+        std::cout << "Problem with the images" << std::endl;
+    }
 
     // Pipeline stage
-    pipeline_obj.init(physical_device, logical_device, swapchain_image_format);
-    graphics_pipeline_layout = pipeline_obj.getGraphicsPipelineLayout();
-    graphics_pipeline = pipeline_obj.getGraphicsPipeline();
-    descriptor_set_layout = pipeline_obj.getDescriptorSetLayout();
+    descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this);
+    graphics_pipeline = Pipeline::createGraphicsPipeline(*this, graphics_pipeline_layout);
 
     VmaAllocatorCreateInfo allocator_info{};
     allocator_info.physicalDevice = *physical_device;
@@ -241,16 +244,16 @@ bool Engine::initVulkan(){
     generateMipmaps(texture.image, texture.image_format, texture.image_extent.width, texture.image_extent.height, texture.mip_levels);
     texture_sampler = image_obj.createTextureSampler(physical_device, logical_device, texture.mip_levels);
 
-    color_image.image_format = static_cast<VkFormat>(swapchain_image_format);
+    color_image.image_format = static_cast<VkFormat>(swapchain.format);
     color_image.mip_levels = 1;
-    image_obj.createImage(swapchain_extent.width, swapchain_extent.height,
-                        1, mssa_samples, swapchain_image_format, vk::ImageTiling::eOptimal, 
+    image_obj.createImage(swapchain.extent.width, swapchain.extent.height,
+                        1, mssa_samples, swapchain.format, vk::ImageTiling::eOptimal, 
                     vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment, 
                 vk::MemoryPropertyFlagBits::eDeviceLocal, color_image, vma_allocator, logical_device);
 
 
 
-    image_obj.createDepthResources(physical_device, depth_image, swapchain_extent.width, swapchain_extent.height, vma_allocator, logical_device);
+    image_obj.createDepthResources(physical_device, depth_image, swapchain.extent.width, swapchain.extent.height, vma_allocator, logical_device);
 
     loadModel();
     createDataBuffer();
@@ -358,7 +361,7 @@ void Engine::createSyncObjects(){
     render_finished_semaphores.clear();
     in_flight_fences.clear();
 
-    for(size_t i = 0; i < swapchain_images.size(); i++){
+    for(size_t i = 0; i < swapchain.images.size(); i++){
         present_complete_semaphores.emplace_back(vk::raii::Semaphore(*logical_device, vk::SemaphoreCreateInfo()));
         render_finished_semaphores.emplace_back(vk::raii::Semaphore(*logical_device, vk::SemaphoreCreateInfo()));
     }
@@ -470,7 +473,7 @@ void Engine::createDescriptorPool()
 
 void Engine::createDescriptorSets()
 {
-    std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, **descriptor_set_layout);
+    std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *descriptor_set_layout);
     vk::DescriptorSetAllocateInfo alloc_info;
     alloc_info.descriptorPool = descriptor_pool;
     alloc_info.descriptorSetCount = static_cast<uint32_t>(layouts.size());
@@ -551,7 +554,7 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     color_attachment_info.clearValue = clear_color;
 
     color_attachment_info.resolveMode = vk::ResolveModeFlagBits::eAverage;
-    color_attachment_info.resolveImageView = swapchain_image_views[image_index];
+    color_attachment_info.resolveImageView = swapchain.image_views[image_index];
     color_attachment_info.resolveImageLayout = vk::ImageLayout::eColorAttachmentOptimal;
 
     /* vk::RenderingAttachmentInfo attachment_info;
@@ -570,7 +573,7 @@ void Engine::recordCommandBuffer(uint32_t image_index){
 
     vk::RenderingInfo rendering_info;
     rendering_info.renderArea.offset = vk::Offset2D{0, 0};
-    rendering_info.renderArea.extent = swapchain_extent;
+    rendering_info.renderArea.extent = swapchain.extent;
     rendering_info.layerCount = 1;
     rendering_info.colorAttachmentCount = 1;
     rendering_info.pColorAttachments = &color_attachment_info;
@@ -583,8 +586,8 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     graphics_command_buffer[current_frame].bindVertexBuffers(0, {data_buffer.buffer}, {0});
     graphics_command_buffer[current_frame].bindIndexBuffer(data_buffer.buffer, index_offset, vk::IndexType::eUint32);
 
-    graphics_command_buffer[current_frame].setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain_extent.width), static_cast<float>(swapchain_extent.height), 0.f, 1.f));
-    graphics_command_buffer[current_frame].setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain_extent));
+    graphics_command_buffer[current_frame].setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain.extent.width), static_cast<float>(swapchain.extent.height), 0.f, 1.f));
+    graphics_command_buffer[current_frame].setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain.extent));
     /**
      * vertexCount -> number of vertices
      * instanceCount -> used for instanced rendering, use 1 if not using it
@@ -621,7 +624,7 @@ void Engine::drawFrame(){
     }
 
     // Waiting for the previous frame to complete
-    auto [result, image_index] = swapchain.acquireNextImage(UINT64_MAX, *present_complete_semaphores[semaphore_index], nullptr);
+    auto [result, image_index] = swapchain.swapchain.acquireNextImage(UINT64_MAX, *present_complete_semaphores[semaphore_index], nullptr);
 
     if(result == vk::Result::eErrorOutOfDateKHR){
         framebuffer_resized = false;
@@ -654,7 +657,7 @@ void Engine::drawFrame(){
     present_info_KHR.waitSemaphoreCount = 1;
     present_info_KHR.pWaitSemaphores = &*render_finished_semaphores[image_index];
     present_info_KHR.swapchainCount = 1;
-    present_info_KHR.pSwapchains = &*swapchain;
+    present_info_KHR.pSwapchains = &*swapchain.swapchain;
     present_info_KHR.pImageIndices = &image_index;
 
     result = present_queue.presentKHR(present_info_KHR);
@@ -686,7 +689,7 @@ void Engine::updateUniformBuffer(uint32_t current_image)
 
     ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 
-    ubo.proj = glm::perspective(glm::radians(45.0f), static_cast<float>(swapchain_extent.width) / static_cast<float>(swapchain_extent.height), 0.1f, 10.0f);
+    ubo.proj = glm::perspective(glm::radians(45.0f), static_cast<float>(swapchain.extent.width) / static_cast<float>(swapchain.extent.height), 0.1f, 10.0f);
 
     ubo.proj[1][1] *= -1;
 
@@ -703,17 +706,15 @@ void Engine::recreateSwapChain(){
 
     logical_device -> waitIdle();
 
-    swapchain_image_views.clear();
-    swapchain = nullptr;
+    swapchain.image_views.clear();
+    swapchain.swapchain = nullptr;
     
 
-    swapchain = Swapchain::createSwapChain(*this, swapchain_image_format, swapchain_extent);
-    swapchain_images = swapchain.getImages();
-    swapchain_image_views = Swapchain::createImageViews(*this, swapchain_image_format, swapchain_images);
+    swapchain = Swapchain::createSwapChain(*this);
 
     vkDestroyImageView(**logical_device, depth_image.image_view, nullptr);
     vmaDestroyImage(vma_allocator, depth_image.image, depth_image.allocation);
-    image_obj.createDepthResources(physical_device, depth_image, swapchain_extent.width, swapchain_extent.height, vma_allocator, logical_device);
+    image_obj.createDepthResources(physical_device, depth_image, swapchain.extent.width, swapchain.extent.height, vma_allocator, logical_device);
 
 }
 
@@ -751,11 +752,11 @@ void Engine::cleanup(){
     vmaDestroyBuffer(vma_allocator,data_buffer.buffer, data_buffer.allocation);
 
     // Delete pipeline objs
-    pipeline_obj = {};
+    
 
     // Delete swapchain
-    swapchain_image_views.clear();
-    swapchain = nullptr;
+    swapchain.image_views.clear();
+    swapchain.swapchain = nullptr;
 
     // Destroying the allocator
     vmaDestroyAllocator(vma_allocator);

@@ -120,6 +120,14 @@ struct QueueFamilyIndices {
     }
 };
 
+struct SwapChainBundle{
+    vk::raii::SwapchainKHR swapchain = nullptr;
+    std::vector<vk::Image> images;
+    std::vector<vk::raii::ImageView> image_views;
+    vk::Format format;
+    vk::Extent2D extent;
+};
+
 
 // ------ Helper Functions
 

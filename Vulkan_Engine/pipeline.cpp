@@ -1,9 +1,10 @@
 #include "pipeline.h"
+#include "engine.h"
 
 
-void Pipeline::createGraphicsPipeline(vk::raii::PhysicalDevice& physical_device, vk::raii::Device * logical_device, vk::Format& swapchain_image_format){
-    vk::raii::ShaderModule vertex_shader_module = createShaderModule(readFile("shaders/basic/vertex.spv"), logical_device);
-    vk::raii::ShaderModule frag_shader_module = createShaderModule(readFile("shaders/basic/fragment.spv"), logical_device);
+vk::raii::Pipeline Pipeline::createGraphicsPipeline(Engine &engine, vk::raii::PipelineLayout &pipeline_layout){
+    vk::raii::ShaderModule vertex_shader_module = createShaderModule(readFile("shaders/basic/vertex.spv"), &engine.logical_device_bll);
+    vk::raii::ShaderModule frag_shader_module = createShaderModule(readFile("shaders/basic/fragment.spv"), &engine.logical_device_bll);
 
     vk::PipelineShaderStageCreateInfo vert_shader_stage_info;
     vert_shader_stage_info.stage = vk::ShaderStageFlagBits::eVertex;
@@ -86,16 +87,16 @@ void Pipeline::createGraphicsPipeline(vk::raii::PhysicalDevice& physical_device,
 
     vk::PipelineLayoutCreateInfo pipeline_layout_info; 
     pipeline_layout_info.setLayoutCount = 1;
-    pipeline_layout_info.pSetLayouts = &*descriptor_set_layout;
+    pipeline_layout_info.pSetLayouts = &*engine.descriptor_set_layout;
     pipeline_layout_info.pushConstantRangeCount = 0;
 
-    graphics_pipeline_layout = vk::raii::PipelineLayout(*logical_device, pipeline_layout_info);
+    pipeline_layout = vk::raii::PipelineLayout(engine.logical_device_bll, pipeline_layout_info);
 
-    vk::Format depth_format = findDepthFormat(physical_device);
+    vk::Format depth_format = findDepthFormat(engine.physical_device);
 
     vk::PipelineRenderingCreateInfo pipeline_rendering_create_info;
     pipeline_rendering_create_info.colorAttachmentCount = 1;
-    pipeline_rendering_create_info.pColorAttachmentFormats = &swapchain_image_format;
+    pipeline_rendering_create_info.pColorAttachmentFormats = &engine.swapchain.format;
     pipeline_rendering_create_info.depthAttachmentFormat = depth_format;
 
     vk::GraphicsPipelineCreateInfo pipeline_info;
@@ -109,14 +110,14 @@ void Pipeline::createGraphicsPipeline(vk::raii::PhysicalDevice& physical_device,
     pipeline_info.pMultisampleState = &multisampling;
     pipeline_info.pColorBlendState = &color_blending;
     pipeline_info.pDynamicState = &dynamic_state;
-    pipeline_info.layout = graphics_pipeline_layout;
+    pipeline_info.layout = pipeline_layout;
     pipeline_info.pDepthStencilState = &depth_stencil;
     pipeline_info.renderPass = nullptr; // Since I am using dynamic rendering instead of a traditional render pass
 
-    graphics_pipeline = vk::raii::Pipeline(*logical_device, nullptr, pipeline_info);
+    return std::move(vk::raii::Pipeline(engine.logical_device_bll, nullptr, pipeline_info));
 }
 
-vk::raii::ShaderModule Pipeline::createShaderModule(const std::vector<char>& code, vk::raii::Device * logical_device) const{
+vk::raii::ShaderModule Pipeline::createShaderModule(const std::vector<char>& code, vk::raii::Device * logical_device){
     vk::ShaderModuleCreateInfo create_info;
     create_info.codeSize = code.size() * sizeof(char);
     create_info.pCode = reinterpret_cast<const uint32_t*>(code.data());
@@ -125,7 +126,7 @@ vk::raii::ShaderModule Pipeline::createShaderModule(const std::vector<char>& cod
     return shader_module;
 }
 
-void Pipeline::createDescriptorSetLayout(vk::raii::Device *logical_device)
+vk::raii::DescriptorSetLayout Pipeline::createDescriptorSetLayout(Engine &engine)
 {
     std::array bindings = {
         vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBuffer, // position and type in buffer 
@@ -134,7 +135,8 @@ void Pipeline::createDescriptorSetLayout(vk::raii::Device *logical_device)
         vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment)
     };
     vk::DescriptorSetLayoutCreateInfo layout_info({}, bindings.size(), bindings.data());
-    descriptor_set_layout=vk::raii::DescriptorSetLayout(*logical_device, layout_info);
+
+    return std::move(vk::raii::DescriptorSetLayout(engine.logical_device_bll, layout_info));
 }
 
 std::vector<char> Pipeline::readFile(const std::string& filename){

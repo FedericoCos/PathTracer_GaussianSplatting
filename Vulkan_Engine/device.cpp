@@ -195,6 +195,6 @@ vk::raii::Device Device::createLogicalDevice(const Engine &engine, QueueFamilyIn
 }
 
 vk::raii::Queue Device::getQueue(const Engine &engine, const uint32_t &index){
-    return std::move(vk::raii::Queue(engine.logical_device_bll, index, 0));
+    return std::move(vk::raii::Queue(engine.logical_device, index, 0));
 }
 

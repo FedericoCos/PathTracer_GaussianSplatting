@@ -86,19 +86,69 @@ namespace std {
 }
 
 
-struct AllocatedBuffer{
-    VkBuffer buffer;
-    VmaAllocation allocation;
-    VmaAllocationInfo info;
+struct AllocatedBuffer {
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VmaAllocation allocation = VK_NULL_HANDLE;
+    VmaAllocator* p_allocator = nullptr;
+    VmaAllocationInfo info = {};
+
+    AllocatedBuffer() = default;
+
+    // Destructor handles cleanup automatically!
+    ~AllocatedBuffer() {
+        if (buffer != VK_NULL_HANDLE && p_allocator != nullptr) {
+            vmaDestroyBuffer(*p_allocator, buffer, allocation);
+        }
+    }
+
+    // Disable copy
+    AllocatedBuffer(const AllocatedBuffer&) = delete;
+    AllocatedBuffer& operator=(const AllocatedBuffer&) = delete;
+
+    // Move constructor
+    AllocatedBuffer(AllocatedBuffer&& other) noexcept
+        : buffer(other.buffer),
+          allocation(other.allocation),
+          p_allocator(other.p_allocator),
+          info(other.info) {
+        // Reset other to safe state
+        other.buffer = VK_NULL_HANDLE;
+        other.allocation = VK_NULL_HANDLE;
+        other.p_allocator = nullptr;
+        other.info = {};
+    }
+
+    // Move assignment
+    AllocatedBuffer& operator=(AllocatedBuffer&& other) noexcept {
+        if (this != &other) {
+            // Clean up existing
+            if (buffer != VK_NULL_HANDLE && p_allocator != nullptr) {
+                vmaDestroyBuffer(*p_allocator, buffer, allocation);
+            }
+
+            // Transfer ownership
+            buffer = other.buffer;
+            allocation = other.allocation;
+            p_allocator = other.p_allocator;
+            info = other.info;
+
+            // Reset other
+            other.buffer = VK_NULL_HANDLE;
+            other.allocation = VK_NULL_HANDLE;
+            other.p_allocator = nullptr;
+            other.info = {};
+        }
+        return *this;
+    }
 };
 
 struct AllocatedImage{
     VkImage image;
     VmaAllocation allocation;
-    VkImageView image_view;
     VkExtent3D image_extent;
     VkFormat image_format;
     uint32_t mip_levels;
+    vk::raii::ImageView image_view{nullptr};
 };
 
 

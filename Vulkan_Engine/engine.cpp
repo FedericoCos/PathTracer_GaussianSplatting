@@ -101,71 +101,6 @@ uint32_t Engine::findMemoryType(uint32_t type_filter, vk::MemoryPropertyFlags pr
     throw std::runtime_error("failed to find suitable memory type!");
 }
 
-void Engine::generateMipmaps(VkImage &image, VkFormat image_format, int32_t tex_width, int32_t tex_height, uint32_t mip_levels)
-{
-    vk::FormatProperties format_properties = physical_device.getFormatProperties(static_cast<vk::Format>(image_format));
-    if(!(format_properties.optimalTilingFeatures & vk::FormatFeatureFlagBits::eSampledImageFilterLinear)){
-        throw std::runtime_error("texture image format does not support linear blitting!");
-    }
-
-
-    vk::raii::CommandBuffer command_buffer = beginSingleTimeCommands(command_pool_graphics, logical_device);
-    vk::ImageMemoryBarrier barrier(vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eTransferRead,
-                                vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal,
-                                vk::QueueFamilyIgnored, vk::QueueFamilyIgnored, image);
-    barrier.subresourceRange.aspectMask = static_cast<vk::ImageAspectFlags>(VK_IMAGE_ASPECT_COLOR_BIT);
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-    barrier.subresourceRange.levelCount = 1;
-
-    int32_t mip_width = tex_width;
-    int32_t mip_height = tex_height;
-
-    for(uint32_t i = 1; i < mip_levels; i++){
-        barrier.subresourceRange.baseMipLevel = i - 1;
-        barrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
-        barrier.newLayout = vk::ImageLayout::eTransferSrcOptimal;
-        barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
-        barrier.dstAccessMask = vk::AccessFlagBits::eTransferRead;
-
-        command_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, barrier);
-
-        vk::ArrayWrapper1D<vk::Offset3D, 2> offsets, dst_offsets;
-        offsets[0] = vk::Offset3D(0, 0, 0);
-        offsets[1] = vk::Offset3D(mip_width, mip_height, 1);
-        dst_offsets[0] = vk::Offset3D(0, 0, 0);
-        dst_offsets[1] = vk::Offset3D(mip_width > 1 ? mip_width / 2 : 1, mip_height > 1 ? mip_height / 2 : 1, 1);
-        vk::ImageBlit blit = {};
-        blit.srcOffsets = offsets;
-        blit.dstOffsets = dst_offsets;
-        blit.srcSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, i - 1, 0, 1);
-        blit.dstSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, i, 0, 1);
-
-        command_buffer.blitImage(image, vk::ImageLayout::eTransferSrcOptimal, image, vk::ImageLayout::eTransferDstOptimal, { blit }, vk::Filter::eLinear);
-
-        barrier.oldLayout = vk::ImageLayout::eTransferSrcOptimal;
-        barrier.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-        barrier.srcAccessMask = vk::AccessFlagBits::eTransferRead;
-        barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
-        command_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, barrier);
-
-        if(mip_width > 1) mip_width /= 2;
-        if(mip_height > 1) mip_height /= 2;
-    }
-
-    barrier.subresourceRange.baseMipLevel = mip_levels - 1;
-    barrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
-    barrier.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-    barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
-    barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
-
-    command_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, barrier);
-
-    endSingleTimeCommands(command_buffer, graphics_queue); // CHECK HERE
-
-
-}
-
 vk::SampleCountFlagBits Engine::getMaxUsableSampleCount()
 {
     vk::PhysicalDeviceProperties physicalDeviceProperties = physical_device.getProperties();
@@ -179,6 +114,47 @@ vk::SampleCountFlagBits Engine::getMaxUsableSampleCount()
     if (counts & vk::SampleCountFlagBits::e2) { return vk::SampleCountFlagBits::e2; }
 
     return vk::SampleCountFlagBits::e1;
+}
+
+void Engine::process_input()
+{
+    input = glm::vec4(0.f);
+
+    if(glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS){
+        input.x = -1.f;
+    }
+    if(glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS){
+        input.x = 1.f;
+    }
+    if(glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS){
+        input.z = 1.f;
+    }
+    if(glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS){
+        input.z = -1.f;
+    }
+
+    if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
+        double xpos, ypos;
+        glfwGetCursorPos(window, &xpos, &ypos);
+
+        if (firstClick) {
+            lastX = xpos;
+            lastY = ypos;
+            firstClick = false;
+        }
+
+        double xoffset = xpos - lastX;
+        double yoffset = ypos - lastY;
+
+        lastX = xpos;
+        lastY = ypos;
+
+        input.y = static_cast<float>(-yoffset); 
+        input.w = static_cast<float>(-xoffset);
+
+    } else {
+        firstClick = true; 
+    }
 }
 
 // ------ Init Functions
@@ -202,13 +178,10 @@ bool Engine::initVulkan(){
     // Get device and queues
     physical_device = Device::pickPhysicalDevice(*this);
     mssa_samples = getMaxUsableSampleCount();
-    logical_device_bll = Device::createLogicalDevice(*this, queue_indices); 
+    logical_device = Device::createLogicalDevice(*this, queue_indices); 
     graphics_queue = Device::getQueue(*this, queue_indices.graphics_family.value());
     present_queue = Device::getQueue(*this, queue_indices.present_family.value());
     transfer_queue = Device::getQueue(*this, queue_indices.transfer_family.value());
-
-
-    logical_device = &logical_device_bll; // TO REMOVE
 
 
     // Get swapchain and swapchain images
@@ -225,9 +198,10 @@ bool Engine::initVulkan(){
     descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this);
     graphics_pipeline = Pipeline::createGraphicsPipeline(*this, graphics_pipeline_layout);
 
+    // Memory Allocator stage
     VmaAllocatorCreateInfo allocator_info{};
     allocator_info.physicalDevice = *physical_device;
-    allocator_info.device = **logical_device;
+    allocator_info.device = *logical_device;
     allocator_info.instance = *instance;              
     allocator_info.vulkanApiVersion = VK_API_VERSION_1_4;
     allocator_info.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
@@ -239,21 +213,16 @@ bool Engine::initVulkan(){
     // Command creation
     createCommandPool();
 
-    texture = image_obj.createTextureImage(vma_allocator, TEXTURE_PATH.c_str(),
-                        logical_device, command_pool_transfer, transfer_queue); // CHECK HERE
-    generateMipmaps(texture.image, texture.image_format, texture.image_extent.width, texture.image_extent.height, texture.mip_levels);
-    texture_sampler = image_obj.createTextureSampler(physical_device, logical_device, texture.mip_levels);
+    // Texture and image resources
+    texture = Image::createTextureImage(*this, TEXTURE_PATH.c_str());
+    texture_sampler = Image::createTextureSampler(physical_device, &logical_device, texture.mip_levels);
 
-    color_image.image_format = static_cast<VkFormat>(swapchain.format);
-    color_image.mip_levels = 1;
-    image_obj.createImage(swapchain.extent.width, swapchain.extent.height,
+    color_image = Image::createImage(swapchain.extent.width, swapchain.extent.height,
                         1, mssa_samples, swapchain.format, vk::ImageTiling::eOptimal, 
                     vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment, 
-                vk::MemoryPropertyFlagBits::eDeviceLocal, color_image, vma_allocator, logical_device);
-
-
-
-    image_obj.createDepthResources(physical_device, depth_image, swapchain.extent.width, swapchain.extent.height, vma_allocator, logical_device);
+                vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
+    color_image.image_view = Image::createImageView(color_image, *this);
+    Image::createDepthResources(physical_device, depth_image, swapchain.extent.width, swapchain.extent.height, *this);
 
     loadModel();
     createDataBuffer();
@@ -263,6 +232,9 @@ bool Engine::initVulkan(){
     createGraphicsCommandBuffers();
     createSyncObjects();
 
+    camera = Camera(glm::vec3(0.f, 1.5f, 8.f), glm::vec3(0.f, 0.f, -1.f), glm::vec3(0.f, 1.f, 0.f), 45.f, swapchain.extent.width * 1.0 / swapchain.extent.height, 0.1f, 100.f);
+    
+    prev_time = std::chrono::high_resolution_clock::now();
 
     return true;
 }
@@ -332,43 +304,12 @@ void Engine::createCommandPool(){
     pool_info.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
     pool_info.queueFamilyIndex = queue_indices.graphics_family.value();
 
-    command_pool_graphics = vk::raii::CommandPool(*logical_device, pool_info);
+    command_pool_graphics = vk::raii::CommandPool(logical_device, pool_info);
 
     pool_info.flags = vk::CommandPoolCreateFlagBits::eTransient;
     pool_info.queueFamilyIndex = queue_indices.transfer_family.value();
 
-    command_pool_transfer = vk::raii::CommandPool(*logical_device, pool_info);
-}
-
-void Engine::createGraphicsCommandBuffers(){
-    graphics_command_buffer.clear();
-
-    vk::CommandBufferAllocateInfo alloc_info;
-    alloc_info.commandPool = command_pool_graphics;
-    /**
-     * Level parameter specifies if the allocated command buffers are primary or secondary
-     * primary -> can be submitted to a queue for execution, but cannot bel called from other command buffers
-     * secondary -> cannot be submitted directly, but can be called from primary command buffers
-     */
-    alloc_info.level = vk::CommandBufferLevel::ePrimary; 
-    alloc_info.commandBufferCount = MAX_FRAMES_IN_FLIGHT;
-
-    graphics_command_buffer = vk::raii::CommandBuffers(*logical_device, alloc_info);
-}
-
-void Engine::createSyncObjects(){
-    present_complete_semaphores.clear();
-    render_finished_semaphores.clear();
-    in_flight_fences.clear();
-
-    for(size_t i = 0; i < swapchain.images.size(); i++){
-        present_complete_semaphores.emplace_back(vk::raii::Semaphore(*logical_device, vk::SemaphoreCreateInfo()));
-        render_finished_semaphores.emplace_back(vk::raii::Semaphore(*logical_device, vk::SemaphoreCreateInfo()));
-    }
-
-    for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
-        in_flight_fences.emplace_back(vk::raii::Fence(*logical_device, {vk::FenceCreateFlagBits::eSignaled}));
-    }
+    command_pool_transfer = vk::raii::CommandPool(logical_device, pool_info);
 }
 
 void Engine::loadModel()
@@ -433,10 +374,10 @@ void Engine::createDataBuffer()
                 vk::MemoryPropertyFlagBits::eDeviceLocal, data_buffer);
         
     copyBuffer(staging_allocated_buffer.buffer, data_buffer.buffer, total_size, 
-                command_pool_transfer, logical_device, transfer_queue); // CHECK HERE
+                command_pool_transfer, &logical_device, transfer_queue);
 
     vmaUnmapMemory(vma_allocator, staging_allocated_buffer.allocation);
-    vmaDestroyBuffer(vma_allocator,staging_allocated_buffer.buffer, staging_allocated_buffer.allocation);
+    // vmaDestroyBuffer(vma_allocator,staging_allocated_buffer.buffer, staging_allocated_buffer.allocation);
 }
 
 void Engine::createUniformBuffers()
@@ -468,7 +409,7 @@ void Engine::createDescriptorPool()
     pool_info.poolSizeCount = bindings.size();
     pool_info.pPoolSizes = bindings.data();
 
-    descriptor_pool = vk::raii::DescriptorPool(*logical_device, pool_info);
+    descriptor_pool = vk::raii::DescriptorPool(logical_device, pool_info);
 }
 
 void Engine::createDescriptorSets()
@@ -481,7 +422,7 @@ void Engine::createDescriptorSets()
 
     descriptor_sets.clear();
 
-    descriptor_sets = logical_device -> allocateDescriptorSets(alloc_info);
+    descriptor_sets = logical_device.allocateDescriptorSets(alloc_info);
 
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         vk::DescriptorBufferInfo buffer_info;
@@ -514,7 +455,38 @@ void Engine::createDescriptorSets()
             d1, d2
         };
 
-        logical_device -> updateDescriptorSets(descriptor_writes, {});
+        logical_device.updateDescriptorSets(descriptor_writes, {});
+    }
+}
+
+void Engine::createGraphicsCommandBuffers(){
+    graphics_command_buffer.clear();
+
+    vk::CommandBufferAllocateInfo alloc_info;
+    alloc_info.commandPool = command_pool_graphics;
+    /**
+     * Level parameter specifies if the allocated command buffers are primary or secondary
+     * primary -> can be submitted to a queue for execution, but cannot bel called from other command buffers
+     * secondary -> cannot be submitted directly, but can be called from primary command buffers
+     */
+    alloc_info.level = vk::CommandBufferLevel::ePrimary; 
+    alloc_info.commandBufferCount = MAX_FRAMES_IN_FLIGHT;
+
+    graphics_command_buffer = vk::raii::CommandBuffers(logical_device, alloc_info);
+}
+
+void Engine::createSyncObjects(){
+    present_complete_semaphores.clear();
+    render_finished_semaphores.clear();
+    in_flight_fences.clear();
+
+    for(size_t i = 0; i < swapchain.images.size(); i++){
+        present_complete_semaphores.emplace_back(vk::raii::Semaphore(logical_device, vk::SemaphoreCreateInfo()));
+        render_finished_semaphores.emplace_back(vk::raii::Semaphore(logical_device, vk::SemaphoreCreateInfo()));
+    }
+
+    for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
+        in_flight_fences.emplace_back(vk::raii::Fence(logical_device, {vk::FenceCreateFlagBits::eSignaled}));
     }
 }
 
@@ -526,7 +498,7 @@ void Engine::run(){
         drawFrame();
     }
 
-    logical_device -> waitIdle();
+    logical_device.waitIdle();
 
     cleanup();
 }
@@ -616,7 +588,7 @@ void Engine::recordCommandBuffer(uint32_t image_index){
 }
 
 void Engine::drawFrame(){
-    while( vk::Result::eTimeout == logical_device -> waitForFences(*in_flight_fences[current_frame], vk::True, UINT64_MAX));
+    while( vk::Result::eTimeout == logical_device.waitForFences(*in_flight_fences[current_frame], vk::True, UINT64_MAX));
     
     if (framebuffer_resized) {
         framebuffer_resized = false;
@@ -635,11 +607,20 @@ void Engine::drawFrame(){
         throw std::runtime_error("failed to acquire swap chain image!");
     }
 
-    logical_device -> resetFences(*in_flight_fences[current_frame]);
+    logical_device.resetFences(*in_flight_fences[current_frame]);
     graphics_command_buffer[current_frame].reset();
     recordCommandBuffer(image_index);
 
+    auto current_time = std::chrono::high_resolution_clock::now();
+    float time = std::chrono::duration<float, std::chrono::seconds::period>(current_time - prev_time).count();
+
+    process_input();
+
+    camera.update(time, input);
+
     updateUniformBuffer(current_frame);
+
+    prev_time = current_time;
 
     vk::PipelineStageFlags wait_destination_stage_mask(vk::PipelineStageFlagBits::eColorAttachmentOutput);
     vk::SubmitInfo submit_info;
@@ -671,27 +652,17 @@ void Engine::drawFrame(){
 
     current_frame = (current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
     semaphore_index = (semaphore_index + 1) % present_complete_semaphores.size();
-
-
 }
 
 void Engine::updateUniformBuffer(uint32_t current_image)
 {
-    static auto start_time = std::chrono::high_resolution_clock::now();
-
-    auto current_time = std::chrono::high_resolution_clock::now();
-    float time = std::chrono::duration<float, std::chrono::seconds::period>(current_time - start_time).count();
-
     UniformBufferObject ubo{};
-    ubo.model = glm::scale(glm::mat4(1.0f), glm::vec3(0.3f, 0.3f, 0.3f));
-    ubo.model = glm::rotate(ubo.model, glm::radians(90.0f), glm::vec3(1.f, 0.f, 0.f));
-    // ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    ubo.model = glm::scale(glm::mat4(1.0f), glm::vec3(1.f));
+    // ubo.model = glm::rotate(ubo.model, glm::radians(-90.f), glm::vec3(1.f, 0.f, 0.f));
 
-    ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    ubo.view = camera.getViewMatrix();
 
-    ubo.proj = glm::perspective(glm::radians(45.0f), static_cast<float>(swapchain.extent.width) / static_cast<float>(swapchain.extent.height), 0.1f, 10.0f);
-
-    ubo.proj[1][1] *= -1;
+    ubo.proj = camera.getProjectionMatrix();
 
     memcpy(uniform_buffers_mapped[current_image], &ubo, sizeof(ubo));
 }
@@ -704,7 +675,7 @@ void Engine::recreateSwapChain(){
         glfwWaitEvents();
     }
 
-    logical_device -> waitIdle();
+    logical_device.waitIdle();
 
     swapchain.image_views.clear();
     swapchain.swapchain = nullptr;
@@ -712,9 +683,9 @@ void Engine::recreateSwapChain(){
 
     swapchain = Swapchain::createSwapChain(*this);
 
-    vkDestroyImageView(**logical_device, depth_image.image_view, nullptr);
+    // vkDestroyImageView(*logical_device, depth_image.image_view, nullptr);
     vmaDestroyImage(vma_allocator, depth_image.image, depth_image.allocation);
-    image_obj.createDepthResources(physical_device, depth_image, swapchain.extent.width, swapchain.extent.height, vma_allocator, logical_device);
+    Image::createDepthResources(physical_device, depth_image, swapchain.extent.width, swapchain.extent.height, *this);
 
 }
 
@@ -727,10 +698,8 @@ void Engine::cleanup(){
     present_complete_semaphores.clear();
 
     // Destroying images and textures
-    vkDestroyImageView(**logical_device, texture.image_view, nullptr);
+    // vkDestroyImageView(*logical_device, texture.image_view, nullptr);
     vmaDestroyImage(vma_allocator, texture.image, texture.allocation);
-
-    image_obj = {};
 
     texture_sampler = nullptr;
 
@@ -742,14 +711,14 @@ void Engine::cleanup(){
     // Destroying uniform buffers objects
     for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
         vmaUnmapMemory(vma_allocator, uniform_buffers[i].allocation);
-        vmaDestroyBuffer(vma_allocator,uniform_buffers[i].buffer, uniform_buffers[i].allocation);
+        // vmaDestroyBuffer(vma_allocator,uniform_buffers[i].buffer, uniform_buffers[i].allocation);
 
         descriptor_sets[i] = nullptr;
     }
     descriptor_pool = nullptr;
 
     // Destroying vertex/index data
-    vmaDestroyBuffer(vma_allocator,data_buffer.buffer, data_buffer.allocation);
+    // vmaDestroyBuffer(vma_allocator,data_buffer.buffer, data_buffer.allocation);
 
     // Delete pipeline objs
     

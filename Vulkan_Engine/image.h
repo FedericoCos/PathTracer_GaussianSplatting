@@ -2,38 +2,30 @@
 
 #include "../Helpers/GeneralHeaders.h"
 
+class Engine; // Forward Declaration
 
-class Image{
-public:
-    AllocatedImage createTextureImage(VmaAllocator& vma_allocator, const char * path, vk::raii::Device *logical_device,
-                            vk::raii::CommandPool &command_pool, vk::raii::Queue &queue);
 
-    void createImage(uint32_t width, uint32_t height, uint32_t mip_levels, vk::SampleCountFlagBits num_samples, vk::Format format,vk::ImageTiling tiling, 
-        vk::ImageUsageFlags usage, vk::MemoryPropertyFlags properties, AllocatedImage& image,
-        VmaAllocator& vma_allocator, vk::raii::Device *logical_device);
+namespace Image{
+    AllocatedImage createTextureImage(Engine &engine, const char * path);
 
-    void createImageView(AllocatedImage& image, VkImageAspectFlags aspect_flags, vk::raii::Device *logical_device);
+    AllocatedImage createImage(uint32_t width, uint32_t height, uint32_t mip_levels, vk::SampleCountFlagBits num_samples, vk::Format format,vk::ImageTiling tiling, 
+        vk::ImageUsageFlags usage, vk::MemoryPropertyFlags properties,
+        Engine &engine);
+
+    vk::raii::ImageView createImageView(AllocatedImage& image, Engine &engine);
     
     vk::raii::Sampler createTextureSampler(vk::raii::PhysicalDevice&, vk::raii::Device*, uint32_t);
 
 
     void createDepthResources(vk::raii::PhysicalDevice& physical_device, AllocatedImage& depth_image, uint32_t width,
-                            uint32_t height, VmaAllocator& vma_allocator, vk::raii::Device *logical_device);
+                            uint32_t height, Engine &engine);
 
     void transitionImageLayout(
         const vk::Image& image,
         uint32_t mip_levels, 
         vk::ImageLayout old_layout, 
         vk::ImageLayout new_layout,
-        vk::raii::CommandPool& command_pool,
-        vk::raii::Device* logical_device,
-        vk::raii::Queue& queue
+        Engine &engine
     );
-
-private:
-
-
-
+    void generateMipmaps(AllocatedImage &image, Engine &engine);
 };
-
-

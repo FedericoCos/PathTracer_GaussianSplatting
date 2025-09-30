@@ -105,6 +105,7 @@ void createBuffer(
         ss << "vmaCreateBuffer failed: " << VmaResultToString(r) << " (" << r << ")";
         throw std::runtime_error(ss.str());
     }
+    allocated_buffer.p_allocator = &vma_allocator;
 }
 
 void copyBuffer(VkBuffer &src_buffer, VkBuffer &dst_buffer, vk::DeviceSize size, vk::raii::CommandPool &command_pool, vk::raii::Device *logical_device, vk::raii::Queue &queue)

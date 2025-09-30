@@ -3,8 +3,8 @@
 
 
 vk::raii::Pipeline Pipeline::createGraphicsPipeline(Engine &engine, vk::raii::PipelineLayout &pipeline_layout){
-    vk::raii::ShaderModule vertex_shader_module = createShaderModule(readFile("shaders/basic/vertex.spv"), &engine.logical_device_bll);
-    vk::raii::ShaderModule frag_shader_module = createShaderModule(readFile("shaders/basic/fragment.spv"), &engine.logical_device_bll);
+    vk::raii::ShaderModule vertex_shader_module = createShaderModule(readFile("shaders/basic/vertex.spv"), &engine.logical_device);
+    vk::raii::ShaderModule frag_shader_module = createShaderModule(readFile("shaders/basic/fragment.spv"), &engine.logical_device);
 
     vk::PipelineShaderStageCreateInfo vert_shader_stage_info;
     vert_shader_stage_info.stage = vk::ShaderStageFlagBits::eVertex;
@@ -54,7 +54,7 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(Engine &engine, vk::raii::Pi
 
     // Important for antialiasing
     vk::PipelineMultisampleStateCreateInfo multisampling;
-    multisampling.rasterizationSamples = vk::SampleCountFlagBits::e8; // TO FIX!!!!!
+    multisampling.rasterizationSamples = engine.mssa_samples; // TO FIX!!!!!
     multisampling.sampleShadingEnable = vk::False; // Disabled for now
 
     // Depth stencil information, for depth ordering
@@ -90,7 +90,7 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(Engine &engine, vk::raii::Pi
     pipeline_layout_info.pSetLayouts = &*engine.descriptor_set_layout;
     pipeline_layout_info.pushConstantRangeCount = 0;
 
-    pipeline_layout = vk::raii::PipelineLayout(engine.logical_device_bll, pipeline_layout_info);
+    pipeline_layout = vk::raii::PipelineLayout(engine.logical_device, pipeline_layout_info);
 
     vk::Format depth_format = findDepthFormat(engine.physical_device);
 
@@ -114,7 +114,7 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(Engine &engine, vk::raii::Pi
     pipeline_info.pDepthStencilState = &depth_stencil;
     pipeline_info.renderPass = nullptr; // Since I am using dynamic rendering instead of a traditional render pass
 
-    return std::move(vk::raii::Pipeline(engine.logical_device_bll, nullptr, pipeline_info));
+    return std::move(vk::raii::Pipeline(engine.logical_device, nullptr, pipeline_info));
 }
 
 vk::raii::ShaderModule Pipeline::createShaderModule(const std::vector<char>& code, vk::raii::Device * logical_device){
@@ -136,7 +136,7 @@ vk::raii::DescriptorSetLayout Pipeline::createDescriptorSetLayout(Engine &engine
     };
     vk::DescriptorSetLayoutCreateInfo layout_info({}, bindings.size(), bindings.data());
 
-    return std::move(vk::raii::DescriptorSetLayout(engine.logical_device_bll, layout_info));
+    return std::move(vk::raii::DescriptorSetLayout(engine.logical_device, layout_info));
 }
 
 std::vector<char> Pipeline::readFile(const std::string& filename){

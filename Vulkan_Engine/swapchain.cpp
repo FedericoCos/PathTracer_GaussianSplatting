@@ -71,7 +71,7 @@ SwapChainBundle Swapchain::createSwapChain(Engine &engine){
         swapchain_create_info.pQueueFamilyIndices = nullptr;
     }
 
-    swapchain.swapchain = vk::raii::SwapchainKHR(engine.logical_device_bll, swapchain_create_info);
+    swapchain.swapchain = vk::raii::SwapchainKHR(engine.logical_device, swapchain_create_info);
 
     swapchain.images = swapchain.swapchain.getImages();
 
@@ -89,7 +89,7 @@ SwapChainBundle Swapchain::createSwapChain(Engine &engine){
 
     for(auto image : swapchain.images){
         imageview_create_info.image = image;
-        swapchain.image_views.emplace_back(engine.logical_device_bll, imageview_create_info);
+        swapchain.image_views.emplace_back(engine.logical_device, imageview_create_info);
     }
 
     return std::move(swapchain);

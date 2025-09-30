@@ -11,6 +11,7 @@
 #include "swapchain.h"
 #include "pipeline.h"
 #include "image.h"
+#include "camera.h"
 
 #include "vk_mem_alloc.h"
 
@@ -55,10 +56,18 @@ public:
     // Surface variables
     vk::raii::SurfaceKHR surface = nullptr;
 
+    // Memory variable
+    VmaAllocator vma_allocator;
+
     // Device Variables
     vk::raii::PhysicalDevice physical_device = nullptr;
-    vk::raii::Device logical_device_bll = nullptr;
+    vk::raii::Device logical_device = nullptr;
     QueueFamilyIndices queue_indices;
+
+    // Device variables
+    vk::raii::Queue graphics_queue = nullptr;
+    vk::raii::Queue present_queue = nullptr;
+    vk::raii::Queue transfer_queue = nullptr;
 
     // Swapchain variables
     SwapChainBundle swapchain;
@@ -66,7 +75,15 @@ public:
     // Pipeline variables
     vk::raii::DescriptorSetLayout descriptor_set_layout = nullptr;
 
+    // Command pools variables
+    vk::raii::CommandPool command_pool_graphics = nullptr;
+    std::vector<vk::raii::CommandBuffer> graphics_command_buffer;
+    vk::raii::CommandPool command_pool_transfer = nullptr;
 
+
+
+    // For multisampling
+    vk::SampleCountFlagBits mssa_samples = vk::SampleCountFlagBits::e1;
 
 
 private:
@@ -81,27 +98,11 @@ private:
     // RAII context
     vk::raii::Context context;
 
-    // Memory variable
-    VmaAllocator vma_allocator;
-
-    // Device variables
-    vk::raii::Queue graphics_queue = nullptr;
-    vk::raii::Queue present_queue = nullptr;
-    vk::raii::Queue transfer_queue = nullptr;
-
-    vk::raii::Device *logical_device; // TODO 0001: REMOVE
-
     // Pipeline variables
     vk::raii::PipelineLayout graphics_pipeline_layout = nullptr;
     vk::raii::Pipeline graphics_pipeline = nullptr;
 
-    // Command pools variables
-    vk::raii::CommandPool command_pool_graphics = nullptr;
-    std::vector<vk::raii::CommandBuffer> graphics_command_buffer;
-    vk::raii::CommandPool command_pool_transfer = nullptr;
-
     // Texture variables
-    Image image_obj;
     AllocatedImage texture;
     vk::raii::Sampler texture_sampler = nullptr;
 
@@ -133,8 +134,16 @@ private:
     std::vector<vk::raii::DescriptorSet> descriptor_sets;
 
     // For multisampling
-    vk::SampleCountFlagBits mssa_samples = vk::SampleCountFlagBits::e1;
     AllocatedImage color_image;
+
+    // Camera
+    Camera camera;
+
+    // For tracking time updates and events
+    std::chrono::_V2::system_clock::time_point prev_time;
+    glm::vec4 input;
+    double lastX = 0.0, lastY = 0.0;
+    bool firstClick = true;
 
 
     // ----- Helper functions
@@ -157,16 +166,11 @@ private:
         vk::PipelineStageFlags2 src_stage_mask,
         vk::PipelineStageFlags2 dst_stage_mask
     );
-
-
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
-
     uint32_t findMemoryType(uint32_t type_filter, vk::MemoryPropertyFlags properties);
-
-    void generateMipmaps(VkImage& image, VkFormat image_format,
-                        int32_t tex_width, int32_t tex_height, uint32_t mip_lvels);
-
     vk::SampleCountFlagBits getMaxUsableSampleCount();
+
+    void process_input();
 
     // ----- Init functions
     bool initWindow();

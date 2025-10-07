@@ -68,6 +68,10 @@ public:
         std::cout << "Current radius: " << current.t_camera.radius << std::endl << std::endl;
     }
 
+    CameraState& getCurrentState(){
+        return current;
+    }
+
 private:
     CameraState current, original;
 

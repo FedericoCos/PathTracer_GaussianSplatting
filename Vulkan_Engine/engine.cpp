@@ -309,6 +309,7 @@ bool Engine::initVulkan(){
 
     loadModel();
     createDataBuffer();
+    createToroidModel();
     createUniformBuffers();
     createDescriptorPool();
     createDescriptorSets();
@@ -461,6 +462,37 @@ void Engine::createDataBuffer()
 
     vmaUnmapMemory(vma_allocator, staging_allocated_buffer.allocation);
     // vmaDestroyBuffer(vma_allocator,staging_allocated_buffer.buffer, staging_allocated_buffer.allocation);
+}
+
+void Engine::createToroidModel()
+{
+    CameraState state; // TO CHANGE
+    torus.generateMesh(state.t_camera.radius + 2.f, state.t_camera.radius - 2.f, 50, 20);
+
+    // Create and fill the GPU buffer for the torus
+    vk::DeviceSize vertex_size = sizeof(Vertex) * torus.vertices.size();
+    vk::DeviceSize index_size = sizeof(uint32_t) * torus.indices.size();
+    vk::DeviceSize total_size = vertex_size + index_size;
+    torus_index_offset = vertex_size;
+
+    AllocatedBuffer staging_buffer;
+    createBuffer(vma_allocator, total_size, vk::BufferUsageFlagBits::eTransferSrc,
+                vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                staging_buffer);
+
+    void * data;
+    vmaMapMemory(vma_allocator, staging_buffer.allocation, &data);
+    memcpy(data, torus.vertices.data(), (size_t)vertex_size);
+    memcpy((char *)data + vertex_size, torus.indices.data(), (size_t)index_size);
+    vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
+
+    createBuffer(vma_allocator, total_size, vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer |vk::BufferUsageFlagBits::eIndexBuffer,
+                vk::MemoryPropertyFlagBits::eDeviceLocal, torus_data_buffer);
+    
+    copyBuffer(staging_buffer.buffer, torus_data_buffer.buffer, total_size,
+                command_pool_transfer, &logical_device, transfer_queue);
+
+    // vmaDestroyBuffer(vma_allocator, staging_buffer.buffer, staging_buffer.allocation);
 }
 
 void Engine::createUniformBuffers()
@@ -638,8 +670,8 @@ void Engine::recordCommandBuffer(uint32_t image_index){
 
     graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *graphics_pipeline);
 
-    graphics_command_buffer[current_frame].bindVertexBuffers(0, {data_buffer.buffer}, {0});
-    graphics_command_buffer[current_frame].bindIndexBuffer(data_buffer.buffer, index_offset, vk::IndexType::eUint32);
+    /* graphics_command_buffer[current_frame].bindVertexBuffers(0, {data_buffer.buffer}, {0});
+    graphics_command_buffer[current_frame].bindIndexBuffer(data_buffer.buffer, index_offset, vk::IndexType::eUint32); */
 
     graphics_command_buffer[current_frame].setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain.extent.width), static_cast<float>(swapchain.extent.height), 0.f, 1.f));
     graphics_command_buffer[current_frame].setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain.extent));
@@ -652,8 +684,19 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     //command_buffers[current_frame].draw(vertices.size(), 1, 0, 0);
 
     graphics_command_buffer[current_frame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *graphics_pipeline_layout, 0, *descriptor_sets[current_frame], nullptr);
+    // graphics_command_buffer[current_frame].drawIndexed(indices.size(), 1, 0, 0, 0);
+
+    glm::mat4 model_main = glm::scale(glm::mat4(1.0f), glm::vec3(1.f));
+    graphics_command_buffer[current_frame].pushConstants<glm::mat4>(*graphics_pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, model_main);
+    graphics_command_buffer[current_frame].bindVertexBuffers(0, {data_buffer.buffer}, {0});
+    graphics_command_buffer[current_frame].bindIndexBuffer(data_buffer.buffer, index_offset, vk::IndexType::eUint32);
     graphics_command_buffer[current_frame].drawIndexed(indices.size(), 1, 0, 0, 0);
 
+    glm::mat4 model_toroid = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, camera.getCurrentState().t_camera.height, 0.0f));
+    graphics_command_buffer[current_frame].pushConstants<glm::mat4>(*graphics_pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, model_toroid);
+    graphics_command_buffer[current_frame].bindVertexBuffers(0, {torus_data_buffer.buffer}, {0});
+    graphics_command_buffer[current_frame].bindIndexBuffer(torus_data_buffer.buffer, torus_index_offset, vk::IndexType::eUint32);
+    graphics_command_buffer[current_frame].drawIndexed(torus.indices.size(), 1, 0, 0, 0);
 
     graphics_command_buffer[current_frame].endRendering();
 
@@ -738,7 +781,7 @@ void Engine::drawFrame(){
 void Engine::updateUniformBuffer(uint32_t current_image)
 {
     UniformBufferObject ubo{};
-    ubo.model = glm::scale(glm::mat4(1.0f), glm::vec3(1.f));
+    // ubo.model = glm::scale(glm::mat4(1.0f), glm::vec3(1.f));
     // ubo.model = glm::rotate(ubo.model, glm::radians(-90.f), glm::vec3(1.f, 0.f, 0.f));
 
     ubo.view = camera.getViewMatrix();

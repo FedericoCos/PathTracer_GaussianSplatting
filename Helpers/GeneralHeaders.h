@@ -14,6 +14,7 @@
 #include <array>
 #include <unordered_map>
 #include <optional>
+#include <cmath>
 
 #include <vulkan/vulkan_raii.hpp> // this library handles for us the vkCreateXXX
                                   // vkAllocateXXX, vkDestroyXXX, and vkFreeXXX
@@ -155,7 +156,7 @@ struct AllocatedImage{
 
 
 struct UniformBufferObject {
-    glm::mat4 model;
+    // glm::mat4 model;
     glm::mat4 view;
     glm::mat4 proj;
 };

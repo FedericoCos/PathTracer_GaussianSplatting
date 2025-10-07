@@ -9,6 +9,7 @@
 #include "pipeline.h"
 #include "image.h"
 #include "camera.h"
+#include "torus.h"
 
 #include "vk_mem_alloc.h"
 
@@ -122,6 +123,11 @@ private:
     AllocatedBuffer data_buffer;
     vk::DeviceSize index_offset;
 
+    // Toroid data
+    Torus torus;
+    AllocatedBuffer torus_data_buffer;
+    vk::DeviceSize torus_index_offset;
+
     // Uniform buffer variables
     std::vector<AllocatedBuffer> uniform_buffers;
     std::vector<void *> uniform_buffers_mapped;
@@ -201,6 +207,7 @@ private:
     void createSyncObjects();
     void loadModel();
     void createDataBuffer();
+    void createToroidModel();
     void createUniformBuffers();
     void createDescriptorPool();
     void createDescriptorSets();

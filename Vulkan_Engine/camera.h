@@ -4,58 +4,77 @@
 
 class Camera{
 public:
-    Camera(glm::vec3 position, glm::vec3 direction, glm::vec3 up,
-            float fov, float aspect_ratio, float near, float far) : 
-            position{position}, direction{direction}, up{up},
-            fov{fov}, aspect_ratio{aspect_ratio}, 
-            near_plane{near}, far_plane{far}
-    {}
+    Camera (float aspect_ratio){
+        current.aspect_ratio = aspect_ratio;
+        original.aspect_ratio = aspect_ratio;
+    }
 
-    Camera ():
-    position{glm::vec3(2.f, 2.f, 2.f)}, direction{glm::vec3(-2.f, -2.f, -2.f)},
-    up{glm::vec3(0.f, 0.f, 1.f)}, fov{45.f}, aspect_ratio{1.6f},
-    near_plane{0.1f}, far_plane{10.f}
-    {}
+    Camera(){
+        current.aspect_ratio = 1280.0 / 800.0;
+        original.aspect_ratio = 1280.0 / 800.0;
+    }
 
 
     glm::mat4& getViewMatrix();
     glm::mat4& getProjectionMatrix();
+    
 
-    void update(float &dtime, glm::vec4 &input);
+    void update(float &dtime, InputState &input);
+    void freeCameraUpdate(float &dtime, InputState &input);
+    void toroidalUpdate(float &dtime, InputState &input);
+    void reset();
 
-    void setSpeed(float &speed){
-        this -> speed = speed;
+    void modSpeed(float ds){
+        std::cout << "Modifying camera speed" << std::endl;
+        current.f_camera.speed += ds;
+        current.f_camera.speed = current.f_camera.speed > 0 ? current.f_camera.speed : 0.f;
+        std::cout << "Current speed: " << current.f_camera.speed << std::endl << std::endl;
     }
 
-    void setRotSpeed(float &rot_speed){
-        this -> rot_speed = rot_speed;
+    void modRot(float ds){
+        std::cout << "Modifying rotation speed" << std::endl;
+        current.f_camera.sensitivity += ds;
+        current.f_camera.sensitivity = current.f_camera.sensitivity > 0 ? current.f_camera.sensitivity : 0.f;
+        std::cout << "Current speed: " << current.f_camera.sensitivity << std::endl << std::endl;
     }
 
-    void setFov(float &fov){
-        this -> fov = fov;
+    void modFov(float ds){
+        std::cout << "Modifying FOV" << std::endl;
+        current.fov += ds;
+        current.fov = current.fov > 0 ? current.fov : 0.f;
+        current.fov = current.fov > 180 ? 180 : current.fov;
+        std::cout << "Current FOV: " << current.fov << std::endl << std::endl;
     }
 
-    void setNearPlane(float &near_plane){
-        this -> near_plane = near_plane;
+    void modAlphaSpeed(float ds){
+        std::cout << "Modifying alpha speed" << std::endl;
+        current.t_camera.alpha_speed += ds;
+        current.t_camera.alpha_speed = current.t_camera.alpha_speed > 0 ? current.t_camera.alpha_speed : 0.f;
+        std::cout << "Current speed: " << current.t_camera.alpha_speed << std::endl << std::endl;
     }
 
-    void setFarPlane(float &far_plane){
-        this -> far_plane = far_plane;
+    void modBetaSpeed(float ds){
+        std::cout << "Modifying beta speed" << std::endl;
+        current.t_camera.beta_speed += ds;
+        current.t_camera.beta_speed = current.t_camera.beta_speed > 0 ? current.t_camera.beta_speed : 0.f;
+        std::cout << "Current speed: " << current.t_camera.beta_speed << std::endl << std::endl;
+    }
+
+    // To remove and align with toroid
+    void modRadius(float ds){
+        std::cout << "Modifying radius" << std::endl;
+        current.t_camera.radius += ds;
+        current.t_camera.radius = current.t_camera.radius > 1 ? current.t_camera.radius : 1.f;
+        std::cout << "Current radius: " << current.t_camera.radius << std::endl << std::endl;
     }
 
 private:
-    glm::vec3 position;
-    glm::vec3 direction;
-    glm::vec3 up;
+    CameraState current, original;
 
-    float fov;
-    float near_plane, far_plane;
-    float aspect_ratio;
-
-    glm::mat4 view_matrix;
-    glm::mat4 projection_matrix;
-
-    float speed = 2.5f;
-    float rot_speed = 1.5f;
-    float sensitivity = 0.002f; 
+    static constexpr float speed_incr = 0.5f;
+    static constexpr float rot_incr = 0.001f;
+    static constexpr float fov_incr = 5.f;
+    static constexpr float alpha_incr = 0.05f;
+    static constexpr float beta_incr = 0.05f;
+    static constexpr float radius_incr = 0.5f;
 };

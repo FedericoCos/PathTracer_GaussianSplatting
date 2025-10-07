@@ -116,44 +116,123 @@ vk::SampleCountFlagBits Engine::getMaxUsableSampleCount()
     return vk::SampleCountFlagBits::e1;
 }
 
-void Engine::process_input()
+void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    Engine* engine = reinterpret_cast<Engine*>(glfwGetWindowUserPointer(window));
+    if (!engine) return;
+
+    auto it = engine -> key_mapping.find(key);
+    if (it == engine -> key_mapping.end())
+        return; // key not mapped
+
+    bool pressed = (action == GLFW_REPEAT || action == GLFW_PRESS);
+    if(pressed){
+        engine -> pressed_keys.insert(key);
+    }
+    else{
+        engine -> pressed_keys.erase(key);
+    }
+    auto& input = engine->input;
+
+    input.move = glm::vec2(0.f);
+
+    static bool is_left = false;
+    static bool is_down = false;
+
+    // Horizontal input
+    if(engine -> pressed_keys.count(GLFW_KEY_A) && (key == GLFW_KEY_A || is_left)){
+        input.move.x = -1.f;
+        is_left = true;
+    } else if(!pressed && key == GLFW_KEY_A){
+        is_left = false;
+    }
+    if(engine -> pressed_keys.count(GLFW_KEY_D) && (key == GLFW_KEY_D || !is_left)){
+        input.move.x = 1.f;
+        is_left = false;
+    } else if(!pressed && key == GLFW_KEY_D){
+        is_left = true;
+        input.move.x = engine -> pressed_keys.count(GLFW_KEY_A) ? -1.f : 0.f;
+    }
+
+    // Vertical input
+    if(engine -> pressed_keys.count(GLFW_KEY_W) && (key == GLFW_KEY_W || !is_down)){
+        input.move.y = 1.f;
+        is_down = false;
+    } else if(!pressed && key == GLFW_KEY_W){
+        is_down = true;
+    }
+    if(engine -> pressed_keys.count(GLFW_KEY_S) && (key == GLFW_KEY_S || is_down)){
+        input.move.y = -1.f;
+        is_down = true;
+    } else if(!pressed && key == GLFW_KEY_S){
+        is_down = false;
+        input.move.y = engine -> pressed_keys.count(GLFW_KEY_W) ? 1.f : 0.f;
+    }
+
+    Action act = it->second;
+    switch (act) {
+        case Action::SPEED_UP:      input.speed_up   = pressed; break;
+        case Action::SPEED_DOWN:    input.speed_down = pressed; break;
+        case Action::ROT_DOWN:   input.rot_up   = pressed; break;
+        case Action::ROT_UP:  input.rot_down  = pressed; break;
+
+        case Action::FOV_UP:  input.fov_up     = pressed; break;
+        case Action::FOV_DOWN:  input.fov_down   = pressed; break;
+        case Action::RADIUS_UP: input.radius_up = pressed; break;
+        case Action::RADIUS_DOWN: input.radius_down = pressed; break;
+        case Action::HEIGHT_UP: input.height_up = pressed; break;
+        case Action::HEIGHT_DOWN: input.height_down = pressed; break;
+        case Action::RESET: input.reset = pressed; break;
+        case Action::SWITCH: input.change = pressed; break;
+    }
+
+    input.consumed  = (input.speed_up || input.speed_down || 
+                        input.rot_up || input.rot_down ||
+                        input.fov_up || input.fov_down) && input.consumed;
+}
+
+
+void Engine::mouse_button_callback(GLFWwindow *window, int button, int action, int mods)
 {
-    input = glm::vec4(0.f);
-
-    if(glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS){
-        input.x = -1.f;
-    }
-    if(glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS){
-        input.x = 1.f;
-    }
-    if(glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS){
-        input.z = 1.f;
-    }
-    if(glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS){
-        input.z = -1.f;
+    Engine *engine = reinterpret_cast<Engine *>(glfwGetWindowUserPointer(window));
+    if(!engine){
+        return;
     }
 
-    if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
-        double xpos, ypos;
-        glfwGetCursorPos(window, &xpos, &ypos);
+    if(button == GLFW_MOUSE_BUTTON_LEFT){
+        engine -> input.left_mouse = (action == GLFW_PRESS);
+    }
+}
 
-        if (firstClick) {
-            lastX = xpos;
-            lastY = ypos;
-            firstClick = false;
-        }
+void Engine::cursor_position_callback(GLFWwindow *window, double x_pos, double y_pos)
+{
+    Engine *engine = reinterpret_cast<Engine *>(glfwGetWindowUserPointer(window));
+    if(!engine){
+        return;
+    }
 
-        double xoffset = xpos - lastX;
-        double yoffset = ypos - lastY;
+    static bool first_mouse = true;
+    static double last_x, last_y;
 
-        lastX = xpos;
-        lastY = ypos;
+    if(first_mouse){
+        last_x = x_pos;
+        last_y = y_pos;
+        first_mouse = false;
+    }
 
-        input.y = static_cast<float>(-yoffset); 
-        input.w = static_cast<float>(-xoffset);
+    double x_offset = x_pos - last_x;
+    double y_offset = y_pos - last_y;
 
-    } else {
-        firstClick = true; 
+    last_x = x_pos;
+    last_y = y_pos;
+
+    if(engine -> input.left_mouse){
+        engine -> input.look_x = static_cast<float>(-x_offset);
+        engine -> input.look_y = static_cast<float>(-y_offset);
+    }
+    else{
+        engine -> input.look_x = 0.f;
+        engine -> input.look_y = 0.f;
+        first_mouse = true;
     }
 }
 
@@ -163,6 +242,10 @@ bool Engine::initWindow(){
     window = initWindowGLFW("Engine", win_width, win_height);
     glfwSetWindowUserPointer(window, this);
     glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+
+    glfwSetKeyCallback(window, key_callback);
+    glfwSetMouseButtonCallback(window, mouse_button_callback);
+    glfwSetCursorPosCallback(window, cursor_position_callback);
 
     if(!window){
         return false;
@@ -232,7 +315,7 @@ bool Engine::initVulkan(){
     createGraphicsCommandBuffers();
     createSyncObjects();
 
-    camera = Camera(glm::vec3(0.f, 1.5f, 8.f), glm::vec3(0.f, 0.f, -1.f), glm::vec3(0.f, 1.f, 0.f), 45.f, swapchain.extent.width * 1.0 / swapchain.extent.height, 0.1f, 100.f);
+    camera = Camera(swapchain.extent.width * 1.0 / swapchain.extent.height);
     
     prev_time = std::chrono::high_resolution_clock::now();
 
@@ -613,8 +696,6 @@ void Engine::drawFrame(){
 
     auto current_time = std::chrono::high_resolution_clock::now();
     float time = std::chrono::duration<float, std::chrono::seconds::period>(current_time - prev_time).count();
-
-    process_input();
 
     camera.update(time, input);
 

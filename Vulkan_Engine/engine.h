@@ -3,9 +3,6 @@
 // Base class for the engine
 #include "../Helpers/GeneralHeaders.h"
 
-// GLFW is for window and input management
-#include "../Helpers/GLFWhelper.h"
-
 // All the Engine pieces
 #include "device.h"
 #include "swapchain.h"
@@ -141,9 +138,26 @@ private:
 
     // For tracking time updates and events
     std::chrono::_V2::system_clock::time_point prev_time;
-    glm::vec4 input;
-    double lastX = 0.0, lastY = 0.0;
-    bool firstClick = true;
+    InputState input;
+    std::unordered_map<int, Action> key_mapping = {
+        {GLFW_KEY_A, Action::MOVE_LEFT},
+        {GLFW_KEY_D, Action::MOVE_RIGHT},
+        {GLFW_KEY_W, Action::MOVE_FORWARD},
+        {GLFW_KEY_S, Action::MOVE_BACKWARD},
+        {GLFW_KEY_UP, Action::SPEED_UP},
+        {GLFW_KEY_DOWN, Action::SPEED_DOWN},
+        {GLFW_KEY_RIGHT, Action::ROT_UP},
+        {GLFW_KEY_LEFT, Action::ROT_DOWN},
+        {GLFW_KEY_L, Action::FOV_UP},
+        {GLFW_KEY_K, Action::FOV_DOWN},
+        {GLFW_KEY_P, Action::RADIUS_UP},
+        {GLFW_KEY_O, Action::RADIUS_DOWN},
+        {GLFW_KEY_M, Action::HEIGHT_UP},
+        {GLFW_KEY_N, Action::HEIGHT_DOWN},
+        {GLFW_KEY_R, Action::RESET},
+        {GLFW_KEY_C, Action::SWITCH},
+    };
+    std::unordered_set<int> pressed_keys;
 
 
     // ----- Helper functions
@@ -170,7 +184,9 @@ private:
     uint32_t findMemoryType(uint32_t type_filter, vk::MemoryPropertyFlags properties);
     vk::SampleCountFlagBits getMaxUsableSampleCount();
 
-    void process_input();
+    static void key_callback(GLFWwindow *window, int key, int scancode, int action, int mods);
+    static void mouse_button_callback(GLFWwindow *window, int button, int action, int mods);
+    static void cursor_position_callback(GLFWwindow *window, double x_pos, double y_pos);
 
     // ----- Init functions
     bool initWindow();

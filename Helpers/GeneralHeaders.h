@@ -1,5 +1,7 @@
 #pragma once
 
+#include "GLFWhelper.h"
+
 #include <iostream>
 #include <stdexcept>
 #include <vector>
@@ -176,6 +178,70 @@ struct SwapChainBundle{
     std::vector<vk::raii::ImageView> image_views;
     vk::Format format;
     vk::Extent2D extent;
+};
+
+enum class Action{
+    MOVE_LEFT, MOVE_RIGHT, MOVE_FORWARD, MOVE_BACKWARD,
+    SPEED_UP, SPEED_DOWN, ROT_UP, ROT_DOWN,
+    FOV_UP, FOV_DOWN,
+    RADIUS_UP, RADIUS_DOWN,
+    HEIGHT_UP, HEIGHT_DOWN,
+    RESET,
+    SWITCH
+};
+
+struct InputState{
+    glm::vec2 move{0.f, 0.f};
+    float look_x = 0.f;
+    float look_y = 0.f;
+
+    bool consumed = false;
+    bool speed_up = false;
+    bool speed_down = false;
+    bool rot_up = false;
+    bool rot_down = false;
+    bool fov_up = false;
+    bool fov_down = false;
+    bool radius_up = false;
+    bool radius_down = false;
+    bool height_up = false;
+    bool height_down = false;
+    bool reset = false;
+    bool change = false;
+
+    bool left_mouse = false;
+};
+
+struct FreeCamera{
+    glm::vec3 position = glm::vec3(0.f, 1.5f, 8.f);
+    glm::vec3 direction = glm::vec3(0.f, 0.f, -1.f);
+    glm::vec3 up = glm::vec3(0.f, 1.f, 0.f);
+    float speed = 2.5f;
+    float sensitivity = .002f;
+};
+
+struct ToroidalCamera{
+    glm::vec3 postion;
+    float radius = 12.f;
+    float alpha = 0.f;
+    float beta = 0.f;
+    float alpha_speed = .2f;
+    float beta_speed = .2f;
+    float height = .5f;
+};
+
+struct CameraState{
+    bool is_toroidal = true;
+    FreeCamera f_camera;
+    ToroidalCamera t_camera;
+
+    glm::mat4 view_matrix;
+    glm::mat4 projection_matrix;
+
+    float fov = 45.f;
+    float near_plane = 0.1f;
+    float far_plane = 100.f;
+    float aspect_ratio;
 };
 
 

@@ -1,5 +1,8 @@
 #include "GLFWhelper.h"
 
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
+
 GLFWwindow * initWindowGLFW(const char *windowTitle, uint32_t& out_width, uint32_t& out_height){
     glfwSetErrorCallback([](int error, const char* description){
         printf("GLFW Error (%i): %s\n", error, description);

@@ -1,53 +1,99 @@
 #pragma once
 
 #include "../Helpers/GeneralHeaders.h"
+#include "gameobject.h"
 
-class Torus{
+class Torus : public Gameobject{
 public:
-    std::vector<Vertex> vertices;
-    std::vector<uint32_t> indices;
-
+    // Default constructor
     Torus() = default;
 
-    Torus(float major_radius, float minor_radius, int major_segments, int minor_segments){
-        generateMesh(major_radius, minor_radius, major_segments, minor_segments);
+    // Constructor that immediately generates the mesh
+    Torus(float major_radius, float minor_radius, float h, int major_segments, int minor_segments){
+        generateMesh(major_radius, minor_radius, h, major_segments, minor_segments);
     }
 
-    void generateMesh(float R, float r, int N, int n){
+    /**
+     * @brief Generates the vertex and index data for the torus mesh.
+     * @param R The major radius (distance from the center of the hole to the center of the tube).
+     * @param r The minor radius (the radius of the tube itself).
+     * @param h The vertical offset (height) of the torus's center.
+     * @param N The number of segments around the major radius.
+     * @param n The number of segments around the minor radius.
+     */
+    void generateMesh(float R, float r, float h, int N, int n){
+        // Store dimensions
+        this->major_radius = R;
+        this->minor_radius = r;
+        this->height = h;
+
         vertices.clear();
         indices.clear();
 
         for(int i = 0; i < N; i++){
             for(int j = 0; j < n; j++){
-                float u = (float)i / N * 2.f * M_PI;
-                float v = (float)j / n * 2.f * M_PI;
+                float u = (float)i / N * 2.f * (float)M_PI;
+                float v = (float)j / n * 2.f * (float)M_PI;
 
                 Vertex vertex;
-                vertex.pos.x = (R+r * cos(v)) * cos(u);
-                vertex.pos.y = r * sin(v);
-                vertex.pos.z = (R+r*cos(v)) * sin(u);
+                // Calculate position using parametric equations for a torus
+                vertex.pos.x = (R + r * cos(v)) * cos(u);
+                vertex.pos.y = r * sin(v) + h; // Apply the height offset
+                vertex.pos.z = (R + r * cos(v)) * sin(u);
 
+                // Set color based on normalized position for a rainbow effect
                 vertex.color = glm::normalize(vertex.pos);
-                vertex.tex_coord = { (float)i / N, (float) j / n};
+                vertex.tex_coord = { (float)i / N, (float)j / n };
 
                 vertices.push_back(vertex);
 
-                int next_i = (i+1) % N;
-                int next_j = (j+1) % n;
+                // Calculate indices for the four corners of the current quad
+                int next_i = (i + 1) % N;
+                int next_j = (j + 1) % n;
 
-                int current_idx = i * n + j;
-                int next_j_idx = i * n + next_j;
-                int next_i_idx = next_i * n + j;
-                int next_ij_idx = next_i * n + next_j;
+                int i0 = i * n + j;
+                int i1 = i * n + next_j;
+                int i2 = next_i * n + j;
+                int i3 = next_i * n + next_j;
 
-                indices.push_back(current_idx);
-                indices.push_back(next_j_idx);
-                indices.push_back(next_i_idx);
+                // Create two triangles for the quad
+                indices.push_back(i0);
+                indices.push_back(i1);
+                indices.push_back(i2);
 
-                indices.push_back(next_j_idx);
-                indices.push_back(next_ij_idx);
-                indices.push_back(next_i_idx);
+                indices.push_back(i1);
+                indices.push_back(i3);
+                indices.push_back(i2);
             }
         }
     }
+
+    /**
+     * @brief Projects a 3D point from the scene onto the closest point on this torus's surface.
+     * @param scenePoint The 3D point to project.
+     * @return The corresponding 3D point on the surface of the torus.
+     */
+    glm::vec3 projectPoint(const glm::vec3& scenePoint) {
+        // 1. Flatten the scene point onto the XZ plane (ignoring height for now)
+        glm::vec2 p_xz(scenePoint.x, scenePoint.z);
+
+        // 2. Find the closest point 'C' on the major radius circle (the centerline of the torus)
+        glm::vec2 c_xz = glm::normalize(p_xz) * this->major_radius;
+
+        // 3. Convert that 2D point back to a 3D point on the centerline, including height
+        glm::vec3 C(c_xz.x, this->height, c_xz.y);
+
+        // 4. Find the vector from the centerline point C to the original scene point
+        glm::vec3 direction_to_p = scenePoint - C;
+
+        // 5. The final projected point is C plus the direction vector, scaled to the minor radius
+        glm::vec3 projected_point = C + glm::normalize(direction_to_p) * this->minor_radius;
+
+        return projected_point;
+    }
+
+private:
+    float major_radius = 0.0f;
+    float minor_radius = 0.0f;
+    float height = 0.0f;
 };

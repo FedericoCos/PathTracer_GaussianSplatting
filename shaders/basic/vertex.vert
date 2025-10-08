@@ -6,7 +6,6 @@ layout(binding = 0) uniform UniformBufferObject {
     mat4 proj;
 } ubo;
 
-// ADDED: A push constant block to receive the per-object model matrix
 layout(push_constant) uniform PushConstants {
     mat4 model;
 } pushConstants;
@@ -19,7 +18,6 @@ layout(location = 0) out vec3 fragColor;
 layout(location = 1) out vec2 fragTexCoord;
 
 void main() {
-    // UPDATED: Use the model matrix from the push constant
     gl_Position = ubo.proj * ubo.view * pushConstants.model * vec4(inPosition, 1.0);
     fragColor = inColor;
     fragTexCoord = inTexCoord;

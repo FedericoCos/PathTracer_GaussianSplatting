@@ -10,6 +10,8 @@
 #include "image.h"
 #include "camera.h"
 #include "torus.h"
+#include "gameobject.h"
+#include "p_object.h"
 
 #include "vk_mem_alloc.h"
 
@@ -100,6 +102,9 @@ private:
     vk::raii::PipelineLayout graphics_pipeline_layout = nullptr;
     vk::raii::Pipeline graphics_pipeline = nullptr;
 
+    std::map<std::string, PipelineInfo> shader_pipelines;
+    std::map<PipelineInfo, std::vector<Gameobject>> pipelines_obj;
+
     // Texture variables
     AllocatedImage texture;
     vk::raii::Sampler texture_sampler = nullptr;
@@ -117,16 +122,9 @@ private:
     bool framebuffer_resized = false;
 
 
-    // Vertex data
-    std::vector<Vertex> vertices;
-    std::vector<uint32_t> indices;
-    AllocatedBuffer data_buffer;
-    vk::DeviceSize index_offset;
-
-    // Toroid data
+    // Scene objects
     Torus torus;
-    AllocatedBuffer torus_data_buffer;
-    vk::DeviceSize torus_index_offset;
+    P_object house;
 
     // Uniform buffer variables
     std::vector<AllocatedBuffer> uniform_buffers;
@@ -189,6 +187,8 @@ private:
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
     uint32_t findMemoryType(uint32_t type_filter, vk::MemoryPropertyFlags properties);
     vk::SampleCountFlagBits getMaxUsableSampleCount();
+    void createModel(Gameobject &obj);
+
 
     static void key_callback(GLFWwindow *window, int key, int scancode, int action, int mods);
     static void mouse_button_callback(GLFWwindow *window, int button, int action, int mods);

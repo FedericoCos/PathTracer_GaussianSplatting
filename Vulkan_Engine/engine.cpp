@@ -116,6 +116,32 @@ vk::SampleCountFlagBits Engine::getMaxUsableSampleCount()
     return vk::SampleCountFlagBits::e1;
 }
 
+void Engine::createModel(Gameobject &obj)
+{
+    // Create and fill the GPU
+    vk::DeviceSize vertex_size = sizeof(Vertex) * obj.vertices.size();
+    vk::DeviceSize index_size = sizeof(uint32_t) * obj.indices.size();
+    vk::DeviceSize total_size = vertex_size + index_size;
+    obj.obj_index_offset = vertex_size;
+    
+    AllocatedBuffer staging_buffer;
+    createBuffer(vma_allocator, total_size, vk::BufferUsageFlagBits::eTransferSrc,
+                vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                staging_buffer);
+
+    void * data;
+    vmaMapMemory(vma_allocator, staging_buffer.allocation, &data);
+    memcpy(data, obj.vertices.data(), (size_t)vertex_size);
+    memcpy((char *)data + vertex_size, obj.indices.data(), (size_t)index_size);
+    vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
+
+    createBuffer(vma_allocator, total_size, vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer |vk::BufferUsageFlagBits::eIndexBuffer,
+                vk::MemoryPropertyFlagBits::eDeviceLocal, obj.obj_buffer);
+    
+    copyBuffer(staging_buffer.buffer, obj.obj_buffer.buffer, total_size,
+                command_pool_transfer, &logical_device, transfer_queue);
+}
+
 void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
     Engine* engine = reinterpret_cast<Engine*>(glfwGetWindowUserPointer(window));
     if (!engine) return;
@@ -279,7 +305,7 @@ bool Engine::initVulkan(){
 
     // Pipeline stage
     descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this);
-    graphics_pipeline = Pipeline::createGraphicsPipeline(*this, graphics_pipeline_layout);
+    graphics_pipeline = Pipeline::createGraphicsPipeline(*this, graphics_pipeline_layout, "shaders/basic/vertex.spv", "shaders/basic/fragment.spv");
 
     // Memory Allocator stage
     VmaAllocatorCreateInfo allocator_info{};
@@ -398,101 +424,37 @@ void Engine::createCommandPool(){
 
 void Engine::loadModel()
 {
-    tinyobj::attrib_t attrib; // COntains all the positions, normals and texture coord
-    std::vector<tinyobj::shape_t> shapes; // Contains all the separate objects and their faces
-    std::vector<tinyobj::material_t> materials;
-    std::string warn, err;
-
-    if(!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, MODEL_PATH.c_str())){
-        throw std::runtime_error(warn + err);
-    }
-
-    std::unordered_map<Vertex, uint32_t> unique_vertices{};
-
-    for(const auto& shape : shapes){
-        for(const auto& index : shape.mesh.indices){
-            Vertex vertex{};
-
-            vertex.pos = {
-                attrib.vertices[3 * index.vertex_index + 0],
-                attrib.vertices[3 * index.vertex_index + 1],
-                attrib.vertices[3 * index.vertex_index + 2]
-            };
-
-            vertex.tex_coord = {
-                attrib.texcoords[2 * index.texcoord_index + 0],
-                1.0f - attrib.texcoords[2 * index.texcoord_index + 1]
-            };
-
-            vertex.color = {1.f, 1.f, 1.f};
-
-            if(unique_vertices.count(vertex) == 0){
-                unique_vertices[vertex] = static_cast<uint32_t>(vertices.size());
-                vertices.push_back(vertex);
-            }
-            indices.push_back(unique_vertices[vertex]);
-        }
-    }
+    house.loadModel(MODEL_PATH);
 }
 
 void Engine::createDataBuffer()
 {
-    vk::DeviceSize vertex_size = sizeof(vertices[0]) * vertices.size();
-    vk::DeviceSize index_size = sizeof(indices[0]) * indices.size();
-    vk::DeviceSize total_size = vertex_size + index_size;
-    index_offset = vertex_size;
-
-    AllocatedBuffer staging_allocated_buffer;
-
-    createBuffer(vma_allocator, total_size, vk::BufferUsageFlagBits::eTransferSrc, 
-        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
-    staging_allocated_buffer);
-
-    void *data;
-    vmaMapMemory(vma_allocator, staging_allocated_buffer.allocation, &data);
-
-    memcpy(data, vertices.data(), vertex_size);
-    memcpy((char *)data + vertex_size, indices.data(), index_size);
-
-    createBuffer(vma_allocator, total_size, vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eIndexBuffer,
-                vk::MemoryPropertyFlagBits::eDeviceLocal, data_buffer);
-        
-    copyBuffer(staging_allocated_buffer.buffer, data_buffer.buffer, total_size, 
-                command_pool_transfer, &logical_device, transfer_queue);
-
-    vmaUnmapMemory(vma_allocator, staging_allocated_buffer.allocation);
-    // vmaDestroyBuffer(vma_allocator,staging_allocated_buffer.buffer, staging_allocated_buffer.allocation);
+    createModel(house);
 }
 
 void Engine::createToroidModel()
 {
     CameraState state; // TO CHANGE
-    torus.generateMesh(state.t_camera.radius + 2.f, state.t_camera.radius - 2.f, 50, 20);
+    torus.generateMesh(state.t_camera.radius + 10.f, 1.f, 0.5f, 50, 20);
 
-    // Create and fill the GPU buffer for the torus
-    vk::DeviceSize vertex_size = sizeof(Vertex) * torus.vertices.size();
-    vk::DeviceSize index_size = sizeof(uint32_t) * torus.indices.size();
-    vk::DeviceSize total_size = vertex_size + index_size;
-    torus_index_offset = vertex_size;
+    createModel(torus);
 
-    AllocatedBuffer staging_buffer;
-    createBuffer(vma_allocator, total_size, vk::BufferUsageFlagBits::eTransferSrc,
-                vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
-                staging_buffer);
+    // Setup torus pipeline
+    torus.vertex_shader = "shaders/basic/vertex.spv";
+    torus.fragment_shader = "shaders/basic/fragment_torus.spv";
 
-    void * data;
-    vmaMapMemory(vma_allocator, staging_buffer.allocation, &data);
-    memcpy(data, torus.vertices.data(), (size_t)vertex_size);
-    memcpy((char *)data + vertex_size, torus.indices.data(), (size_t)index_size);
-    vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
-
-    createBuffer(vma_allocator, total_size, vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer |vk::BufferUsageFlagBits::eIndexBuffer,
-                vk::MemoryPropertyFlagBits::eDeviceLocal, torus_data_buffer);
-    
-    copyBuffer(staging_buffer.buffer, torus_data_buffer.buffer, total_size,
-                command_pool_transfer, &logical_device, transfer_queue);
-
-    // vmaDestroyBuffer(vma_allocator, staging_buffer.buffer, staging_buffer.allocation);
+    std::string p_key = torus.vertex_shader + torus.fragment_shader;
+    if(!shader_pipelines.contains(p_key)){
+        PipelineInfo& p_info = shader_pipelines[p_key];
+        p_info.pipeline = Pipeline::createGraphicsPipeline(
+            *this,
+            p_info.layout, // Pass the layout member by reference
+            torus.vertex_shader,
+            torus.fragment_shader
+        );
+    }
+    torus.graphics_pipeline = &shader_pipelines[p_key].pipeline;
+    torus.pipeline_layout = &shader_pipelines[p_key].layout;
 }
 
 void Engine::createUniformBuffers()
@@ -668,11 +630,6 @@ void Engine::recordCommandBuffer(uint32_t image_index){
 
     graphics_command_buffer[current_frame].beginRendering(rendering_info);
 
-    graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *graphics_pipeline);
-
-    /* graphics_command_buffer[current_frame].bindVertexBuffers(0, {data_buffer.buffer}, {0});
-    graphics_command_buffer[current_frame].bindIndexBuffer(data_buffer.buffer, index_offset, vk::IndexType::eUint32); */
-
     graphics_command_buffer[current_frame].setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain.extent.width), static_cast<float>(swapchain.extent.height), 0.f, 1.f));
     graphics_command_buffer[current_frame].setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain.extent));
     /**
@@ -682,20 +639,24 @@ void Engine::recordCommandBuffer(uint32_t image_index){
      * firstInstance -> used as an offset for instanced rendering, defines the lowest value of SV_InstanceID
      */
     //command_buffers[current_frame].draw(vertices.size(), 1, 0, 0);
-
-    graphics_command_buffer[current_frame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *graphics_pipeline_layout, 0, *descriptor_sets[current_frame], nullptr);
     // graphics_command_buffer[current_frame].drawIndexed(indices.size(), 1, 0, 0, 0);
+
+    graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *graphics_pipeline);
+    graphics_command_buffer[current_frame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *graphics_pipeline_layout, 0, *descriptor_sets[current_frame], nullptr);
 
     glm::mat4 model_main = glm::scale(glm::mat4(1.0f), glm::vec3(1.f));
     graphics_command_buffer[current_frame].pushConstants<glm::mat4>(*graphics_pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, model_main);
-    graphics_command_buffer[current_frame].bindVertexBuffers(0, {data_buffer.buffer}, {0});
-    graphics_command_buffer[current_frame].bindIndexBuffer(data_buffer.buffer, index_offset, vk::IndexType::eUint32);
-    graphics_command_buffer[current_frame].drawIndexed(indices.size(), 1, 0, 0, 0);
+    graphics_command_buffer[current_frame].bindVertexBuffers(0, {house.obj_buffer.buffer}, {0});
+    graphics_command_buffer[current_frame].bindIndexBuffer(house.obj_buffer.buffer, house.obj_index_offset, vk::IndexType::eUint32);
+    graphics_command_buffer[current_frame].drawIndexed(house.indices.size(), 1, 0, 0, 0);
 
-    glm::mat4 model_toroid = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, camera.getCurrentState().t_camera.height, 0.0f));
-    graphics_command_buffer[current_frame].pushConstants<glm::mat4>(*graphics_pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, model_toroid);
-    graphics_command_buffer[current_frame].bindVertexBuffers(0, {torus_data_buffer.buffer}, {0});
-    graphics_command_buffer[current_frame].bindIndexBuffer(torus_data_buffer.buffer, torus_index_offset, vk::IndexType::eUint32);
+
+    graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, **torus.graphics_pipeline);
+    graphics_command_buffer[current_frame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, **torus.pipeline_layout, 0, *descriptor_sets[current_frame], nullptr);
+    glm::mat4 model_toroid = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.5f, 0.0f)); // TO FIX
+    graphics_command_buffer[current_frame].pushConstants<glm::mat4>(**torus.pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, model_toroid);
+    graphics_command_buffer[current_frame].bindVertexBuffers(0, {torus.obj_buffer.buffer}, {0});
+    graphics_command_buffer[current_frame].bindIndexBuffer(torus.obj_buffer.buffer, torus.obj_index_offset, vk::IndexType::eUint32);
     graphics_command_buffer[current_frame].drawIndexed(torus.indices.size(), 1, 0, 0, 0);
 
     graphics_command_buffer[current_frame].endRendering();

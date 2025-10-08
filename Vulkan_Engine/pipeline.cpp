@@ -3,9 +3,9 @@
 #include <fstream>
 
 
-vk::raii::Pipeline Pipeline::createGraphicsPipeline(Engine &engine, vk::raii::PipelineLayout &pipeline_layout){
-    vk::raii::ShaderModule vertex_shader_module = createShaderModule(readFile("shaders/basic/vertex.spv"), &engine.logical_device);
-    vk::raii::ShaderModule frag_shader_module = createShaderModule(readFile("shaders/basic/fragment.spv"), &engine.logical_device);
+vk::raii::Pipeline Pipeline::createGraphicsPipeline(Engine &engine, vk::raii::PipelineLayout &pipeline_layout, std::string v_shader, std::string f_shader){
+    vk::raii::ShaderModule vertex_shader_module = createShaderModule(readFile(v_shader), &engine.logical_device);
+    vk::raii::ShaderModule frag_shader_module = createShaderModule(readFile(f_shader), &engine.logical_device);
 
     vk::PipelineShaderStageCreateInfo vert_shader_stage_info;
     vert_shader_stage_info.stage = vk::ShaderStageFlagBits::eVertex;

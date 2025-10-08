@@ -21,8 +21,11 @@
 #include <vulkan/vk_platform.h>
 
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#define GLM_ENABLE_EXPERIMENTAL
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/gtx/quaternion.hpp> 
 
 
 // Taskflow is used for multithreading on the CPU side
@@ -243,6 +246,30 @@ struct CameraState{
     float near_plane = 0.1f;
     float far_plane = 100.f;
     float aspect_ratio;
+};
+
+struct PipelineInfo {
+    vk::raii::Pipeline pipeline = nullptr;
+    vk::raii::PipelineLayout layout = nullptr;
+
+    PipelineInfo() = default;
+
+    // Move Constructor
+    PipelineInfo(PipelineInfo&& other) noexcept
+        : pipeline(std::move(other.pipeline)), layout(std::move(other.layout)) {}
+
+    // Move Assignment Operator
+    PipelineInfo& operator=(PipelineInfo&& other) noexcept {
+        if (this != &other) {
+            pipeline = std::move(other.pipeline);
+            layout = std::move(other.layout);
+        }
+        return *this;
+    }
+
+    // --- Disable Copying ---
+    PipelineInfo(const PipelineInfo&) = delete;
+    PipelineInfo& operator=(const PipelineInfo&) = delete;
 };
 
 

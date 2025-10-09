@@ -94,10 +94,12 @@ public:
 
 
 private:
-
     // Window variables
     uint32_t win_width = 1280;
     uint32_t win_height = 800;
+
+    float total_elapsed = 0.f;
+    int fps_count = 0;
 
     const std::string HOUSE_MODEL_PATH = "resources/Models/Test_models/HouseSuburban.obj";
     const std::string HOUSE_TEXTURE_PATH = "resources/Models/Test_models/HouseSuburban_Base.png";
@@ -109,16 +111,10 @@ private:
     vk::raii::Context context;
 
     // Pipeline variables
-    vk::raii::PipelineLayout graphics_pipeline_layout = nullptr;
-    vk::raii::Pipeline graphics_pipeline = nullptr;
+    std::map<PipelineKey, std::vector<Gameobject>> p_o_map;
+    std::map<PipelineKey, PipelineInfo> p_p_map;
 
-    std::map<std::string, PipelineInfo> shader_pipelines;
-    std::map<PipelineInfo, std::vector<Gameobject>> pipelines_obj;
-
-    // Texture variables
-    AllocatedImage texture;
-    vk::raii::Sampler texture_sampler = nullptr;
-
+    // Depth variables
     AllocatedImage depth_image;
 
     // Synchronization variables
@@ -213,7 +209,7 @@ private:
     void createGraphicsCommandBuffers();
 
     void createSyncObjects();
-    void loadObjects();
+    void loadObjects(const std::string& scene_path);
     void createTorusModel();
     void createUniformBuffers();
     void createDescriptorPool();

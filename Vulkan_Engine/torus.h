@@ -15,12 +15,6 @@ public:
         generateMesh(major_radius, minor_radius, h, major_segments, minor_segments);
     }
 
-    Torus(float major_radius, float minor_radius, float h, int major_segments, int minor_segments, std::string path_vertex, std::string path_fragment){
-        vertex_shader = path_vertex;
-        fragment_shader = path_fragment;
-        generateMesh(major_radius, minor_radius, h, major_segments, minor_segments);
-    }
-
     void modMajRad(float ds){
         std::cout << "Modifying major radius of torus" << std::endl;
         major_radius += ds;

@@ -15,6 +15,8 @@
 #include <unordered_map>
 #include <optional>
 #include <cmath>
+#include <fstream>
+#include <tuple>
 
 #include <vulkan/vulkan_raii.hpp> // this library handles for us the vkCreateXXX
                                   // vkAllocateXXX, vkDestroyXXX, and vkFreeXXX
@@ -37,6 +39,11 @@
 #include "stb_image.h"
 
 #include "tiny_obj_loader.h"
+
+#include "json.hpp"
+
+
+using json = nlohmann::json;
 
 
 // Structures used in all the project
@@ -257,25 +264,47 @@ struct CameraState{
 
     float fov = 45.f;
     float near_plane = 0.1f;
-    float far_plane = 100.f;
+    float far_plane = 1000.f;
     float aspect_ratio;
+};
+
+struct PipelineKey {
+    std::string v_shader;
+    std::string f_shader;
+    bool is_transparent;
+    vk::CullModeFlagBits cull_mode;
+
+    bool operator<(const PipelineKey& other)const {
+        return std::tie(v_shader, f_shader, is_transparent, cull_mode) <
+                std::tie(other.v_shader, other.f_shader, other.is_transparent, other.cull_mode);
+    }
 };
 
 struct PipelineInfo {
     vk::raii::Pipeline pipeline = nullptr;
     vk::raii::PipelineLayout layout = nullptr;
+    std::string v_shader;
+    std::string f_shader;
+    bool is_transparent;
+    vk::CullModeFlagBits cull_mode;
 
     PipelineInfo() = default;
 
     // Move Constructor
     PipelineInfo(PipelineInfo&& other) noexcept
-        : pipeline(std::move(other.pipeline)), layout(std::move(other.layout)) {}
+        : pipeline(std::move(other.pipeline)), layout(std::move(other.layout)),
+            v_shader(other.v_shader), f_shader(other.f_shader), is_transparent(other.is_transparent),
+            cull_mode(other.cull_mode) {}
 
     // Move Assignment Operator
     PipelineInfo& operator=(PipelineInfo&& other) noexcept {
         if (this != &other) {
             pipeline = std::move(other.pipeline);
             layout = std::move(other.layout);
+            v_shader = other.v_shader;
+            f_shader = other.f_shader;
+            is_transparent = other.is_transparent;
+            cull_mode = other.cull_mode;
         }
         return *this;
     }

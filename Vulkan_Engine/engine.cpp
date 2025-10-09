@@ -306,10 +306,6 @@ bool Engine::initVulkan(){
         std::cout << "Problem with the images" << std::endl;
     }
 
-    // Pipeline stage
-    descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this);
-    graphics_pipeline = Pipeline::createGraphicsPipeline(*this, graphics_pipeline_layout, "shaders/basic/vertex.spv", "shaders/basic/fragment.spv", false, vk::CullModeFlagBits::eBack);
-
     // Memory Allocator stage
     VmaAllocatorCreateInfo allocator_info{};
     allocator_info.physicalDevice = *physical_device;
@@ -322,12 +318,11 @@ bool Engine::initVulkan(){
         throw std::runtime_error("vmaCreateAllocator failed");
     }
 
+
+    descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this);
+
     // Command creation
     createCommandPool();
-
-    // Texture and image resources
-    texture = Image::createTextureImage(*this, HOUSE_TEXTURE_PATH.c_str());
-    texture_sampler = Image::createTextureSampler(physical_device, &logical_device, texture.mip_levels);
 
     color_image = Image::createImage(swapchain.extent.width, swapchain.extent.height,
                         1, mssa_samples, swapchain.format, vk::ImageTiling::eOptimal, 
@@ -336,7 +331,7 @@ bool Engine::initVulkan(){
     color_image.image_view = Image::createImageView(color_image, *this);
     Image::createDepthResources(physical_device, depth_image, swapchain.extent.width, swapchain.extent.height, *this);
 
-    loadObjects();
+    loadObjects("resources/scene.json");
     createTorusModel();
     createUniformBuffers();
     createDescriptorPool();
@@ -424,46 +419,105 @@ void Engine::createCommandPool(){
     command_pool_transfer = vk::raii::CommandPool(logical_device, pool_info);
 }
 
-void Engine::loadObjects()
+void Engine::loadObjects(const std::string& scene_path)
 {
-    // TESTING MULTIPLE OBJECTS
-    P_object lamp_1;
-    lamp_1.loadModel(LAMP_MODEL_PATH, LAMP_TEXTURE_PATH, *this);
-    createModel(lamp_1);
-    lamp_1.changePosition(glm::vec3(2.f, 0.f, 2.f));
+    // Open the scene file
+    std::ifstream scene_file(scene_path);
+    if (!scene_file.is_open()) {
+        throw std::runtime_error("Failed to open scene file: " + scene_path);
+    }
 
-    scene_objects.emplace_back(std::move(lamp_1));
+    // Parse the JSON data
+    json scene_data = json::parse(scene_file);
 
-    P_object house_1;
-    house_1.loadModel(HOUSE_MODEL_PATH, HOUSE_TEXTURE_PATH, *this);
-    createModel(house_1);
+    // Iterate over each object definition in the JSON array
+    for (const auto& obj_def : scene_data) {
+        P_object new_object;
 
-    scene_objects.emplace_back(std::move(house_1));
+        // Load model and texture from the paths specified in the JSON
+        std::string model_path = obj_def["model"];
+        std::string texture_path = obj_def["texture"];
+        new_object.loadModel(model_path, texture_path, *this);
+        
+        // Create the GPU buffer for the model
+        createModel(new_object);
+
+        // Set the object's transform from the JSON data
+        if (obj_def.contains("position")) {
+            new_object.changePosition({
+                obj_def["position"][0],
+                obj_def["position"][1],
+                obj_def["position"][2]
+            });
+        }
+        if (obj_def.contains("scale")) {
+            new_object.changeScale({
+                obj_def["scale"][0],
+                obj_def["scale"][1],
+                obj_def["scale"][2]
+            });
+        }
+        if (obj_def.contains("rotation")) {
+            new_object.changeRotation({
+                obj_def["rotation"][0],
+                obj_def["rotation"][1],
+                obj_def["rotation"][2]
+            });
+        }
+
+        // Pipeline creation
+        PipelineKey p_key;
+        p_key.v_shader = "shaders/basic/vertex.spv";
+        p_key.f_shader = "shaders/basic/fragment.spv";
+        p_key.is_transparent = false;
+        p_key.cull_mode = vk::CullModeFlagBits::eBack;
+
+        if(!p_p_map.contains(p_key)){
+            PipelineInfo& p_info = p_p_map[p_key];
+            p_info.pipeline = Pipeline::createGraphicsPipeline(
+                *this,
+                p_info.layout,
+                p_key.v_shader,
+                p_key.f_shader,
+                p_key.is_transparent,
+                p_key.cull_mode
+            );
+        }
+        new_object.pipeline = &p_p_map[p_key];
+        std::vector<Gameobject>& arr = p_o_map[p_key];
+        arr.emplace_back(std::move(new_object));
+        
+        // Add the fully loaded and configured object to the scene
+        // scene_objects.emplace_back(std::move(new_object));
+    }
 }
 
 void Engine::createTorusModel()
 {
-    torus.generateMesh(22.f, 1.f, 0.5f, 200, 80);
+    torus.generateMesh(40.f, 1.f, 0.5f, 200, 80);
     createModel(torus);
 
     // Setup torus pipeline
-    torus.vertex_shader = "shaders/basic/vertex.spv";
-    torus.fragment_shader = "shaders/basic/fragment_torus.spv";
+    PipelineKey p_key;
+    p_key.v_shader = "shaders/basic/vertex.spv";
+    p_key.f_shader = "shaders/basic/fragment_torus.spv";
+    p_key.is_transparent = true;
+    p_key.cull_mode = vk::CullModeFlagBits::eBack;
 
-    std::string p_key = torus.vertex_shader + torus.fragment_shader;
-    if(!shader_pipelines.contains(p_key)){
-        PipelineInfo& p_info = shader_pipelines[p_key];
+    if(!p_p_map.contains(p_key)){
+        PipelineInfo& p_info = p_p_map[p_key];
         p_info.pipeline = Pipeline::createGraphicsPipeline(
             *this,
-            p_info.layout, // Pass the layout member by reference
-            torus.vertex_shader,
-            torus.fragment_shader,
-            true,
-            vk::CullModeFlagBits::eFront // TODO 0002 -> create two pipelines for inside and outside
+            p_info.layout,
+            p_key.v_shader,
+            p_key.f_shader,
+            p_key.is_transparent,
+            p_key.cull_mode
         );
     }
-    torus.graphics_pipeline = &shader_pipelines[p_key].pipeline;
-    torus.pipeline_layout = &shader_pipelines[p_key].layout;
+    torus.pipeline = &p_p_map[p_key];
+    /* std::vector<Gameobject>& arr = p_o_map[p_key];
+    arr.emplace_back(std::move(torus)); */
 }
 
 void Engine::createUniformBuffers()
@@ -485,7 +539,10 @@ void Engine::createUniformBuffers()
 
 void Engine::createDescriptorPool()
 {
-    uint32_t object_count = scene_objects.size() + 1; // +1 for the torus
+    uint32_t object_count = 1; // the torus
+    for(auto& pair : p_o_map){
+        object_count += pair.second.size();
+    }
     uint32_t total_sets = object_count * MAX_FRAMES_IN_FLIGHT;
 
     std::array<vk::DescriptorPoolSize, 2> pool_sizes = {
@@ -504,9 +561,12 @@ void Engine::createDescriptorPool()
 
 void Engine::createDescriptorSets()
 {
-    for(Gameobject &object : scene_objects){
-        object.createDescriptorSets(*this);
+    for(auto& pair : p_o_map){
+        for(auto& object : pair.second){
+            object.createDescriptorSets(*this);
+        }
     }
+
     torus.createDescriptorSets(*this);
 }
 
@@ -580,13 +640,6 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     color_attachment_info.resolveImageView = swapchain.image_views[image_index];
     color_attachment_info.resolveImageLayout = vk::ImageLayout::eColorAttachmentOptimal;
 
-    /* vk::RenderingAttachmentInfo attachment_info;
-    attachment_info.imageView = swapchain_image_views[image_index];
-    attachment_info.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-    attachment_info.loadOp = vk::AttachmentLoadOp::eClear; // What to do at the image upon loading
-    attachment_info.storeOp = vk::AttachmentStoreOp::eStore; // What to do at the image after operations
-    attachment_info.clearValue = clear_color; */
-
     vk::RenderingAttachmentInfo depth_attachment_info = {};
     depth_attachment_info.imageView = depth_image.image_view;
     depth_attachment_info.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
@@ -615,21 +668,23 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     //command_buffers[current_frame].draw(vertices.size(), 1, 0, 0);
     // graphics_command_buffer[current_frame].drawIndexed(indices.size(), 1, 0, 0, 0);
 
-    graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *graphics_pipeline);
+    for(auto& pipeline : p_p_map){
+        graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline.second.pipeline);
 
-    for(Gameobject &gameobject : scene_objects){
-        graphics_command_buffer[current_frame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *graphics_pipeline_layout, 0, *gameobject.descriptor_sets[current_frame], nullptr);
-        graphics_command_buffer[current_frame].pushConstants<glm::mat4>(*graphics_pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, gameobject.model_matrix);
-        graphics_command_buffer[current_frame].bindVertexBuffers(0, {gameobject.buffer.buffer}, {0});
-        graphics_command_buffer[current_frame].bindIndexBuffer(gameobject.buffer.buffer, gameobject.buffer_index_offset, vk::IndexType::eUint32);
-        graphics_command_buffer[current_frame].drawIndexed(gameobject.indices.size(), 1, 0, 0, 0);
+        for(auto& gameobject : p_o_map[pipeline.first]){
+            graphics_command_buffer[current_frame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *gameobject.pipeline -> layout, 0, *gameobject.descriptor_sets[current_frame], nullptr);
+            graphics_command_buffer[current_frame].pushConstants<glm::mat4>(*gameobject.pipeline -> layout, vk::ShaderStageFlagBits::eVertex, 0, gameobject.model_matrix);
+            graphics_command_buffer[current_frame].bindVertexBuffers(0, {gameobject.buffer.buffer}, {0});
+            graphics_command_buffer[current_frame].bindIndexBuffer(gameobject.buffer.buffer, gameobject.buffer_index_offset, vk::IndexType::eUint32);
+            graphics_command_buffer[current_frame].drawIndexed(gameobject.indices.size(), 1, 0, 0, 0);
+        }
     }
 
-
-    graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, **torus.graphics_pipeline);
-    graphics_command_buffer[current_frame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, **torus.pipeline_layout, 0, *torus.descriptor_sets[current_frame], nullptr);
+    
+    graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *torus.pipeline->pipeline);
+    graphics_command_buffer[current_frame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *torus.pipeline -> layout, 0, *torus.descriptor_sets[current_frame], nullptr);
     glm::mat4 model_toroid = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.5f, 0.0f)); // TO FIX
-    graphics_command_buffer[current_frame].pushConstants<glm::mat4>(**torus.pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, model_toroid);
+    graphics_command_buffer[current_frame].pushConstants<glm::mat4>(*torus.pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, model_toroid);
     graphics_command_buffer[current_frame].bindVertexBuffers(0, {torus.buffer.buffer}, {0});
     graphics_command_buffer[current_frame].bindIndexBuffer(torus.buffer.buffer, torus.buffer_index_offset, vk::IndexType::eUint32);
     graphics_command_buffer[current_frame].drawIndexed(torus.indices.size(), 1, 0, 0, 0);
@@ -714,6 +769,18 @@ void Engine::drawFrame(){
         default: break; // an unexpected result is returned
     }
 
+    total_elapsed += time;
+    fps_count++;
+    if (total_elapsed >= 1.f) { // If one second has passed
+        double fps = static_cast<double>(fps_count)/(total_elapsed);
+
+        std::string title = "Vulkan Engine - " +  std::to_string(static_cast<int>(round(fps))) + " FPS";
+        glfwSetWindowTitle(window, title.c_str());
+
+        total_elapsed = 0.f;
+        fps_count = 0.f;
+    }
+
     current_frame = (current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
     semaphore_index = (semaphore_index + 1) % present_complete_semaphores.size();
 }
@@ -761,11 +828,6 @@ void Engine::cleanup(){
     render_finished_semaphores.clear();
     present_complete_semaphores.clear();
 
-    // Destroying images and textures
-    // vkDestroyImageView(*logical_device, texture.image_view, nullptr);
-    vmaDestroyImage(vma_allocator, texture.image, texture.allocation);
-
-    texture_sampler = nullptr;
 
     // Destroying sync objects
     graphics_command_buffer.clear();

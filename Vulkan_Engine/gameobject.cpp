@@ -2,7 +2,13 @@
 #include "engine.h"
 #include "image.h"
 
-void Gameobject::loadModel(std::string m_path, std::string t_path, Engine &engine){
+bool Gameobject::inputUpdate(InputState &input, float &dtime)
+{
+    return false;
+}
+
+void Gameobject::loadModel(std::string m_path, std::string t_path, Engine &engine)
+{
     model_path = m_path;
     texture_path = t_path;
 

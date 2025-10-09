@@ -17,10 +17,7 @@ public:
     std::vector<vk::raii::DescriptorSet> descriptor_sets;
 
     // --- Pipeline & Shader Information ---
-    std::string vertex_shader;
-    std::string fragment_shader;
-    vk::raii::Pipeline *graphics_pipeline = nullptr;
-    vk::raii::PipelineLayout *pipeline_layout = nullptr;
+    PipelineInfo* pipeline;
 
     // --- Model and texture path ---
     std::string model_path;
@@ -29,16 +26,6 @@ public:
     // --- Transform ---
     glm::mat4 model_matrix = glm::mat4(1.f);
     bool isVisible = true;
-
-    Gameobject() {
-        vertex_shader = "shaders/basic/vertex.spv";
-        fragment_shader = "shaders/basic/fragment.spv";
-    }
-
-    Gameobject(std::string path_vertex, std::string path_fragment){
-        vertex_shader = path_vertex;
-        fragment_shader = path_fragment;
-    }
 
     // --- Virtual Transform Methods ---
     virtual void changePosition(const glm::vec3 &new_pos) {
@@ -58,7 +45,7 @@ public:
         updateModelMatrix();
     }
 
-    virtual bool inputUpdate(InputState &input, float &dtime) = 0;
+    virtual bool inputUpdate(InputState &input, float &dtime);
 
     virtual void loadModel(std::string m_path, std::string t_path, Engine &engine);
     virtual void createDescriptorSets(Engine& engine);

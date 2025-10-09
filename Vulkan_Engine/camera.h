@@ -19,9 +19,9 @@ public:
     glm::mat4& getProjectionMatrix();
     
 
-    void update(float &dtime, InputState &input);
+    void update(float &dtime, InputState &input, float &r, float &h);
     void freeCameraUpdate(float &dtime, InputState &input);
-    void toroidalUpdate(float &dtime, InputState &input);
+    void toroidalUpdate(float &dtime, InputState &input, float &r, float &h);
     void reset();
 
     void modSpeed(float ds){
@@ -58,14 +58,6 @@ public:
         current.t_camera.beta_speed += ds;
         current.t_camera.beta_speed = current.t_camera.beta_speed > 0 ? current.t_camera.beta_speed : 0.f;
         std::cout << "Current speed: " << current.t_camera.beta_speed << std::endl << std::endl;
-    }
-
-    // To remove and align with toroid
-    void modRadius(float ds){
-        std::cout << "Modifying radius" << std::endl;
-        current.t_camera.radius += ds;
-        current.t_camera.radius = current.t_camera.radius > 1 ? current.t_camera.radius : 1.f;
-        std::cout << "Current radius: " << current.t_camera.radius << std::endl << std::endl;
     }
 
     CameraState& getCurrentState(){

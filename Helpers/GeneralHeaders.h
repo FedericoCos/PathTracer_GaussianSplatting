@@ -42,6 +42,7 @@
 // Structures used in all the project
 struct Vertex{
     glm::vec3 pos;
+    glm::vec3 normal;
     glm::vec3 color;
     glm::vec2 tex_coord;
 
@@ -188,10 +189,12 @@ enum class Action{
     MOVE_LEFT, MOVE_RIGHT, MOVE_FORWARD, MOVE_BACKWARD,
     SPEED_UP, SPEED_DOWN, ROT_UP, ROT_DOWN,
     FOV_UP, FOV_DOWN,
-    RADIUS_UP, RADIUS_DOWN,
-    HEIGHT_UP, HEIGHT_DOWN,
     RESET,
-    SWITCH
+    SWITCH,
+
+    MAJ_RAD_UP, MAJ_RAD_DOWN,
+    MIN_RAD_UP, MIN_RAD_DOWN,
+    HEIGHT_UP, HEIGHT_DOWN,
 };
 
 struct InputState{
@@ -200,18 +203,30 @@ struct InputState{
     float look_y = 0.f;
 
     bool consumed = false;
+
+    // For normal camera
     bool speed_up = false;
     bool speed_down = false;
     bool rot_up = false;
     bool rot_down = false;
     bool fov_up = false;
     bool fov_down = false;
+
+    // For torus camera
     bool radius_up = false;
     bool radius_down = false;
-    bool height_up = false;
-    bool height_down = false;
+
+    // To switch between the two cameras
     bool reset = false;
     bool change = false;
+
+    // For torus obj
+    bool maj_rad_up = false;
+    bool maj_rad_down = false;
+    bool min_rad_up = false;
+    bool min_rad_down = false;
+    bool height_up = false;
+    bool height_down = false;
 
     bool left_mouse = false;
 };
@@ -226,12 +241,10 @@ struct FreeCamera{
 
 struct ToroidalCamera{
     glm::vec3 postion;
-    float radius = 12.f;
     float alpha = 0.f;
     float beta = 0.f;
     float alpha_speed = .2f;
     float beta_speed = .2f;
-    float height = .5f;
 };
 
 struct CameraState{

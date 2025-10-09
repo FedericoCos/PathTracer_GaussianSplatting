@@ -80,6 +80,13 @@ public:
     std::vector<vk::raii::CommandBuffer> graphics_command_buffer;
     vk::raii::CommandPool command_pool_transfer = nullptr;
 
+    // Uniform buffer variables
+    std::vector<AllocatedBuffer> uniform_buffers;
+    std::vector<void *> uniform_buffers_mapped;
+
+    // Descriptor Pool variables
+    vk::raii::DescriptorPool descriptor_pool = nullptr;
+
 
 
     // For multisampling
@@ -92,8 +99,11 @@ private:
     uint32_t win_width = 1280;
     uint32_t win_height = 800;
 
-    const std::string MODEL_PATH = "resources/Models/Test_models/HouseSuburban.obj";
-    const std::string TEXTURE_PATH = "resources/Models/Test_models/HouseSuburban_Base.png";
+    const std::string HOUSE_MODEL_PATH = "resources/Models/Test_models/HouseSuburban.obj";
+    const std::string HOUSE_TEXTURE_PATH = "resources/Models/Test_models/HouseSuburban_Base.png";
+
+    const std::string LAMP_MODEL_PATH = "resources/Models/Test_models/street_light.obj";
+    const std::string LAMP_TEXTURE_PATH = "resources/Models/Test_models/street_light.jpeg";
 
     // RAII context
     vk::raii::Context context;
@@ -124,15 +134,7 @@ private:
 
     // Scene objects
     Torus torus;
-    P_object house;
-
-    // Uniform buffer variables
-    std::vector<AllocatedBuffer> uniform_buffers;
-    std::vector<void *> uniform_buffers_mapped;
-
-    // Descriptor Pool variables
-    vk::raii::DescriptorPool descriptor_pool = nullptr;
-    std::vector<vk::raii::DescriptorSet> descriptor_sets;
+    std::vector<P_object> scene_objects;
 
     // For multisampling
     AllocatedImage color_image;
@@ -144,6 +146,7 @@ private:
     std::chrono::_V2::system_clock::time_point prev_time;
     InputState input;
     std::unordered_map<int, Action> key_mapping = {
+        // CAMERA
         {GLFW_KEY_A, Action::MOVE_LEFT},
         {GLFW_KEY_D, Action::MOVE_RIGHT},
         {GLFW_KEY_W, Action::MOVE_FORWARD},
@@ -154,12 +157,17 @@ private:
         {GLFW_KEY_LEFT, Action::ROT_DOWN},
         {GLFW_KEY_L, Action::FOV_UP},
         {GLFW_KEY_K, Action::FOV_DOWN},
-        {GLFW_KEY_P, Action::RADIUS_UP},
-        {GLFW_KEY_O, Action::RADIUS_DOWN},
-        {GLFW_KEY_M, Action::HEIGHT_UP},
-        {GLFW_KEY_N, Action::HEIGHT_DOWN},
         {GLFW_KEY_R, Action::RESET},
         {GLFW_KEY_C, Action::SWITCH},
+
+        // TORUS
+        {GLFW_KEY_1, Action::MAJ_RAD_DOWN},
+        {GLFW_KEY_2, Action::MAJ_RAD_UP},
+        {GLFW_KEY_3, Action::MIN_RAD_DOWN},
+        {GLFW_KEY_4, Action::MIN_RAD_UP},
+        {GLFW_KEY_M, Action::HEIGHT_UP},
+        {GLFW_KEY_N, Action::HEIGHT_DOWN},
+
     };
     std::unordered_set<int> pressed_keys;
 
@@ -205,9 +213,8 @@ private:
     void createGraphicsCommandBuffers();
 
     void createSyncObjects();
-    void loadModel();
-    void createDataBuffer();
-    void createToroidModel();
+    void loadObjects();
+    void createTorusModel();
     void createUniformBuffers();
     void createDescriptorPool();
     void createDescriptorSets();

@@ -3,7 +3,14 @@
 #include <fstream>
 
 
-vk::raii::Pipeline Pipeline::createGraphicsPipeline(Engine &engine, vk::raii::PipelineLayout &pipeline_layout, std::string v_shader, std::string f_shader){
+vk::raii::Pipeline Pipeline::createGraphicsPipeline(
+    Engine &engine, 
+    vk::raii::PipelineLayout &pipeline_layout, 
+    std::string v_shader, 
+    std::string f_shader,
+    bool is_transparent,
+    vk::CullModeFlagBits cull_mode)
+{
     vk::raii::ShaderModule vertex_shader_module = createShaderModule(readFile(v_shader), &engine.logical_device);
     vk::raii::ShaderModule frag_shader_module = createShaderModule(readFile(f_shader), &engine.logical_device);
 
@@ -39,7 +46,7 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(Engine &engine, vk::raii::Pi
     vk::PipelineRasterizationStateCreateInfo rasterizer;
     rasterizer.depthClampEnable = vk::False;
     rasterizer.rasterizerDiscardEnable = vk::False;
-    rasterizer.cullMode = vk::CullModeFlagBits::eBack;
+    rasterizer.cullMode = cull_mode;
     rasterizer.polygonMode = vk::PolygonMode::eFill;
     rasterizer.frontFace = vk::FrontFace::eCounterClockwise;
     rasterizer.depthBiasEnable = vk::False,
@@ -57,9 +64,22 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(Engine &engine, vk::raii::Pi
     depth_stencil.stencilTestEnable = vk::False;
 
     vk::PipelineColorBlendAttachmentState color_blend_attachment;
-    color_blend_attachment.blendEnable = vk::False;
-    color_blend_attachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
-                                            vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+    if(is_transparent){
+        color_blend_attachment.blendEnable = vk::True;
+        color_blend_attachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                                                vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+        color_blend_attachment.srcColorBlendFactor = vk::BlendFactor::eSrcAlpha;
+        color_blend_attachment.dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
+        color_blend_attachment.colorBlendOp = vk::BlendOp::eAdd;
+        color_blend_attachment.srcAlphaBlendFactor = vk::BlendFactor::eOne;
+        color_blend_attachment.dstAlphaBlendFactor = vk::BlendFactor::eZero;
+        color_blend_attachment.alphaBlendOp = vk::BlendOp::eAdd;
+    }
+    else{
+        color_blend_attachment.blendEnable = vk::False;
+        color_blend_attachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                                                vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+    }
     
     vk::PipelineColorBlendStateCreateInfo color_blending;
     color_blending.logicOpEnable = vk::False;

@@ -8,7 +8,7 @@ glm::mat4& Camera::getProjectionMatrix(){
     return current.projection_matrix;
 }
 
-void Camera::update(float &dtime, InputState &input){
+void Camera::update(float &dtime, InputState &input, float &r, float &h){
     if(!input.consumed){
         if(input.reset){
             reset();
@@ -21,7 +21,7 @@ void Camera::update(float &dtime, InputState &input){
     }
 
     if(current.is_toroidal){
-        toroidalUpdate(dtime, input);
+        toroidalUpdate(dtime, input, r, h);
     }
     else{
         freeCameraUpdate(dtime, input);
@@ -95,7 +95,7 @@ void Camera::freeCameraUpdate(float &dtime, InputState &input){
     current.projection_matrix[1][1] *= -1;
 }
 
-void Camera::toroidalUpdate(float &dtime, InputState &input)
+void Camera::toroidalUpdate(float &dtime, InputState &input, float &r, float &h)
 {  
     if(!input.consumed){
         if(input.speed_up){
@@ -122,14 +122,6 @@ void Camera::toroidalUpdate(float &dtime, InputState &input)
             modFov(-fov_incr);
             input.consumed = true;
         }
-        else if(input.radius_up){
-            modRadius(radius_incr);
-            input.consumed = true;
-        }
-        else if(input.radius_down){
-            modRadius(-radius_incr);
-            input.consumed = true;
-        }
     }
 
     if(input.move.x < 0.0f){
@@ -149,11 +141,11 @@ void Camera::toroidalUpdate(float &dtime, InputState &input)
     current.t_camera.beta = glm::clamp(current.t_camera.beta, -89.f, 89.f);
 
     float a = glm::radians(current.t_camera.alpha);
-    current.t_camera.postion = glm::vec3(cos(a), current.t_camera.height, sin(a)) * current.t_camera.radius;
+    current.t_camera.postion = glm::vec3(cos(a), 0.f, sin(a)) * r + glm::vec3(0.f, h, 0.f);
 
-    glm::vec3 look_at_target = glm::vec3(0.0f, current.t_camera.height, 0.0f);
+    glm::vec3 look_at_target = glm::vec3(0.0f, h, 0.0f);
 
-    float vertical_offset = current.t_camera.radius * tan(glm::radians(current.t_camera.beta));
+    float vertical_offset = r * tan(glm::radians(current.t_camera.beta));
     look_at_target.y += vertical_offset;
 
     current.view_matrix = glm::lookAt(current.t_camera.postion, look_at_target, glm::vec3(.0f, 1.f, .0f));

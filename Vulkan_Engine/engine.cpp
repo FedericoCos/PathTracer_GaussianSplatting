@@ -122,7 +122,7 @@ void Engine::createModel(Gameobject &obj)
     vk::DeviceSize vertex_size = sizeof(Vertex) * obj.vertices.size();
     vk::DeviceSize index_size = sizeof(uint32_t) * obj.indices.size();
     vk::DeviceSize total_size = vertex_size + index_size;
-    obj.obj_index_offset = vertex_size;
+    obj.buffer_index_offset = vertex_size;
     
     AllocatedBuffer staging_buffer;
     createBuffer(vma_allocator, total_size, vk::BufferUsageFlagBits::eTransferSrc,
@@ -136,9 +136,9 @@ void Engine::createModel(Gameobject &obj)
     vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
 
     createBuffer(vma_allocator, total_size, vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer |vk::BufferUsageFlagBits::eIndexBuffer,
-                vk::MemoryPropertyFlagBits::eDeviceLocal, obj.obj_buffer);
+                vk::MemoryPropertyFlagBits::eDeviceLocal, obj.buffer);
     
-    copyBuffer(staging_buffer.buffer, obj.obj_buffer.buffer, total_size,
+    copyBuffer(staging_buffer.buffer, obj.buffer.buffer, total_size,
                 command_pool_transfer, &logical_device, transfer_queue);
 }
 
@@ -203,12 +203,15 @@ void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action,
 
         case Action::FOV_UP:  input.fov_up     = pressed; break;
         case Action::FOV_DOWN:  input.fov_down   = pressed; break;
-        case Action::RADIUS_UP: input.radius_up = pressed; break;
-        case Action::RADIUS_DOWN: input.radius_down = pressed; break;
         case Action::HEIGHT_UP: input.height_up = pressed; break;
         case Action::HEIGHT_DOWN: input.height_down = pressed; break;
         case Action::RESET: input.reset = pressed; break;
         case Action::SWITCH: input.change = pressed; break;
+
+        case Action::MAJ_RAD_UP: input.maj_rad_up = pressed; break;
+        case Action::MAJ_RAD_DOWN: input.maj_rad_down = pressed; break;
+        case Action::MIN_RAD_UP: input.min_rad_up = pressed; break;
+        case Action::MIN_RAD_DOWN: input.min_rad_down = pressed; break;
     }
 
     input.consumed  = (input.speed_up || input.speed_down || 
@@ -305,7 +308,7 @@ bool Engine::initVulkan(){
 
     // Pipeline stage
     descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this);
-    graphics_pipeline = Pipeline::createGraphicsPipeline(*this, graphics_pipeline_layout, "shaders/basic/vertex.spv", "shaders/basic/fragment.spv");
+    graphics_pipeline = Pipeline::createGraphicsPipeline(*this, graphics_pipeline_layout, "shaders/basic/vertex.spv", "shaders/basic/fragment.spv", false, vk::CullModeFlagBits::eBack);
 
     // Memory Allocator stage
     VmaAllocatorCreateInfo allocator_info{};
@@ -323,7 +326,7 @@ bool Engine::initVulkan(){
     createCommandPool();
 
     // Texture and image resources
-    texture = Image::createTextureImage(*this, TEXTURE_PATH.c_str());
+    texture = Image::createTextureImage(*this, HOUSE_TEXTURE_PATH.c_str());
     texture_sampler = Image::createTextureSampler(physical_device, &logical_device, texture.mip_levels);
 
     color_image = Image::createImage(swapchain.extent.width, swapchain.extent.height,
@@ -333,9 +336,8 @@ bool Engine::initVulkan(){
     color_image.image_view = Image::createImageView(color_image, *this);
     Image::createDepthResources(physical_device, depth_image, swapchain.extent.width, swapchain.extent.height, *this);
 
-    loadModel();
-    createDataBuffer();
-    createToroidModel();
+    loadObjects();
+    createTorusModel();
     createUniformBuffers();
     createDescriptorPool();
     createDescriptorSets();
@@ -422,21 +424,26 @@ void Engine::createCommandPool(){
     command_pool_transfer = vk::raii::CommandPool(logical_device, pool_info);
 }
 
-void Engine::loadModel()
+void Engine::loadObjects()
 {
-    house.loadModel(MODEL_PATH);
+    // TESTING MULTIPLE OBJECTS
+    P_object lamp_1;
+    lamp_1.loadModel(LAMP_MODEL_PATH, LAMP_TEXTURE_PATH, *this);
+    createModel(lamp_1);
+    lamp_1.changePosition(glm::vec3(2.f, 0.f, 2.f));
+
+    scene_objects.emplace_back(std::move(lamp_1));
+
+    P_object house_1;
+    house_1.loadModel(HOUSE_MODEL_PATH, HOUSE_TEXTURE_PATH, *this);
+    createModel(house_1);
+
+    scene_objects.emplace_back(std::move(house_1));
 }
 
-void Engine::createDataBuffer()
+void Engine::createTorusModel()
 {
-    createModel(house);
-}
-
-void Engine::createToroidModel()
-{
-    CameraState state; // TO CHANGE
-    torus.generateMesh(state.t_camera.radius + 10.f, 1.f, 0.5f, 50, 20);
-
+    torus.generateMesh(22.f, 1.f, 0.5f, 200, 80);
     createModel(torus);
 
     // Setup torus pipeline
@@ -450,7 +457,9 @@ void Engine::createToroidModel()
             *this,
             p_info.layout, // Pass the layout member by reference
             torus.vertex_shader,
-            torus.fragment_shader
+            torus.fragment_shader,
+            true,
+            vk::CullModeFlagBits::eFront // TODO 0002 -> create two pipelines for inside and outside
         );
     }
     torus.graphics_pipeline = &shader_pipelines[p_key].pipeline;
@@ -476,64 +485,29 @@ void Engine::createUniformBuffers()
 
 void Engine::createDescriptorPool()
 {
-    std::array bindings = {
-        vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, MAX_FRAMES_IN_FLIGHT),
-        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, MAX_FRAMES_IN_FLIGHT)
+    uint32_t object_count = scene_objects.size() + 1; // +1 for the torus
+    uint32_t total_sets = object_count * MAX_FRAMES_IN_FLIGHT;
+
+    std::array<vk::DescriptorPoolSize, 2> pool_sizes = {
+        vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, total_sets),
+        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_sets)
     };
+
     vk::DescriptorPoolCreateInfo pool_info;
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    pool_info.maxSets = MAX_FRAMES_IN_FLIGHT;
-    pool_info.poolSizeCount = bindings.size();
-    pool_info.pPoolSizes = bindings.data();
+    pool_info.maxSets = total_sets;
+    pool_info.poolSizeCount = static_cast<uint32_t>(pool_sizes.size());
+    pool_info.pPoolSizes = pool_sizes.data();
 
     descriptor_pool = vk::raii::DescriptorPool(logical_device, pool_info);
 }
 
 void Engine::createDescriptorSets()
 {
-    std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *descriptor_set_layout);
-    vk::DescriptorSetAllocateInfo alloc_info;
-    alloc_info.descriptorPool = descriptor_pool;
-    alloc_info.descriptorSetCount = static_cast<uint32_t>(layouts.size());
-    alloc_info.pSetLayouts = layouts.data();
-
-    descriptor_sets.clear();
-
-    descriptor_sets = logical_device.allocateDescriptorSets(alloc_info);
-
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        vk::DescriptorBufferInfo buffer_info;
-        buffer_info.buffer = uniform_buffers[i].buffer;
-        buffer_info.offset = 0;
-        buffer_info.range = sizeof(UniformBufferObject);
-
-        vk::DescriptorImageInfo image_info = {};
-        image_info.sampler = texture_sampler;
-        image_info.imageView = texture.image_view;
-        image_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-
-        vk::WriteDescriptorSet d1 = {};
-        d1.dstSet = descriptor_sets[i];
-        d1.dstBinding = 0;
-        d1.dstArrayElement = 0;
-        d1.descriptorCount = 1;
-        d1.descriptorType = vk::DescriptorType::eUniformBuffer;
-        d1.pBufferInfo = &buffer_info;
-
-        vk::WriteDescriptorSet d2 = {};
-        d2.dstSet = descriptor_sets[i];
-        d2.dstBinding = 1;
-        d2.dstArrayElement = 0;
-        d2.descriptorCount = 1;
-        d2.descriptorType = vk::DescriptorType::eCombinedImageSampler;
-        d2.pImageInfo = &image_info;
-
-        std::array descriptor_writes{
-            d1, d2
-        };
-
-        logical_device.updateDescriptorSets(descriptor_writes, {});
+    for(Gameobject &object : scene_objects){
+        object.createDescriptorSets(*this);
     }
+    torus.createDescriptorSets(*this);
 }
 
 void Engine::createGraphicsCommandBuffers(){
@@ -642,21 +616,22 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     // graphics_command_buffer[current_frame].drawIndexed(indices.size(), 1, 0, 0, 0);
 
     graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *graphics_pipeline);
-    graphics_command_buffer[current_frame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *graphics_pipeline_layout, 0, *descriptor_sets[current_frame], nullptr);
 
-    glm::mat4 model_main = glm::scale(glm::mat4(1.0f), glm::vec3(1.f));
-    graphics_command_buffer[current_frame].pushConstants<glm::mat4>(*graphics_pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, model_main);
-    graphics_command_buffer[current_frame].bindVertexBuffers(0, {house.obj_buffer.buffer}, {0});
-    graphics_command_buffer[current_frame].bindIndexBuffer(house.obj_buffer.buffer, house.obj_index_offset, vk::IndexType::eUint32);
-    graphics_command_buffer[current_frame].drawIndexed(house.indices.size(), 1, 0, 0, 0);
+    for(Gameobject &gameobject : scene_objects){
+        graphics_command_buffer[current_frame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *graphics_pipeline_layout, 0, *gameobject.descriptor_sets[current_frame], nullptr);
+        graphics_command_buffer[current_frame].pushConstants<glm::mat4>(*graphics_pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, gameobject.model_matrix);
+        graphics_command_buffer[current_frame].bindVertexBuffers(0, {gameobject.buffer.buffer}, {0});
+        graphics_command_buffer[current_frame].bindIndexBuffer(gameobject.buffer.buffer, gameobject.buffer_index_offset, vk::IndexType::eUint32);
+        graphics_command_buffer[current_frame].drawIndexed(gameobject.indices.size(), 1, 0, 0, 0);
+    }
 
 
     graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, **torus.graphics_pipeline);
-    graphics_command_buffer[current_frame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, **torus.pipeline_layout, 0, *descriptor_sets[current_frame], nullptr);
+    graphics_command_buffer[current_frame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, **torus.pipeline_layout, 0, *torus.descriptor_sets[current_frame], nullptr);
     glm::mat4 model_toroid = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.5f, 0.0f)); // TO FIX
     graphics_command_buffer[current_frame].pushConstants<glm::mat4>(**torus.pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, model_toroid);
-    graphics_command_buffer[current_frame].bindVertexBuffers(0, {torus.obj_buffer.buffer}, {0});
-    graphics_command_buffer[current_frame].bindIndexBuffer(torus.obj_buffer.buffer, torus.obj_index_offset, vk::IndexType::eUint32);
+    graphics_command_buffer[current_frame].bindVertexBuffers(0, {torus.buffer.buffer}, {0});
+    graphics_command_buffer[current_frame].bindIndexBuffer(torus.buffer.buffer, torus.buffer_index_offset, vk::IndexType::eUint32);
     graphics_command_buffer[current_frame].drawIndexed(torus.indices.size(), 1, 0, 0, 0);
 
     graphics_command_buffer[current_frame].endRendering();
@@ -701,7 +676,11 @@ void Engine::drawFrame(){
     auto current_time = std::chrono::high_resolution_clock::now();
     float time = std::chrono::duration<float, std::chrono::seconds::period>(current_time - prev_time).count();
 
-    camera.update(time, input);
+    bool changed = torus.inputUpdate(input, time);
+    if(changed){
+        createModel(torus); // TODO 0001 -> maybe there is a better way to manage this
+    }
+    camera.update(time, input, torus.getRadius(), torus.getHeight());
 
     updateUniformBuffer(current_frame);
 
@@ -794,13 +773,13 @@ void Engine::cleanup(){
     command_pool_transfer = nullptr;
 
     // Destroying uniform buffers objects
-    for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
+    /* for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
         vmaUnmapMemory(vma_allocator, uniform_buffers[i].allocation);
         // vmaDestroyBuffer(vma_allocator,uniform_buffers[i].buffer, uniform_buffers[i].allocation);
 
         descriptor_sets[i] = nullptr;
     }
-    descriptor_pool = nullptr;
+    descriptor_pool = nullptr; */
 
     // Destroying vertex/index data
     // vmaDestroyBuffer(vma_allocator,data_buffer.buffer, data_buffer.allocation);

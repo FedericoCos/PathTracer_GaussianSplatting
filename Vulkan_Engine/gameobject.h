@@ -2,13 +2,19 @@
 
 #include "../Helpers/GeneralHeaders.h"
 
+class Engine; // Forward declaration
+
 class Gameobject{
 public:
     // --- Rendering Data ---
-    AllocatedBuffer obj_buffer;
-    vk::DeviceSize obj_index_offset; 
+    AllocatedBuffer buffer;
+    AllocatedImage texture;
+    vk::raii::Sampler texture_sampler = nullptr;
+    vk::DeviceSize buffer_index_offset; 
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
+
+    std::vector<vk::raii::DescriptorSet> descriptor_sets;
 
     // --- Pipeline & Shader Information ---
     std::string vertex_shader;
@@ -23,6 +29,16 @@ public:
     // --- Transform ---
     glm::mat4 model_matrix = glm::mat4(1.f);
     bool isVisible = true;
+
+    Gameobject() {
+        vertex_shader = "shaders/basic/vertex.spv";
+        fragment_shader = "shaders/basic/fragment.spv";
+    }
+
+    Gameobject(std::string path_vertex, std::string path_fragment){
+        vertex_shader = path_vertex;
+        fragment_shader = path_fragment;
+    }
 
     // --- Virtual Transform Methods ---
     virtual void changePosition(const glm::vec3 &new_pos) {
@@ -42,44 +58,10 @@ public:
         updateModelMatrix();
     }
 
-    virtual void loadModel(std::string path){
-        tinyobj::attrib_t attrib; // COntains all the positions, normals and texture coord
-        std::vector<tinyobj::shape_t> shapes; // Contains all the separate objects and their faces
-        std::vector<tinyobj::material_t> materials;
-        std::string warn, err;
+    virtual bool inputUpdate(InputState &input, float &dtime) = 0;
 
-        if(!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, path.c_str())){
-            throw std::runtime_error(warn + err);
-        }
-
-        std::unordered_map<Vertex, uint32_t> unique_vertices{};
-
-        for(const auto& shape : shapes){
-            for(const auto& index : shape.mesh.indices){
-                Vertex vertex{};
-
-                vertex.pos = {
-                    attrib.vertices[3 * index.vertex_index + 0],
-                    attrib.vertices[3 * index.vertex_index + 1],
-                    attrib.vertices[3 * index.vertex_index + 2]
-                };
-
-                vertex.tex_coord = {
-                    attrib.texcoords[2 * index.texcoord_index + 0],
-                    1.0f - attrib.texcoords[2 * index.texcoord_index + 1]
-                };
-
-                vertex.color = {1.f, 1.f, 1.f};
-
-                if(unique_vertices.count(vertex) == 0){
-                    unique_vertices[vertex] = static_cast<uint32_t>(vertices.size());
-                    vertices.push_back(vertex);
-                }
-                indices.push_back(unique_vertices[vertex]);
-            }
-        }
-    }
-
+    virtual void loadModel(std::string m_path, std::string t_path, Engine &engine);
+    virtual void createDescriptorSets(Engine& engine);
     
 
 protected:

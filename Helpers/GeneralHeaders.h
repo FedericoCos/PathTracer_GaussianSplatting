@@ -28,6 +28,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtx/quaternion.hpp> 
+#include <glm/gtc/type_ptr.hpp>
 
 
 // Taskflow is used for multithreading on the CPU side
@@ -40,6 +41,8 @@
 
 #include "tiny_obj_loader.h"
 
+#include "tinygltf-release/tiny_gltf.h"
+
 #include "json.hpp"
 
 
@@ -51,6 +54,7 @@ struct Vertex{
     glm::vec3 pos;
     glm::vec3 normal;
     glm::vec3 color;
+    glm::vec4 tangent;
     glm::vec2 tex_coord;
 
     // Info needed to tell VUlkan how to pass Vertex data to the shader
@@ -60,16 +64,18 @@ struct Vertex{
         return {0, sizeof(Vertex), vk::VertexInputRate::eVertex};
     }
 
-    static std::array<vk::VertexInputAttributeDescription, 3> getAttributeDescriptions() {
+    static std::array<vk::VertexInputAttributeDescription, 5> getAttributeDescriptions() {
         return{
             vk::VertexInputAttributeDescription(0, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, pos)),
-            vk::VertexInputAttributeDescription(1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, color)),
-            vk::VertexInputAttributeDescription(2, 0, vk::Format::eR32G32Sfloat, offsetof(Vertex, tex_coord))
+            vk::VertexInputAttributeDescription(1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, normal)),
+            vk::VertexInputAttributeDescription(2, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, color)),
+            vk::VertexInputAttributeDescription(3, 0, vk::Format::eR32G32B32A32Sfloat, offsetof(Vertex, tangent)),
+            vk::VertexInputAttributeDescription(4, 0, vk::Format::eR32G32Sfloat, offsetof(Vertex, tex_coord))
         };
     }
 
     bool operator==(const Vertex& other) const {
-        return pos == other.pos && color == other.color && tex_coord == other.tex_coord;
+        return pos == other.pos && color == other.color && tex_coord == other.tex_coord && tangent == other.tangent && tangent == other.tangent;
     }
 };
 
@@ -89,12 +95,10 @@ namespace std {
     // Custom specialization of std::hash for Vertex
     template<> struct hash<Vertex> {
         std::size_t operator()(const Vertex& vertex) const {
-            std::size_t h1 = std::hash<glm::vec3>()(vertex.pos);
-            std::size_t h2 = std::hash<glm::vec3>()(vertex.color);
-            std::size_t h3 = std::hash<glm::vec2>()(vertex.tex_coord);
-
-            // Combine the hash values
-            return h1 ^ (h2 << 1) ^ (h3 << 2);
+            return ((std::hash<glm::vec3>()(vertex.pos) ^
+                (std::hash<glm::vec3>()(vertex.color) << 1)) >> 1) ^
+                (std::hash<glm::vec3>()(vertex.normal) << 1) ^        
+                (std::hash<glm::vec2>()(vertex.tex_coord) << 1);
         }
     };
 }
@@ -165,11 +169,48 @@ struct AllocatedImage{
     vk::raii::ImageView image_view{nullptr};
 };
 
+struct Material {
+    // Indices into the Gameobject's main texture list
+    int albedo_texture_index = -1;
+    int normal_texture_index = -1;
+    int metallic_roughness_texture_index = -1;
+    int occlusion_texture_index = -1; // <-- ADD THIS
+    int emissive_texture_index = -1;  // <-- ADD THIS
+
+    // PBR scalar factors (loaded from glTF)
+    glm::vec4 base_color_factor = glm::vec4(1.0f);
+    float metallic_factor = 1.0f;
+    float roughness_factor = 1.0f;
+    glm::vec3 emissive_factor = glm::vec3(0.0f); // <-- ADD THIS
+    float occlusion_strength = 1.0f; // <-- ADD THIS
+
+    // One descriptor set per frame-in-flight
+    std::vector<vk::raii::DescriptorSet> descriptor_sets;
+};
+
+// Create a new struct for Fragment Push Constants
+// This is the small packet of data we'll send to the fragment shader per-draw
+struct MaterialPushConstant {
+    glm::vec4 base_color_factor;          // 16
+    glm::vec4 emissive_factor_and_pad;    // 16
+    float   metallic_factor;              // 4
+    float   roughness_factor;             // 4
+    float   occlusion_strength;   
+    // Add other flags as needed
+};
+
+struct Primitive {
+    uint32_t first_index = 0;
+    uint32_t index_count = 0;
+    int material_index = -1;
+};
+
 
 struct UniformBufferObject {
     // glm::mat4 model;
     glm::mat4 view;
     glm::mat4 proj;
+    glm::vec3 camera_pos;
 };
 
 struct QueueFamilyIndices {

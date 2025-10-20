@@ -179,7 +179,6 @@ public:
         return false;
     }
 
-    void createDescriptorSets(Engine& engine);
 
 private:
     float major_radius = 0.0f;

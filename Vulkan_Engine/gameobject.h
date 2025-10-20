@@ -7,21 +7,24 @@ class Engine; // Forward declaration
 class Gameobject{
 public:
     // --- Rendering Data ---
-    AllocatedBuffer buffer;
-    AllocatedImage texture;
-    vk::raii::Sampler texture_sampler = nullptr;
-    vk::DeviceSize buffer_index_offset; 
+    AllocatedBuffer geometry_buffer; //  A single buffer for all VBO/IBO data
+    vk::DeviceSize index_buffer_offset = 0; // Offset into geometry_buffer for indices
+
+    std::vector<Primitive> primitives; // all sub-meshes to draw
+    std::vector<Material> materials;
+    std::vector<AllocatedImage> textures;
+    vk::raii::Sampler default_sampler = nullptr;
+
+
+    // CPU side geometry. NOTE this could be cleaned after uploading to GPU to save RAM
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
 
-    std::vector<vk::raii::DescriptorSet> descriptor_sets;
-
     // --- Pipeline & Shader Information ---
-    PipelineInfo* pipeline;
+    PipelineInfo* pipeline = nullptr;
 
     // --- Model and texture path ---
     std::string model_path;
-    std::string texture_path;
 
     // --- Transform ---
     glm::mat4 model_matrix = glm::mat4(1.f);
@@ -47,8 +50,9 @@ public:
 
     virtual bool inputUpdate(InputState &input, float &dtime);
 
-    virtual void loadModel(std::string m_path, std::string t_path, Engine &engine);
-    virtual void createDescriptorSets(Engine& engine);
+    virtual void loadModel(std::string m_path, Engine &engine);
+    // virtual void createDescriptorSets(Engine& engine);
+    virtual void createMaterialDescriptorSets(Engine& engine);
     
 
 protected:

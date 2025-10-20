@@ -95,16 +95,28 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
     dynamic_state.pDynamicStates = dynamic_states.data();
 
     // --- PUSH CONSTANT SETUP ---
-    vk::PushConstantRange push_constant_range;
-    push_constant_range.stageFlags = vk::ShaderStageFlagBits::eVertex;
-    push_constant_range.offset = 0;
-    push_constant_range.size = sizeof(glm::mat4); // We will push a single model matrix
+    // Vertex Push Constant (Model Matrix)
+    vk::PushConstantRange vert_push_constant_range;
+    vert_push_constant_range.stageFlags = vk::ShaderStageFlagBits::eVertex;
+    vert_push_constant_range.offset = 0;
+    vert_push_constant_range.size = sizeof(glm::mat4);
+
+    // Fragment Push Constant (Material Data) <-- NEW
+    vk::PushConstantRange frag_push_constant_range;
+    frag_push_constant_range.stageFlags = vk::ShaderStageFlagBits::eFragment;
+    frag_push_constant_range.offset = sizeof(glm::mat4); // Offset it after the vertex data
+    frag_push_constant_range.size = sizeof(MaterialPushConstant);
+
+    std::array<vk::PushConstantRange, 2> push_constant_ranges = { // <-- NEW
+        vert_push_constant_range, frag_push_constant_range
+    };
+
 
     vk::PipelineLayoutCreateInfo pipeline_layout_info; 
     pipeline_layout_info.setLayoutCount = 1;
     pipeline_layout_info.pSetLayouts = &*engine.descriptor_set_layout;
-    pipeline_layout_info.pushConstantRangeCount = 1; // Use one push constant range
-    pipeline_layout_info.pPushConstantRanges = &push_constant_range; // Point to our range
+    pipeline_layout_info.pushConstantRangeCount = static_cast<uint32_t>(push_constant_ranges.size());; // Use one push constant range
+    pipeline_layout_info.pPushConstantRanges = push_constant_ranges.data(); // Point to our range
 
     pipeline_layout = vk::raii::PipelineLayout(engine.logical_device, pipeline_layout_info);
 
@@ -144,8 +156,30 @@ vk::raii::ShaderModule Pipeline::createShaderModule(const std::vector<char>& cod
 vk::raii::DescriptorSetLayout Pipeline::createDescriptorSetLayout(Engine &engine)
 {
     std::array bindings = {
-        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex, nullptr),
-        vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment)
+        // Binding 0: Uniform Buffer (View/Proj) - Vertex Shader
+        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBuffer, 1, 
+                                       vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, nullptr),
+        
+        // Binding 1: Albedo/BaseColor Texture - Fragment Shader
+        vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eCombinedImageSampler, 1, 
+                                       vk::ShaderStageFlagBits::eFragment, nullptr),
+
+        // Binding 2: Normal Map Texture - Fragment Shader
+        vk::DescriptorSetLayoutBinding(2, vk::DescriptorType::eCombinedImageSampler, 1,
+                                       vk::ShaderStageFlagBits::eFragment, nullptr),
+                                       
+        // Binding 3: Metallic/Roughness Texture - Fragment Shader
+        vk::DescriptorSetLayoutBinding(3, vk::DescriptorType::eCombinedImageSampler, 1,
+                                       vk::ShaderStageFlagBits::eFragment, nullptr),
+        // Binding 4: Ambient Occlusion (AO)
+        vk::DescriptorSetLayoutBinding(4, vk::DescriptorType::eCombinedImageSampler, 1, 
+                                       vk::ShaderStageFlagBits::eFragment, nullptr),
+                                       
+        // Binding 5: Emissive
+        vk::DescriptorSetLayoutBinding(5, vk::DescriptorType::eCombinedImageSampler, 1,
+                                       vk::ShaderStageFlagBits::eFragment, nullptr)
+        
+        // You can add more here for Occlusion, Emissive, etc.
     };
     vk::DescriptorSetLayoutCreateInfo layout_info({}, bindings.size(), bindings.data());
 

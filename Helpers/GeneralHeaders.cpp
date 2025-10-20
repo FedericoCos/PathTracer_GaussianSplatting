@@ -1,5 +1,10 @@
 #include "GeneralHeaders.h"
 
+#define TINYGLTF_IMPLEMENTATION
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "tinygltf-release/tiny_gltf.h"
+
+
 // ------ Helper Functions
 
 static const char* VmaResultToString(VkResult r) {

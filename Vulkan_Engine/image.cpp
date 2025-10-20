@@ -131,7 +131,12 @@ void Image::createDepthResources(vk::raii::PhysicalDevice& physical_device,
 
 void Image::transitionImageLayout(const vk::Image &image, uint32_t mip_levels, vk::ImageLayout old_layout, vk::ImageLayout new_layout, Engine &engine)
 {
-    auto command_buffer = beginSingleTimeCommands(engine.command_pool_transfer, &engine.logical_device);
+    bool is_graphic_transition = (new_layout == vk::ImageLayout::eShaderReadOnlyOptimal);
+
+    vk::raii::CommandPool& pool = is_graphic_transition ? engine.command_pool_graphics : engine.command_pool_transfer;
+    vk::raii::Queue& queue = is_graphic_transition ? engine.graphics_queue : engine.transfer_queue;
+
+    auto command_buffer = beginSingleTimeCommands(pool, &engine.logical_device);
 
     vk::ImageMemoryBarrier barrier;
     barrier.oldLayout = old_layout;
@@ -164,7 +169,7 @@ void Image::transitionImageLayout(const vk::Image &image, uint32_t mip_levels, v
 
     command_buffer.pipelineBarrier(source_stage, destination_stage, {}, {}, nullptr, barrier);
 
-    endSingleTimeCommands(command_buffer, engine.transfer_queue);
+    endSingleTimeCommands(command_buffer, queue);
 }
 
 void Image::generateMipmaps(AllocatedImage &image, Engine &engine)

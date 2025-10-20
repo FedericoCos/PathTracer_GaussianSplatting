@@ -122,7 +122,9 @@ void Engine::createModel(Gameobject &obj)
     vk::DeviceSize vertex_size = sizeof(Vertex) * obj.vertices.size();
     vk::DeviceSize index_size = sizeof(uint32_t) * obj.indices.size();
     vk::DeviceSize total_size = vertex_size + index_size;
-    obj.buffer_index_offset = vertex_size;
+    
+    // Store the offset where the index buffer begins
+    obj.index_buffer_offset = vertex_size;
     
     AllocatedBuffer staging_buffer;
     createBuffer(vma_allocator, total_size, vk::BufferUsageFlagBits::eTransferSrc,
@@ -136,9 +138,9 @@ void Engine::createModel(Gameobject &obj)
     vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
 
     createBuffer(vma_allocator, total_size, vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer |vk::BufferUsageFlagBits::eIndexBuffer,
-                vk::MemoryPropertyFlagBits::eDeviceLocal, obj.buffer);
+                vk::MemoryPropertyFlagBits::eDeviceLocal, obj.geometry_buffer);
     
-    copyBuffer(staging_buffer.buffer, obj.buffer.buffer, total_size,
+    copyBuffer(staging_buffer.buffer, obj.geometry_buffer.buffer, total_size,
                 command_pool_transfer, &logical_device, transfer_queue);
 }
 
@@ -437,10 +439,12 @@ void Engine::loadObjects(const std::string& scene_path)
         // Load model and texture from the paths specified in the JSON
         std::string model_path = obj_def["model"];
         std::string texture_path = obj_def["texture"];
-        new_object.loadModel(model_path, texture_path, *this);
+        new_object.loadModel(model_path, *this);
         
         // Create the GPU buffer for the model
         createModel(new_object);
+
+       //  new_object.createMaterialDescriptorSets(*this);
 
         // Set the object's transform from the JSON data
         if (obj_def.contains("position")) {
@@ -495,7 +499,20 @@ void Engine::loadObjects(const std::string& scene_path)
 void Engine::createTorusModel()
 {
     torus.generateMesh(40.f, 1.f, 0.5f, 200, 80);
-    createModel(torus);
+    Primitive torusPrim;
+    torusPrim.index_count = torus.indices.size();
+    torusPrim.first_index = 0;
+    torusPrim.material_index = 0;
+    torus.primitives.push_back(torusPrim);
+
+    Material torusMat;
+    torusMat.albedo_texture_index = -1; // No texture, shader should use baseColorFactor
+    torusMat.base_color_factor = glm::vec4(1.0f, 1.0f, 1.0f, 0.5f); // 50% transparent white
+    torus.materials.push_back(std::move(torusMat));
+    // --- END NEW ---
+
+    createModel(torus); // Upload geometry
+    // torus.createMaterialDescriptorSets(*this);
 
     // Setup torus pipeline
     PipelineKey p_key;
@@ -539,15 +556,24 @@ void Engine::createUniformBuffers()
 
 void Engine::createDescriptorPool()
 {
-    uint32_t object_count = 1; // the torus
+    uint32_t object_count = 0;
+    uint32_t total_materials = 0;
     for(auto& pair : p_o_map){
-        object_count += pair.second.size();
+        for (auto& obj : pair.second) {
+            total_materials += obj.materials.size();
+        }
     }
-    uint32_t total_sets = object_count * MAX_FRAMES_IN_FLIGHT;
+    total_materials += torus.materials.size(); // Add torus materials
 
-    std::array<vk::DescriptorPoolSize, 2> pool_sizes = {
+    // We now allocate per-material, not per-object
+    uint32_t total_sets = total_materials * MAX_FRAMES_IN_FLIGHT;
+    
+    // This MUST match your descriptor set layout
+    std::array<vk::DescriptorPoolSize, 4> pool_sizes = {
         vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, total_sets),
-        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_sets)
+        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_sets), // Albedo
+        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_sets), // Normal
+        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_sets)  // Met/Rough
     };
 
     vk::DescriptorPoolCreateInfo pool_info;
@@ -563,11 +589,11 @@ void Engine::createDescriptorSets()
 {
     for(auto& pair : p_o_map){
         for(auto& object : pair.second){
-            object.createDescriptorSets(*this);
+            object.createMaterialDescriptorSets(*this);
         }
     }
 
-    torus.createDescriptorSets(*this);
+    // torus.createMaterialDescriptorSets(*this);
 }
 
 void Engine::createGraphicsCommandBuffers(){
@@ -672,23 +698,72 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline.second.pipeline);
 
         for(auto& gameobject : p_o_map[pipeline.first]){
-            graphics_command_buffer[current_frame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *gameobject.pipeline -> layout, 0, *gameobject.descriptor_sets[current_frame], nullptr);
+            
+            // Bind the geometry buffers ONCE per object
+            graphics_command_buffer[current_frame].bindVertexBuffers(0, {gameobject.geometry_buffer.buffer}, {0});
+            graphics_command_buffer[current_frame].bindIndexBuffer(gameobject.geometry_buffer.buffer, gameobject.index_buffer_offset, vk::IndexType::eUint32);
+            
+            // Push the model matrix ONCE per object
             graphics_command_buffer[current_frame].pushConstants<glm::mat4>(*gameobject.pipeline -> layout, vk::ShaderStageFlagBits::eVertex, 0, gameobject.model_matrix);
-            graphics_command_buffer[current_frame].bindVertexBuffers(0, {gameobject.buffer.buffer}, {0});
-            graphics_command_buffer[current_frame].bindIndexBuffer(gameobject.buffer.buffer, gameobject.buffer_index_offset, vk::IndexType::eUint32);
-            graphics_command_buffer[current_frame].drawIndexed(gameobject.indices.size(), 1, 0, 0, 0);
+
+            // --- NEW: Loop over primitives ---
+            for (const auto& primitive : gameobject.primitives) {
+                // Get the material for this primitive
+                const Material& material = gameobject.materials[primitive.material_index];
+
+                MaterialPushConstant mat_constants;
+                mat_constants.base_color_factor = material.base_color_factor;
+                mat_constants.metallic_factor = material.metallic_factor;
+                mat_constants.roughness_factor = material.roughness_factor;
+                mat_constants.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 1.f);
+                mat_constants.occlusion_strength = material.occlusion_strength;
+                
+                graphics_command_buffer[current_frame].pushConstants<MaterialPushConstant>(
+                    *gameobject.pipeline -> layout, 
+                    vk::ShaderStageFlagBits::eFragment, 
+                    sizeof(glm::mat4), // The offset we defined
+                    mat_constants
+                );
+
+                // Bind the material's descriptor set
+                graphics_command_buffer[current_frame].bindDescriptorSets(
+                    vk::PipelineBindPoint::eGraphics, 
+                    *gameobject.pipeline -> layout, 0, 
+                    *material.descriptor_sets[current_frame], 
+                    nullptr);
+                
+                // Draw the primitive
+                graphics_command_buffer[current_frame].drawIndexed(
+                    primitive.index_count,   // indexCount
+                    1,                      // instanceCount
+                    primitive.first_index,   // firstIndex
+                    0,                      // vertexOffset
+                    0);                     // firstInstance
+            }
         }
     }
 
     
-    graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *torus.pipeline->pipeline);
-    graphics_command_buffer[current_frame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *torus.pipeline -> layout, 0, *torus.descriptor_sets[current_frame], nullptr);
+    // --- MODIFIED: Torus drawing (must also use primitive loop) ---
+    /* graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *torus.pipeline->pipeline);
     glm::mat4 model_toroid = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.5f, 0.0f)); // TO FIX
     graphics_command_buffer[current_frame].pushConstants<glm::mat4>(*torus.pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, model_toroid);
-    graphics_command_buffer[current_frame].bindVertexBuffers(0, {torus.buffer.buffer}, {0});
-    graphics_command_buffer[current_frame].bindIndexBuffer(torus.buffer.buffer, torus.buffer_index_offset, vk::IndexType::eUint32);
-    graphics_command_buffer[current_frame].drawIndexed(torus.indices.size(), 1, 0, 0, 0);
 
+    // Bind torus geometry
+    graphics_command_buffer[current_frame].bindVertexBuffers(0, {torus.geometry_buffer.buffer}, {0});
+    graphics_command_buffer[current_frame].bindIndexBuffer(torus.geometry_buffer.buffer, torus.index_buffer_offset, vk::IndexType::eUint32);
+
+    // Loop over torus primitives (even if there's only one)
+    for (const auto& primitive : torus.primitives) {
+        const Material& material = torus.materials[primitive.material_index];
+        graphics_command_buffer[current_frame].bindDescriptorSets(
+            vk::PipelineBindPoint::eGraphics, 
+            *torus.pipeline -> layout, 0, 
+            *material.descriptor_sets[current_frame], 
+            nullptr);
+            
+        graphics_command_buffer[current_frame].drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
+    } */
     graphics_command_buffer[current_frame].endRendering();
 
     transition_image_layout(
@@ -794,6 +869,8 @@ void Engine::updateUniformBuffer(uint32_t current_image)
     ubo.view = camera.getViewMatrix();
 
     ubo.proj = camera.getProjectionMatrix();
+
+    ubo.camera_pos = camera.getCurrentState().f_camera.position;
 
     memcpy(uniform_buffers_mapped[current_image], &ubo, sizeof(ubo));
 }

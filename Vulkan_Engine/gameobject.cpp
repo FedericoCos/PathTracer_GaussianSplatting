@@ -37,8 +37,6 @@ bool Gameobject::inputUpdate(InputState &input, float &dtime)
     return false;
 }
 
-// In gameobject.cpp
-
 void Gameobject::loadModel(std::string m_path, Engine &engine)
 {
     tinygltf::Model model;
@@ -71,17 +69,70 @@ void Gameobject::loadModel(std::string m_path, Engine &engine)
     std::string base_dir = m_path.substr(0, m_path.find_last_of('/') + 1);
 
     // --- 1. Load Textures ---
+    std::map<int, vk::Format> image_formats;
+
+    // Helper lambda to safely get the image source index from a texture index
+    auto getImageSourceIndex = [&](int texIdx) -> int {
+        if (texIdx >= 0 && texIdx < model.textures.size()) {
+            return model.textures[texIdx].source;
+        }
+        return -1;
+    };
+
+    for (const auto& mat : model.materials) {
+        int sourceIdx = -1;
+
+        // --- sRGB (Color) Textures ---
+        sourceIdx = getImageSourceIndex(mat.pbrMetallicRoughness.baseColorTexture.index);
+        if (sourceIdx >= 0) image_formats[sourceIdx] = vk::Format::eR8G8B8A8Srgb;
+
+        sourceIdx = getImageSourceIndex(mat.emissiveTexture.index);
+        if (sourceIdx >= 0) image_formats[sourceIdx] = vk::Format::eR8G8B8A8Srgb;
+
+        // --- Unorm (Linear Data) Textures ---
+        sourceIdx = getImageSourceIndex(mat.normalTexture.index);
+        if (sourceIdx >= 0) image_formats[sourceIdx] = vk::Format::eR8G8B8A8Unorm;
+
+        sourceIdx = getImageSourceIndex(mat.pbrMetallicRoughness.metallicRoughnessTexture.index);
+        if (sourceIdx >= 0) image_formats[sourceIdx] = vk::Format::eR8G8B8A8Unorm;
+
+        sourceIdx = getImageSourceIndex(mat.occlusionTexture.index);
+        if (sourceIdx >= 0) image_formats[sourceIdx] = vk::Format::eR8G8B8A8Unorm;
+
+        // Check for clearcoat extensions (this model uses them )
+        if (mat.extensions.count("KHR_materials_clearcoat")) {
+            const auto& clearcoat = mat.extensions.at("KHR_materials_clearcoat");
+            if (clearcoat.Has("clearcoatTexture")) {
+                sourceIdx = getImageSourceIndex(clearcoat.Get("clearcoatTexture").Get("index").Get<int>());
+                if (sourceIdx >= 0) image_formats[sourceIdx] = vk::Format::eR8G8B8A8Unorm;
+            }
+            if (clearcoat.Has("clearcoatRoughnessTexture")) {
+                sourceIdx = getImageSourceIndex(clearcoat.Get("clearcoatRoughnessTexture").Get("index").Get<int>());
+                if (sourceIdx >= 0) image_formats[sourceIdx] = vk::Format::eR8G8B8A8Unorm;
+            }
+        }
+
+        
+    }
+
     textures.emplace_back();
     createDefaultTexture(engine, textures[0]); // Default white texture
 
+    int image_index = 0;
     for (const auto& image : model.images) {
         std::string texture_path = base_dir + image.uri;
+        vk::Format format = vk::Format::eR8G8B8A8Srgb;
+        if (image_formats.contains(image_index)) {
+            format = image_formats[image_index];
+        }
+
         try {
-            textures.push_back(Image::createTextureImage(engine, texture_path.c_str()));
+            textures.push_back(Image::createTextureImage(engine, texture_path.c_str(), format));
         } catch (...) {
             std::cerr << "Failed to load texture: " << texture_path << ". Using default.\n";
             textures.emplace_back();
         }
+        image_index++;
     }
 
     default_sampler = Image::createTextureSampler(engine.physical_device, &engine.logical_device, 1);
@@ -97,6 +148,13 @@ void Gameobject::loadModel(std::string m_path, Engine &engine)
 
         const auto& ef = mat.emissiveFactor;
         newMaterial.emissive_factor = glm::vec3(ef[0], ef[1], ef[2]);
+        if (mat.extensions.count("KHR_materials_emissive_strength")) {
+            const auto& strength_ext = mat.extensions.at("KHR_materials_emissive_strength");
+            if (strength_ext.Has("emissiveStrength")) {
+                float strength = static_cast<float>(strength_ext.Get("emissiveStrength").Get<double>());
+                newMaterial.emissive_factor *= strength;
+            }
+        }
 
         auto getTexIndex = [&](int texIdx) -> int {
             if (texIdx >= 0 && texIdx < model.textures.size())
@@ -112,6 +170,46 @@ void Gameobject::loadModel(std::string m_path, Engine &engine)
         newMaterial.occlusion_strength = static_cast<float>(mat.occlusionTexture.strength); // <-- NEW
         
         newMaterial.emissive_texture_index = getTexIndex(mat.emissiveTexture.index); // <-- NEW
+
+        newMaterial.specular_color_factor = glm::vec3(1.0f);
+        newMaterial.specular_factor = 0.5f; // Default for IOR 1.5
+
+        if (mat.extensions.count("KHR_materials_specular")) {
+            const auto& spec_ext = mat.extensions.at("KHR_materials_specular");
+            
+            if (spec_ext.Has("specularFactor")) {
+                newMaterial.specular_factor = static_cast<float>(spec_ext.Get("specularFactor").Get<double>());
+            }
+            
+            if (spec_ext.Has("specularColorFactor")) {
+                // This is the corrected part:
+                const auto& colorValue = spec_ext.Get("specularColorFactor");
+                if (colorValue.IsArray() && colorValue.ArrayLen() >= 3) {
+                    newMaterial.specular_color_factor = glm::vec3(
+                        colorValue.Get(0).Get<double>(),
+                        colorValue.Get(1).Get<double>(),
+                        colorValue.Get(2).Get<double>()
+                    );
+                }
+            }
+        }
+
+        if (mat.extensions.count("KHR_materials_clearcoat")) {
+            const auto& cc_ext = mat.extensions.at("KHR_materials_clearcoat");
+
+            if (cc_ext.Has("clearcoatFactor")) {
+                newMaterial.clearcoat_factor = static_cast<float>(cc_ext.Get("clearcoatFactor").Get<double>());
+            }
+            if (cc_ext.Has("clearcoatRoughnessFactor")) {
+                newMaterial.clearcoat_roughness_factor = static_cast<float>(cc_ext.Get("clearcoatRoughnessFactor").Get<double>());
+            }
+            if (cc_ext.Has("clearcoatTexture")) {
+                newMaterial.clearcoat_texture_index = getTexIndex(cc_ext.Get("clearcoatTexture").Get("index").Get<int>());
+            }
+            if (cc_ext.Has("clearcoatRoughnessTexture")) {
+                newMaterial.clearcoat_roughness_texture_index = getTexIndex(cc_ext.Get("clearcoatRoughnessTexture").Get("index").Get<int>());
+            }
+        }
 
         materials.push_back(std::move(newMaterial));
     }
@@ -271,7 +369,7 @@ void Gameobject::createMaterialDescriptorSets(Engine& engine) {
     };
 
     for (auto& material : materials) {
-        std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *engine.descriptor_set_layout);
+        std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *pipeline->descriptor_set_layout);
         vk::DescriptorSetAllocateInfo alloc_info;
         alloc_info.descriptorPool = engine.descriptor_pool;
         alloc_info.descriptorSetCount = static_cast<uint32_t>(layouts.size());
@@ -312,7 +410,17 @@ void Gameobject::createMaterialDescriptorSets(Engine& engine) {
             emissive_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
 
-            std::array<vk::WriteDescriptorSet, 6> descriptor_writes = {};
+            vk::DescriptorImageInfo clearcoat_info = {};
+            clearcoat_info.sampler = *default_sampler;
+            clearcoat_info.imageView = *getImageView(material.clearcoat_texture_index);
+            clearcoat_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+
+            vk::DescriptorImageInfo clearcoat_roughness_info = {};
+            clearcoat_roughness_info.sampler = *default_sampler;
+            clearcoat_roughness_info.imageView = *getImageView(material.clearcoat_roughness_texture_index);
+            clearcoat_roughness_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+
+            std::array<vk::WriteDescriptorSet, 8> descriptor_writes = {};
             
             // Binding 0: UBO
             descriptor_writes[0].dstSet = material.descriptor_sets[i];
@@ -355,6 +463,20 @@ void Gameobject::createMaterialDescriptorSets(Engine& engine) {
             descriptor_writes[5].descriptorType = vk::DescriptorType::eCombinedImageSampler;
             descriptor_writes[5].descriptorCount = 1;
             descriptor_writes[5].pImageInfo = &emissive_info;
+
+            // Binding 6: Clearcoat
+            descriptor_writes[6].dstSet = material.descriptor_sets[i];
+            descriptor_writes[6].dstBinding = 6;
+            descriptor_writes[6].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+            descriptor_writes[6].descriptorCount = 1;
+            descriptor_writes[6].pImageInfo = &clearcoat_info;
+
+            // Binding 7: Clearcoat Roughness
+            descriptor_writes[7].dstSet = material.descriptor_sets[i];
+            descriptor_writes[7].dstBinding = 7;
+            descriptor_writes[7].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+            descriptor_writes[7].descriptorCount = 1;
+            descriptor_writes[7].pImageInfo = &clearcoat_roughness_info;
 
             engine.logical_device.updateDescriptorSets(descriptor_writes, {});
         }

@@ -6,9 +6,15 @@ class Engine; // Forward declaration
 
 class Gameobject{
 public:
+    // --- Descriptor sets data ---
+    vk::DescriptorSetLayout *descriptor_layout = nullptr;
+
+
+
+
     // --- Rendering Data ---
-    AllocatedBuffer geometry_buffer; //  A single buffer for all VBO/IBO data
-    vk::DeviceSize index_buffer_offset = 0; // Offset into geometry_buffer for indices
+    AllocatedBuffer geometry_buffer; 
+    vk::DeviceSize index_buffer_offset = 0;
 
     std::vector<Primitive> primitives; // all sub-meshes to draw
     std::vector<Material> materials;

@@ -30,6 +30,7 @@ $(TARGET): $(OBJS)
 test: $(TARGET)
 	glslc shaders/basic/vertex.vert -o shaders/basic/vertex.spv
 	glslc shaders/basic/fragment.frag -o shaders/basic/fragment.spv
+	glslc shaders/basic/vertex_torus.vert -o shaders/basic/vertex_torus.spv
 	glslc shaders/basic/fragment_torus.frag -o shaders/basic/fragment_torus.spv
 	./$(TARGET)
 

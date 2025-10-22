@@ -72,9 +72,6 @@ public:
     // Swapchain variables
     SwapChainBundle swapchain;
 
-    // Pipeline variables
-    vk::raii::DescriptorSetLayout descriptor_set_layout = nullptr;
-
     // Command pools variables
     vk::raii::CommandPool command_pool_graphics = nullptr;
     std::vector<vk::raii::CommandBuffer> graphics_command_buffer;
@@ -101,18 +98,17 @@ private:
     float total_elapsed = 0.f;
     int fps_count = 0;
 
-    const std::string HOUSE_MODEL_PATH = "resources/Models/Test_models/HouseSuburban.obj";
-    const std::string HOUSE_TEXTURE_PATH = "resources/Models/Test_models/HouseSuburban_Base.png";
-
-    const std::string LAMP_MODEL_PATH = "resources/Models/Test_models/street_light.obj";
-    const std::string LAMP_TEXTURE_PATH = "resources/Models/Test_models/street_light.jpeg";
-
     // RAII context
     vk::raii::Context context;
 
     // Pipeline variables
     std::map<PipelineKey, std::vector<Gameobject>> p_o_map;
     std::map<PipelineKey, PipelineInfo> p_p_map;
+    const std::string v_shader_pbr = "shaders/basic/vertex.spv";
+    const std::string f_shader_pbr = "shaders/basic/fragment.spv";
+    
+    const std::string v_shader_torus = "shaders/basic/vertex_torus.spv";
+    const std::string f_shader_torus = "shaders/basic/fragment_torus.spv";
 
     // Depth variables
     AllocatedImage depth_image;
@@ -209,6 +205,8 @@ private:
     void createGraphicsCommandBuffers();
 
     void createSyncObjects();
+
+    void createPipelines();
     void loadObjects(const std::string& scene_path);
     void createTorusModel();
     void createUniformBuffers();

@@ -1,7 +1,7 @@
 #include "image.h"
 #include "engine.h"
 
-AllocatedImage Image::createTextureImage(Engine &engine, const char * path)
+AllocatedImage Image::createTextureImage(Engine &engine, const char * path, vk::Format format)
 {
     int tex_width,tex_height, tex_channels;
 
@@ -25,7 +25,7 @@ AllocatedImage Image::createTextureImage(Engine &engine, const char * path)
     stbi_image_free(pixels);
 
     uint32_t mip_levels = static_cast<uint32_t>(std::floor(std::log2(std::max(tex_width, tex_height)))) + 1;
-    AllocatedImage texture_image = createImage(tex_width, tex_height, mip_levels, vk::SampleCountFlagBits::e1, vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal,
+    AllocatedImage texture_image = createImage(tex_width, tex_height, mip_levels, vk::SampleCountFlagBits::e1, format, vk::ImageTiling::eOptimal,
                 vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
             vk::MemoryPropertyFlagBits::eDeviceLocal, engine);
     
@@ -102,12 +102,12 @@ vk::raii::Sampler Image::createTextureSampler(vk::raii::PhysicalDevice& physical
     sampl.addressModeU = vk::SamplerAddressMode::eRepeat;
     sampl.addressModeV = vk::SamplerAddressMode::eRepeat;
     sampl.addressModeW = vk::SamplerAddressMode::eRepeat;
-    sampl.mipLodBias = 1;
+    sampl.mipLodBias = 0.0f;
     sampl.anisotropyEnable = vk::True;
     sampl.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
     sampl.compareEnable = vk::False;
     sampl.compareOp = vk::CompareOp::eAlways;
-    sampl.minLod = 1;
+    sampl.minLod = 0.0f;
     sampl.maxLod = static_cast<float>(mip_levels);
 
     return vk::raii::Sampler(*logical_device, sampl);

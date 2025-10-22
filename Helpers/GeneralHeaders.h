@@ -75,7 +75,7 @@ struct Vertex{
     }
 
     bool operator==(const Vertex& other) const {
-        return pos == other.pos && color == other.color && tex_coord == other.tex_coord && tangent == other.tangent && tangent == other.tangent;
+        return pos == other.pos && color == other.color && tex_coord == other.tex_coord && tangent == other.tangent && normal == other.normal;
     }
 };
 
@@ -92,13 +92,23 @@ namespace std {
         }
     };
 
+    template<> struct hash<glm::vec4> {
+        std::size_t operator()(const glm::vec4& v) const {
+            return ((std::hash<float>()(v.x) ^
+                   (std::hash<float>()(v.y) << 1)) >> 1) ^
+                   ((std::hash<float>()(v.z) ^
+                   (std::hash<float>()(v.w) << 1)) >> 1);
+        }
+    };
+
     // Custom specialization of std::hash for Vertex
     template<> struct hash<Vertex> {
         std::size_t operator()(const Vertex& vertex) const {
             return ((std::hash<glm::vec3>()(vertex.pos) ^
-                (std::hash<glm::vec3>()(vertex.color) << 1)) >> 1) ^
-                (std::hash<glm::vec3>()(vertex.normal) << 1) ^        
-                (std::hash<glm::vec2>()(vertex.tex_coord) << 1);
+                   (std::hash<glm::vec3>()(vertex.color) << 1)) >> 1) ^
+                   (std::hash<glm::vec3>()(vertex.normal) << 1) ^
+                   (std::hash<glm::vec4>()(vertex.tangent) << 1) ^
+                   (std::hash<glm::vec2>()(vertex.tex_coord) << 1);
         }
     };
 }
@@ -174,15 +184,23 @@ struct Material {
     int albedo_texture_index = -1;
     int normal_texture_index = -1;
     int metallic_roughness_texture_index = -1;
-    int occlusion_texture_index = -1; // <-- ADD THIS
-    int emissive_texture_index = -1;  // <-- ADD THIS
+    int occlusion_texture_index = -1;
+    int emissive_texture_index = -1;  
+    int clearcoat_texture_index = -1;
+    int clearcoat_roughness_texture_index = -1;
 
     // PBR scalar factors (loaded from glTF)
     glm::vec4 base_color_factor = glm::vec4(1.0f);
     float metallic_factor = 1.0f;
     float roughness_factor = 1.0f;
-    glm::vec3 emissive_factor = glm::vec3(0.0f); // <-- ADD THIS
-    float occlusion_strength = 1.0f; // <-- ADD THIS
+    glm::vec3 emissive_factor = glm::vec3(0.0f);
+    float occlusion_strength = 1.0f;
+    glm::vec3 specular_color_factor = glm::vec3(1.f);
+    float specular_factor = 0.5f;
+    float clearcoat_factor = 0.0f;
+    float clearcoat_roughness_factor = 0.0f;
+
+
 
     // One descriptor set per frame-in-flight
     std::vector<vk::raii::DescriptorSet> descriptor_sets;
@@ -195,7 +213,12 @@ struct MaterialPushConstant {
     glm::vec4 emissive_factor_and_pad;    // 16
     float   metallic_factor;              // 4
     float   roughness_factor;             // 4
-    float   occlusion_strength;   
+    float   occlusion_strength;           // 4  
+    float specular_factor;                // 4
+    glm::vec3 specular_color_factor;      // 12
+    float pad;                            // 4
+    float clearcoat_factor;               // 4
+    float clearcoat_roughness_factor;     // 4
     // Add other flags as needed
 };
 
@@ -305,7 +328,7 @@ struct CameraState{
 
     float fov = 45.f;
     float near_plane = 0.1f;
-    float far_plane = 1000.f;
+    float far_plane = 10000.f;
     float aspect_ratio;
 };
 
@@ -322,6 +345,7 @@ struct PipelineKey {
 };
 
 struct PipelineInfo {
+    vk::raii::DescriptorSetLayout descriptor_set_layout = nullptr;
     vk::raii::Pipeline pipeline = nullptr;
     vk::raii::PipelineLayout layout = nullptr;
     std::string v_shader;
@@ -333,13 +357,14 @@ struct PipelineInfo {
 
     // Move Constructor
     PipelineInfo(PipelineInfo&& other) noexcept
-        : pipeline(std::move(other.pipeline)), layout(std::move(other.layout)),
+        : descriptor_set_layout(std::move(descriptor_set_layout)), pipeline(std::move(other.pipeline)), layout(std::move(other.layout)),
             v_shader(other.v_shader), f_shader(other.f_shader), is_transparent(other.is_transparent),
             cull_mode(other.cull_mode) {}
 
     // Move Assignment Operator
     PipelineInfo& operator=(PipelineInfo&& other) noexcept {
         if (this != &other) {
+            descriptor_set_layout = std::move(other.descriptor_set_layout);
             pipeline = std::move(other.pipeline);
             layout = std::move(other.layout);
             v_shader = other.v_shader;

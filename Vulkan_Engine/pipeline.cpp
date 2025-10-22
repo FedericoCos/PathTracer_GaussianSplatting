@@ -5,7 +5,7 @@
 
 vk::raii::Pipeline Pipeline::createGraphicsPipeline(
     Engine &engine, 
-    vk::raii::PipelineLayout &pipeline_layout, 
+    PipelineInfo *p_info, 
     std::string v_shader, 
     std::string f_shader,
     bool is_transparent,
@@ -101,24 +101,24 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
     vert_push_constant_range.offset = 0;
     vert_push_constant_range.size = sizeof(glm::mat4);
 
-    // Fragment Push Constant (Material Data) <-- NEW
+    // Fragment Push Constant (Material Data)
     vk::PushConstantRange frag_push_constant_range;
     frag_push_constant_range.stageFlags = vk::ShaderStageFlagBits::eFragment;
     frag_push_constant_range.offset = sizeof(glm::mat4); // Offset it after the vertex data
     frag_push_constant_range.size = sizeof(MaterialPushConstant);
 
-    std::array<vk::PushConstantRange, 2> push_constant_ranges = { // <-- NEW
+    std::array<vk::PushConstantRange, 2> push_constant_ranges = {
         vert_push_constant_range, frag_push_constant_range
     };
 
 
     vk::PipelineLayoutCreateInfo pipeline_layout_info; 
     pipeline_layout_info.setLayoutCount = 1;
-    pipeline_layout_info.pSetLayouts = &*engine.descriptor_set_layout;
+    pipeline_layout_info.pSetLayouts = &*(p_info -> descriptor_set_layout);
     pipeline_layout_info.pushConstantRangeCount = static_cast<uint32_t>(push_constant_ranges.size());; // Use one push constant range
     pipeline_layout_info.pPushConstantRanges = push_constant_ranges.data(); // Point to our range
 
-    pipeline_layout = vk::raii::PipelineLayout(engine.logical_device, pipeline_layout_info);
+    p_info -> layout = vk::raii::PipelineLayout(engine.logical_device, pipeline_layout_info);
 
     vk::Format depth_format = findDepthFormat(engine.physical_device);
 
@@ -138,7 +138,7 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
     pipeline_info.pMultisampleState = &multisampling;
     pipeline_info.pColorBlendState = &color_blending;
     pipeline_info.pDynamicState = &dynamic_state;
-    pipeline_info.layout = *pipeline_layout;
+    pipeline_info.layout = *(p_info -> layout);
     pipeline_info.pDepthStencilState = &depth_stencil;
 
     return std::move(vk::raii::Pipeline(engine.logical_device, nullptr, pipeline_info));
@@ -153,34 +153,8 @@ vk::raii::ShaderModule Pipeline::createShaderModule(const std::vector<char>& cod
     return shader_module;
 }
 
-vk::raii::DescriptorSetLayout Pipeline::createDescriptorSetLayout(Engine &engine)
+vk::raii::DescriptorSetLayout Pipeline::createDescriptorSetLayout(Engine &engine, std::vector<vk::DescriptorSetLayoutBinding> &bindings)
 {
-    std::array bindings = {
-        // Binding 0: Uniform Buffer (View/Proj) - Vertex Shader
-        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBuffer, 1, 
-                                       vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, nullptr),
-        
-        // Binding 1: Albedo/BaseColor Texture - Fragment Shader
-        vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eCombinedImageSampler, 1, 
-                                       vk::ShaderStageFlagBits::eFragment, nullptr),
-
-        // Binding 2: Normal Map Texture - Fragment Shader
-        vk::DescriptorSetLayoutBinding(2, vk::DescriptorType::eCombinedImageSampler, 1,
-                                       vk::ShaderStageFlagBits::eFragment, nullptr),
-                                       
-        // Binding 3: Metallic/Roughness Texture - Fragment Shader
-        vk::DescriptorSetLayoutBinding(3, vk::DescriptorType::eCombinedImageSampler, 1,
-                                       vk::ShaderStageFlagBits::eFragment, nullptr),
-        // Binding 4: Ambient Occlusion (AO)
-        vk::DescriptorSetLayoutBinding(4, vk::DescriptorType::eCombinedImageSampler, 1, 
-                                       vk::ShaderStageFlagBits::eFragment, nullptr),
-                                       
-        // Binding 5: Emissive
-        vk::DescriptorSetLayoutBinding(5, vk::DescriptorType::eCombinedImageSampler, 1,
-                                       vk::ShaderStageFlagBits::eFragment, nullptr)
-        
-        // You can add more here for Occlusion, Emissive, etc.
-    };
     vk::DescriptorSetLayoutCreateInfo layout_info({}, bindings.size(), bindings.data());
 
     return std::move(vk::raii::DescriptorSetLayout(engine.logical_device, layout_info));

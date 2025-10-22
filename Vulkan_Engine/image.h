@@ -6,7 +6,7 @@ class Engine; // Forward Declaration
 
 
 namespace Image{
-    AllocatedImage createTextureImage(Engine &engine, const char * path);
+    AllocatedImage createTextureImage(Engine &engine, const char * path, vk::Format format);
 
     AllocatedImage createImage(uint32_t width, uint32_t height, uint32_t mip_levels, vk::SampleCountFlagBits num_samples, vk::Format format,vk::ImageTiling tiling, 
         vk::ImageUsageFlags usage, vk::MemoryPropertyFlags properties,

@@ -297,10 +297,8 @@ bool Engine::initVulkan(){
     present_queue = Device::getQueue(*this, queue_indices.present_family.value());
     transfer_queue = Device::getQueue(*this, queue_indices.transfer_family.value());
 
-
     // Get swapchain and swapchain images
     swapchain = Swapchain::createSwapChain(*this);
-
     if(swapchain.image_views.empty() || swapchain.image_views.size() <= 0){
         std::cout << "Problem with the image views" << std::endl;
     }
@@ -320,12 +318,10 @@ bool Engine::initVulkan(){
         throw std::runtime_error("vmaCreateAllocator failed");
     }
 
-
-    descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this);
-
     // Command creation
     createCommandPool();
 
+    // TO FIX THIS
     color_image = Image::createImage(swapchain.extent.width, swapchain.extent.height,
                         1, mssa_samples, swapchain.format, vk::ImageTiling::eOptimal, 
                     vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment, 
@@ -333,8 +329,12 @@ bool Engine::initVulkan(){
     color_image.image_view = Image::createImageView(color_image, *this);
     Image::createDepthResources(physical_device, depth_image, swapchain.extent.width, swapchain.extent.height, *this);
 
+    // PIPELINE CREATION
+    createPipelines();
+
     loadObjects("resources/scene.json");
     createTorusModel();
+
     createUniformBuffers();
     createDescriptorPool();
     createDescriptorSets();
@@ -421,24 +421,97 @@ void Engine::createCommandPool(){
     command_pool_transfer = vk::raii::CommandPool(logical_device, pool_info);
 }
 
-void Engine::loadObjects(const std::string& scene_path)
+void Engine::createPipelines()
+{
+    // Creating the pipeline of the objects in the scene
+    // Here, we fill the pipeline key -> pipeline obj map to later use it with the objects
+
+    // Pipeline of pbr objects
+    PipelineKey p_key;
+    std::vector<vk::DescriptorSetLayoutBinding> bindings = {
+        // Binding 0: Uniform Buffer (View/Proj) - Vertex Shader
+        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBuffer, 1, 
+                                       vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, nullptr),
+        // Binding 1: Albedo/BaseColor Texture - Fragment Shader
+        vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eCombinedImageSampler, 1, 
+                                       vk::ShaderStageFlagBits::eFragment, nullptr),
+        // Binding 2: Normal Map Texture - Fragment Shader
+        vk::DescriptorSetLayoutBinding(2, vk::DescriptorType::eCombinedImageSampler, 1,
+                                       vk::ShaderStageFlagBits::eFragment, nullptr),             
+        // Binding 3: Metallic/Roughness Texture - Fragment Shader
+        vk::DescriptorSetLayoutBinding(3, vk::DescriptorType::eCombinedImageSampler, 1,
+                                       vk::ShaderStageFlagBits::eFragment, nullptr),
+        // Binding 4: Ambient Occlusion (AO)
+        vk::DescriptorSetLayoutBinding(4, vk::DescriptorType::eCombinedImageSampler, 1, 
+                                       vk::ShaderStageFlagBits::eFragment, nullptr),                 
+        // Binding 5: Emissive
+        vk::DescriptorSetLayoutBinding(5, vk::DescriptorType::eCombinedImageSampler, 1,
+                                       vk::ShaderStageFlagBits::eFragment, nullptr),
+        // Binding 6: Clearcoat Texture
+        vk::DescriptorSetLayoutBinding(6, vk::DescriptorType::eCombinedImageSampler, 1, 
+                                    vk::ShaderStageFlagBits::eFragment, nullptr),
+        // Binding 7: Clearcoat Roughness Texture
+        vk::DescriptorSetLayoutBinding(7, vk::DescriptorType::eCombinedImageSampler, 1,
+                                    vk::ShaderStageFlagBits::eFragment, nullptr)
+    };
+    
+    // Key definition
+    p_key.v_shader = v_shader_pbr;
+    p_key.f_shader = f_shader_pbr;
+    p_key.is_transparent = false;
+    p_key.cull_mode = vk::CullModeFlagBits::eBack;
+
+    // Pipeline creation
+    PipelineInfo& p_info = p_p_map[p_key];
+    p_info.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings);
+    p_info.pipeline = Pipeline::createGraphicsPipeline(
+        *this,
+        &p_info,
+        p_key.v_shader,
+        p_key.f_shader,
+        p_key.is_transparent,
+        p_key.cull_mode
+    );
+
+    // Pipeline for the torus
+    bindings = {
+        // Binding 0: Uniform Buffer (View/Proj) - Vertex Shader
+        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBuffer, 1, 
+                                       vk::ShaderStageFlagBits::eVertex, nullptr)
+    };
+    p_key.v_shader = v_shader_torus;
+    p_key.f_shader = f_shader_torus;
+    p_key.is_transparent = true;
+    p_key.cull_mode = vk::CullModeFlagBits::eBack;
+
+    PipelineInfo& p_info_torus = p_p_map[p_key];
+    p_info_torus.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings);
+    p_info_torus.pipeline = Pipeline::createGraphicsPipeline(
+        *this,
+        &p_info_torus,
+        p_key.v_shader,
+        p_key.f_shader,
+        p_key.is_transparent,
+        p_key.cull_mode
+    );
+
+}
+
+void Engine::loadObjects(const std::string &scene_path)
 {
     // Open the scene file
     std::ifstream scene_file(scene_path);
     if (!scene_file.is_open()) {
         throw std::runtime_error("Failed to open scene file: " + scene_path);
     }
-
     // Parse the JSON data
     json scene_data = json::parse(scene_file);
 
-    // Iterate over each object definition in the JSON array
+    // Iterate over each object definition in the JSON
     for (const auto& obj_def : scene_data) {
         P_object new_object;
 
-        // Load model and texture from the paths specified in the JSON
         std::string model_path = obj_def["model"];
-        std::string texture_path = obj_def["texture"];
         new_object.loadModel(model_path, *this);
         
         // Create the GPU buffer for the model
@@ -477,22 +550,12 @@ void Engine::loadObjects(const std::string& scene_path)
         p_key.cull_mode = vk::CullModeFlagBits::eBack;
 
         if(!p_p_map.contains(p_key)){
-            PipelineInfo& p_info = p_p_map[p_key];
-            p_info.pipeline = Pipeline::createGraphicsPipeline(
-                *this,
-                p_info.layout,
-                p_key.v_shader,
-                p_key.f_shader,
-                p_key.is_transparent,
-                p_key.cull_mode
-            );
+            std::cout << "Error! Pipeline not present\nPipeline info: v_shader->" << p_key.v_shader << " f_shader->" <<
+            p_key.f_shader << std::endl;
         }
         new_object.pipeline = &p_p_map[p_key];
         std::vector<Gameobject>& arr = p_o_map[p_key];
         arr.emplace_back(std::move(new_object));
-        
-        // Add the fully loaded and configured object to the scene
-        // scene_objects.emplace_back(std::move(new_object));
     }
 }
 
@@ -509,32 +572,21 @@ void Engine::createTorusModel()
     torusMat.albedo_texture_index = -1; // No texture, shader should use baseColorFactor
     torusMat.base_color_factor = glm::vec4(1.0f, 1.0f, 1.0f, 0.5f); // 50% transparent white
     torus.materials.push_back(std::move(torusMat));
-    // --- END NEW ---
 
-    createModel(torus); // Upload geometry
-    // torus.createMaterialDescriptorSets(*this);
+    createModel(torus); 
 
     // Setup torus pipeline
-    PipelineKey p_key;
-    p_key.v_shader = "shaders/basic/vertex.spv";
-    p_key.f_shader = "shaders/basic/fragment_torus.spv";
+    /* PipelineKey p_key;
+    p_key.v_shader = v_shader_torus;
+    p_key.f_shader = f_shader_torus;
     p_key.is_transparent = true;
     p_key.cull_mode = vk::CullModeFlagBits::eBack;
 
     if(!p_p_map.contains(p_key)){
-        PipelineInfo& p_info = p_p_map[p_key];
-        p_info.pipeline = Pipeline::createGraphicsPipeline(
-            *this,
-            p_info.layout,
-            p_key.v_shader,
-            p_key.f_shader,
-            p_key.is_transparent,
-            p_key.cull_mode
-        );
+        std::cout << "Error! Pipeline not present\nPipeline info: v_shader->" << p_key.v_shader << " f_shader->" <<
+        p_key.f_shader << std::endl;
     }
-    torus.pipeline = &p_p_map[p_key];
-    /* std::vector<Gameobject>& arr = p_o_map[p_key];
-    arr.emplace_back(std::move(torus)); */
+    torus.pipeline = &p_p_map[p_key]; */
 }
 
 void Engine::createUniformBuffers()
@@ -563,23 +615,22 @@ void Engine::createDescriptorPool()
             total_materials += obj.materials.size();
         }
     }
-    total_materials += torus.materials.size(); // Add torus materials
+    // total_materials += torus.materials.size(); // Add torus materials
 
     // We now allocate per-material, not per-object
     uint32_t total_sets = total_materials * MAX_FRAMES_IN_FLIGHT;
     
     // This MUST match your descriptor set layout
-    std::array<vk::DescriptorPoolSize, 4> pool_sizes = {
+    std::array<vk::DescriptorPoolSize, 2> pool_sizes = {
         vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, total_sets),
-        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_sets), // Albedo
-        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_sets), // Normal
-        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_sets)  // Met/Rough
+        // 7 samplers (Albedo, Normal, Met/Rough, AO, Emissive, clearcoat, clearcoat roughness) per set
+        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_sets * 7) 
     };
 
     vk::DescriptorPoolCreateInfo pool_info;
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     pool_info.maxSets = total_sets;
-    pool_info.poolSizeCount = static_cast<uint32_t>(pool_sizes.size());
+    pool_info.poolSizeCount = static_cast<uint32_t>(pool_sizes.size()); 
     pool_info.pPoolSizes = pool_sizes.data();
 
     descriptor_pool = vk::raii::DescriptorPool(logical_device, pool_info);
@@ -695,6 +746,9 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     // graphics_command_buffer[current_frame].drawIndexed(indices.size(), 1, 0, 0, 0);
 
     for(auto& pipeline : p_p_map){
+        if(pipeline.first.v_shader == v_shader_torus){
+            continue;
+        }
         graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline.second.pipeline);
 
         for(auto& gameobject : p_o_map[pipeline.first]){
@@ -717,7 +771,11 @@ void Engine::recordCommandBuffer(uint32_t image_index){
                 mat_constants.roughness_factor = material.roughness_factor;
                 mat_constants.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 1.f);
                 mat_constants.occlusion_strength = material.occlusion_strength;
-                
+                mat_constants.specular_factor = material.specular_factor;
+                mat_constants.specular_color_factor = material.specular_color_factor;
+                mat_constants.clearcoat_factor = material.clearcoat_factor;
+                mat_constants.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
+
                 graphics_command_buffer[current_frame].pushConstants<MaterialPushConstant>(
                     *gameobject.pipeline -> layout, 
                     vk::ShaderStageFlagBits::eFragment, 

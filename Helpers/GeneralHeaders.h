@@ -183,13 +183,13 @@ struct AllocatedImage{
 
 struct Material {
     // Indices into the Gameobject's main texture list
-    int albedo_texture_index = -1;
-    int normal_texture_index = -1;
-    int metallic_roughness_texture_index = -1;
-    int occlusion_texture_index = -1;
-    int emissive_texture_index = -1;  
-    int clearcoat_texture_index = -1;
-    int clearcoat_roughness_texture_index = -1;
+    int albedo_texture_index = 0;
+    int normal_texture_index = 0;
+    int metallic_roughness_texture_index = 0;
+    int occlusion_texture_index = 0;
+    int emissive_texture_index = 0;  
+    int clearcoat_texture_index = 0;
+    int clearcoat_roughness_texture_index = 0;
 
     // PBR scalar factors (loaded from glTF)
     glm::vec4 base_color_factor = glm::vec4(1.0f);

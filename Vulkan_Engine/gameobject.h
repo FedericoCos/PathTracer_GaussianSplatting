@@ -4,6 +4,12 @@
 
 class Engine; // Forward declaration
 
+namespace tinygltf { // Forward declaration
+    class Model;
+    class Node;
+    class Primitive;
+};
+
 class Gameobject{
 public:
     // --- Descriptor sets data ---
@@ -75,4 +81,21 @@ protected:
 
         model_matrix = trans_matrix * rot_matrix * scale_matrix;
     }
+
+    // --- glTF Loading Helpers ---
+    // Forward declarations for tinygltf types
+
+    // Main loading stages
+    void loadTextures(const tinygltf::Model& model, const std::string& base_dir, Engine& engine);
+    void loadMaterials(const tinygltf::Model& model);
+    void loadGeometry(const tinygltf::Model& model);
+
+    // Geometry helpers
+    void processNode(int nodeIndex, const tinygltf::Model& model, const glm::mat4& parentTransform, std::unordered_map<Vertex, uint32_t>& unique_vertices);
+    void loadPrimitive(const tinygltf::Primitive& primitive, const tinygltf::Model& model, const glm::mat4& transform, std::unordered_map<Vertex, uint32_t>& unique_vertices);
+    
+    // Utility helpers
+    std::map<int, vk::Format> scanTextureFormats(const tinygltf::Model& model);
+    glm::mat4 getNodeTransform(const tinygltf::Node& node) const;
+    int getTextureIndex(int gltfTexIdx, const tinygltf::Model& model) const;
 };

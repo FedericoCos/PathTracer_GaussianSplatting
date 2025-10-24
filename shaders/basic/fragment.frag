@@ -30,11 +30,12 @@ layout(push_constant) uniform FragPushConstants {
 } material;
 
 // --- INPUTS (from vertex shader) ---
-layout(location = 5) in vec3 fragWorldPos;
-layout(location = 6) in vec3 fragWorldNormal;
-layout(location = 7) in vec2 fragTexCoord;
-layout(location = 8) in mat3 fragTBN;
-layout(location = 11) in vec3 fragColor; // Vertex color
+layout(location = 6) in vec3 fragWorldPos;
+layout(location = 7) in vec3 fragWorldNormal;
+layout(location = 8) in vec2 fragTexCoord;
+layout(location = 9) in mat3 fragTBN;
+layout(location = 12) in vec3 fragColor; // Vertex color
+layout(location = 13) in vec2 fragTexCoord1;
 
 // --- OUTPUT ---
 layout(location = 0) out vec4 outColor;
@@ -86,20 +87,23 @@ vec3 F_Schlick(float cosTheta, vec3 F0) {
 // --- Main Function ---
 void main() {
     // --- 1. Get Material Properties ---
-    vec4 albedo_tex = texture(albedoSampler, fragTexCoord);
-    // (FIXED) No pow(2.2) here, sampler does sRGB->linear conversion
+    
+    // Albedo uses fragTexCoord1 (TEXCOORD_1)
+    vec4 albedo_tex = texture(albedoSampler, fragTexCoord1);
     vec3 albedo = albedo_tex.rgb * material.base_color_factor.rgb * fragColor; 
     float alpha = albedo_tex.a * material.base_color_factor.a;
 
-    // (FIXED) .bg for glTF standard (Roughness=G, Metallic=B)
+    // Data maps use fragTexCoord (TEXCOORD_0)
     vec2 mr = texture(metallicRoughnessSampler, fragTexCoord).bg; 
     float metallic = mr.x * material.metallic_factor;
     float roughness = mr.y * material.roughness_factor;
     
     float ao = texture(occlusionSampler, fragTexCoord).r * material.occlusion_strength;
-    vec3 emissive = texture(emissiveSampler, fragTexCoord).rgb * material.emissive_factor.xyz;
 
-    // Clearcoat
+    // Emissive likely uses fragTexCoord1 (same as Albedo)
+    vec3 emissive = texture(emissiveSampler, fragTexCoord1).rgb * material.emissive_factor.xyz;
+
+    // Clearcoat maps use fragTexCoord (TEXCOORD_0)
     float cc_factor = texture(clearcoatSampler, fragTexCoord).r * material.clearcoat_factor;
     float cc_roughness = texture(clearcoatRoughnessSampler, fragTexCoord).g * material.clearcoat_roughness_factor;
     
@@ -107,7 +111,7 @@ void main() {
     vec3 V = normalize(ubo.cameraPos - fragWorldPos); // View
     vec3 N = normalize(fragWorldNormal);              // Base normal
     
-    // Apply normal map
+    // Normal map uses fragTexCoord (TEXCOORD_0)
     vec3 normal_from_map = texture(normalSampler, fragTexCoord).xyz * 2.0 - 1.0;
     N = normalize(fragTBN * normal_from_map);
     float NdotV = max(dot(N, V), 0.0);
@@ -117,92 +121,87 @@ void main() {
     vec3 F0 = mix(F0_dielectric, albedo, metallic);
 
     // --- 4. Define Lights ---
-    // (Sun)
-    vec3 directionalLightDir = normalize(vec3(0.5, -1.0, -0.75)); // Direction light travels
-    vec3 directionalLightColor = vec3(1.0, 1.0, 1.0) * 5.0; // Strong white light
-    
-    // (Point Lights for testing)
-    // Feel free to change these values!
-    const int NUM_POINT_LIGHTS = 3;
+    // 32 point lights for a large station area
+    const int NUM_POINT_LIGHTS = 32;
     PointLight pointLights[NUM_POINT_LIGHTS];
-    pointLights[0] = PointLight(vec3(0, 150, -200), vec3(1.0, 0.0, 0.0), 25000.0); // Red
-    pointLights[1] = PointLight(vec3(0, 150, -600), vec3(0.0, 1.0, 0.0), 25000.0); // Green
-    pointLights[2] = PointLight(vec3(0, 150, -1000), vec3(0.0, 0.0, 1.0), 25000.0); // Blue
+    
+    vec3 lightColor = vec3(1.0, 0.85, 0.7); // Warmish station overhead light
+    float lightIntensity = 40000.0; // Brighter for a larger space
+    float lightY = 400.0; // High up ceiling lights
+
+    // 4 long rows of 8 lights each
+    float startZ = 200.0;
+    float spacingZ = -200.0;
+
+    // Row 1 (X = -400)
+    for (int i = 0; i < 8; i++) {
+        pointLights[i] = PointLight(vec3(-400.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
+    }
+    
+    // Row 2 (X = -150)
+    for (int i = 0; i < 8; i++) {
+        pointLights[i + 8] = PointLight(vec3(-150.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
+    }
+
+    // Row 3 (X = 150)
+    for (int i = 0; i < 8; i++) {
+        pointLights[i + 16] = PointLight(vec3(150.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
+    }
+
+    // Row 4 (X = 400)
+    for (int i = 0; i < 8; i++) {
+        pointLights[i + 24] = PointLight(vec3(400.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
+    }
+
 
     // --- 5. Calculate Lighting ---
     vec3 Lo = vec3(0.0); // "Radiance Out" (final color)
 
-    // --- (A) Directional Light ---
-    vec3 L = -directionalLightDir; // Vector to light
-    vec3 H = normalize(V + L);
-    float NdotL = max(dot(N, L), 0.0);
-    float HdotV = max(dot(H, V), 0.0);
-    vec3 radiance = directionalLightColor;
-
-    // Base Layer BRDF
-    float NDF_base = D_GGX(N, H, roughness);
-    float G_base = G_Smith(N, V, L, roughness);
-    vec3 F_base = F_Schlick(HdotV, F0);
-    vec3 kS_base = F_base;
-    vec3 kD_base = (vec3(1.0) - kS_base) * (1.0 - metallic);
-    vec3 numerator_base = NDF_base * G_base * F_base;
-    float denominator_base = 4.0 * NdotV * NdotL + 0.001;
-    vec3 specular_base = numerator_base / denominator_base;
-    vec3 diffuse_base = (kD_base * albedo / PI);
-    
-    // Clearcoat Layer BRDF
-    float NDF_cc = D_GGX(N, H, cc_roughness);
-    float G_cc = G_Smith(N, V, L, cc_roughness);
-    vec3 F_cc = F_Schlick(HdotV, F0_CLEARCOAT);
-    vec3 numerator_cc = NDF_cc * G_cc * F_cc;
-    float denominator_cc = 4.0 * NdotV * NdotL + 0.001;
-    vec3 specular_cc = numerator_cc / denominator_cc;
-
-    // Combine Layers
-    vec3 combined_lighting = (diffuse_base + specular_base) * (1.0 - cc_factor * F_cc) + (specular_cc * cc_factor);
-    Lo += combined_lighting * radiance * NdotL;
-
-
-    // --- (B) Point Lights Loop ---
+    // --- Point Lights Loop ---
     for(int i = 0; i < NUM_POINT_LIGHTS; i++)
     {
-        // Recalculate L, H, radiance, and NdotL for each light
-        L = normalize(pointLights[i].position - fragWorldPos);
-        H = normalize(V + L);
-        NdotL = max(dot(N, L), 0.0);
-        HdotV = max(dot(H, V), 0.0);
+        // Calculate L, H, radiance, and NdotL for each light
+        vec3 L = normalize(pointLights[i].position - fragWorldPos);
+        vec3 H = normalize(V + L);
+        float NdotL = max(dot(N, L), 0.0);
+        float HdotV = max(dot(H, V), 0.0);
         
         // Attenuation
         float distance = length(pointLights[i].position - fragWorldPos);
         float attenuation = 1.0 / (distance * distance);
-        radiance = pointLights[i].color * pointLights[i].intensity * attenuation;
+        vec3 radiance = pointLights[i].color * pointLights[i].intensity * attenuation;
         
-        // Base Layer BRDF
-        NDF_base = D_GGX(N, H, roughness);
-        G_base = G_Smith(N, V, L, roughness);
-        F_base = F_Schlick(HdotV, F0);
-        kS_base = F_base;
-        kD_base = (vec3(1.0) - kS_base) * (1.0 - metallic);
-        numerator_base = NDF_base * G_base * F_base;
-        denominator_base = 4.0 * NdotV * NdotL + 0.001;
-        specular_base = numerator_base / denominator_base;
-        diffuse_base = (kD_base * albedo / PI);
+        // --- (A) Base Layer (Metallic/Roughness) ---
+        float NDF_base = D_GGX(N, H, roughness);
+        float G_base = G_Smith(N, V, L, roughness);
+        vec3 F_base = F_Schlick(HdotV, F0);
         
-        // Clearcoat Layer BRDF
-        NDF_cc = D_GGX(N, H, cc_roughness);
-        G_cc = G_Smith(N, V, L, cc_roughness);
-        F_cc = F_Schlick(HdotV, F0_CLEARCOAT);
-        numerator_cc = NDF_cc * G_cc * F_cc;
-        denominator_cc = 4.0 * NdotV * NdotL + 0.001;
-        specular_cc = numerator_cc / denominator_cc;
+        vec3 kS_base = F_base;
+        // *** THIS IS THE FIX ***
+        vec3 kD_base = (vec3(1.0) - kS_base) * (1.0 - metallic); // Changed 1.s0 to 1.0
+        
+        vec3 numerator_base = NDF_base * G_base * F_base;
+        float denominator_base = 4.0 * NdotV * NdotL + 0.001;
+        vec3 specular_base = numerator_base / denominator_base;
+        vec3 diffuse_base = (kD_base * albedo / PI);
+        
+        // --- (B) Clearcoat Layer ---
+        float NDF_cc = D_GGX(N, H, cc_roughness);
+        float G_cc = G_Smith(N, V, L, cc_roughness); 
+        vec3 F_cc = F_Schlick(HdotV, F0_CLEARCOAT);
+        
+        vec3 numerator_cc = NDF_cc * G_cc * F_cc;
+        float denominator_cc = 4.0 * NdotV * NdotL + 0.001;
+        vec3 specular_cc = numerator_cc / denominator_cc;
 
-        // Combine Layers
-        combined_lighting = (diffuse_base + specular_base) * (1.0 - cc_factor * F_cc) + (specular_cc * cc_factor);
+        // --- (C) Combine Layers ---
+        vec3 combined_lighting = (diffuse_base + specular_base) * (1.0 - cc_factor * F_cc) + (specular_cc * cc_factor);
         Lo += combined_lighting * radiance * NdotL;
     }
     
     // --- 6. Final Color ---
-    vec3 ambient = vec3(0.03) * albedo * ao;
+    // Add ambient and emissive
+    vec3 ambient = vec3(0.01) * albedo * ao; // Reduced ambient for dark scene
     vec3 color = ambient + Lo + emissive;
     
     // HDR to LDR (Tone Mapping) + Gamma Correction

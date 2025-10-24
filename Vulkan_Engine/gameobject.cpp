@@ -126,12 +126,8 @@ void Gameobject::loadModel(std::string m_path, Engine &engine)
             format = image_formats[image_index];
         }
 
-        try {
-            textures.push_back(Image::createTextureImage(engine, texture_path.c_str(), format));
-        } catch (...) {
-            std::cerr << "Failed to load texture: " << texture_path << ". Using default.\n";
-            textures.emplace_back();
-        }
+        textures.push_back(Image::createTextureImage(engine, texture_path.c_str(), format));
+        
         image_index++;
     }
 
@@ -289,6 +285,16 @@ void Gameobject::loadModel(std::string m_path, Engine &engine)
             tex_coord_stride = tex_coord_buffer_view.byteStride ? tex_coord_buffer_view.byteStride : sizeof(glm::vec2);
         }
 
+        bool has_tex_coords_1 = primitive.attributes.count("TEXCOORD_1");
+        const unsigned char* tex_coord_data_1 = nullptr;
+        size_t tex_coord_stride_1 = 0;
+        if (has_tex_coords_1) {
+            const tinygltf::Accessor& tex_coord_accessor = model.accessors[primitive.attributes.at("TEXCOORD_1")];
+            const tinygltf::BufferView& tex_coord_buffer_view = model.bufferViews[tex_coord_accessor.bufferView];
+            tex_coord_data_1 = &model.buffers[tex_coord_buffer_view.buffer].data[tex_coord_buffer_view.byteOffset + tex_coord_accessor.byteOffset];
+            tex_coord_stride_1 = tex_coord_buffer_view.byteStride ? tex_coord_buffer_view.byteStride : sizeof(glm::vec2);
+        }
+
         const tinygltf::BufferView& index_buffer_view = model.bufferViews[index_accessor.bufferView];
         const unsigned char* index_data = &model.buffers[index_buffer_view.buffer].data[index_buffer_view.byteOffset + index_accessor.byteOffset];
 
@@ -317,6 +323,12 @@ void Gameobject::loadModel(std::string m_path, Engine &engine)
             if (has_tex_coords) {
                 glm::vec2 raw_tex = *reinterpret_cast<const glm::vec2*>(tex_coord_data + (orig_idx * tex_coord_stride));
                 vertex.tex_coord = {raw_tex.x, 1.0f - raw_tex.y};
+            }
+            if (has_tex_coords_1) {
+                glm::vec2 raw_tex = *reinterpret_cast<const glm::vec2*>(tex_coord_data_1 + (orig_idx * tex_coord_stride_1));
+                vertex.tex_coord_1 = {raw_tex.x, 1.0f - raw_tex.y};
+            } else if (has_tex_coords) {
+                vertex.tex_coord_1 = vertex.tex_coord;
             }
 
             // Apply node transform
@@ -362,7 +374,7 @@ void Gameobject::createMaterialDescriptorSets(Engine& engine) {
     
     // Get the texture view for a given index, falling back to default
     auto getImageView = [&](int index) -> vk::raii::ImageView& {
-        if (index >= 0 && index < textures.size() && *textures[index].image_view) {
+        if (index >= 0 && index < textures.size() && textures[index].image_view != nullptr) {
             return textures[index].image_view;
         }
         return textures[0].image_view; // Return default white texture

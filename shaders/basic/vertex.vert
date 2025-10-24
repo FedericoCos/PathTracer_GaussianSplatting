@@ -17,14 +17,16 @@ layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec3 inColor;
 layout(location = 3) in vec4 inTangent;
 layout(location = 4) in vec2 inTexCoord;
+layout(location = 5) in vec2 inTexCoord1;
 
 // --- OUTPUTS (to fragment shader) ---
 // Must start after 4 and not overlap
-layout(location = 5) out vec3 fragWorldPos;    // Uses location 5
-layout(location = 6) out vec3 fragWorldNormal; // Uses location 6
-layout(location = 7) out vec2 fragTexCoord;    // Uses location 7
-layout(location = 8) out mat3 fragTBN;         // Uses locations 8, 9, 10
-layout(location = 11) out vec3 fragColor;      // Uses location 11
+layout(location = 6) out vec3 fragWorldPos;    
+layout(location = 7) out vec3 fragWorldNormal; 
+layout(location = 8) out vec2 fragTexCoord;    
+layout(location = 9) out mat3 fragTBN;         
+layout(location = 12) out vec3 fragColor;  
+layout(location = 13) out vec2 fragTexCoord1;    
 
 void main() {
     vec4 worldPos = pushConstants.model * vec4(inPosition, 1.0);
@@ -41,4 +43,5 @@ void main() {
     fragTexCoord = inTexCoord;
     fragTBN = mat3(T, B, N);
     fragColor = inColor;
+    fragTexCoord1 = inTexCoord1;
 }

@@ -56,6 +56,7 @@ struct Vertex{
     glm::vec3 color;
     glm::vec4 tangent;
     glm::vec2 tex_coord;
+    glm::vec2 tex_coord_1;
 
     // Info needed to tell VUlkan how to pass Vertex data to the shader
     static vk::VertexInputBindingDescription getBindingDescription() {
@@ -64,13 +65,14 @@ struct Vertex{
         return {0, sizeof(Vertex), vk::VertexInputRate::eVertex};
     }
 
-    static std::array<vk::VertexInputAttributeDescription, 5> getAttributeDescriptions() {
+    static std::array<vk::VertexInputAttributeDescription, 6> getAttributeDescriptions() {
         return{
             vk::VertexInputAttributeDescription(0, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, pos)),
             vk::VertexInputAttributeDescription(1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, normal)),
             vk::VertexInputAttributeDescription(2, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, color)),
             vk::VertexInputAttributeDescription(3, 0, vk::Format::eR32G32B32A32Sfloat, offsetof(Vertex, tangent)),
-            vk::VertexInputAttributeDescription(4, 0, vk::Format::eR32G32Sfloat, offsetof(Vertex, tex_coord))
+            vk::VertexInputAttributeDescription(4, 0, vk::Format::eR32G32Sfloat, offsetof(Vertex, tex_coord)),
+            vk::VertexInputAttributeDescription(5, 0, vk::Format::eR32G32Sfloat, offsetof(Vertex, tex_coord_1)),
         };
     }
 

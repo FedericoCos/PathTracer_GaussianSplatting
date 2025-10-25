@@ -126,7 +126,7 @@ private:
 
     // Scene objects
     Torus torus;
-    std::vector<P_object> scene_objects;
+    std::vector<P_object> scene_objs;
 
     // For multisampling
     AllocatedImage color_image;

@@ -5,8 +5,8 @@
 
 // --- HELPER FUNCTION (add this to the top of gameobject.cpp) ---
 // Creates a 1x1 white texture to use as a fallback.
-void createDefaultTexture(Engine& engine, AllocatedImage& texture) {
-    unsigned char whitePixel[] = {255, 255, 255, 255};
+void createDefaultTexture(Engine& engine, AllocatedImage& texture, glm::vec4 color) {
+    unsigned char colored_pixel[] = {color.x, color.y, color.z, color.w};
     vk::DeviceSize image_size = 4;
 
     AllocatedBuffer staging_buffer;
@@ -17,7 +17,7 @@ void createDefaultTexture(Engine& engine, AllocatedImage& texture) {
     
     void *data;
     vmaMapMemory(engine.vma_allocator, staging_buffer.allocation, &data);
-    memcpy(data, whitePixel, image_size);
+    memcpy(data, colored_pixel, image_size);
     vmaUnmapMemory(engine.vma_allocator, staging_buffer.allocation);
 
     texture = Image::createImage(1, 1, 1, vk::SampleCountFlagBits::e1, vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal,
@@ -143,9 +143,24 @@ void Gameobject::loadTextures(const tinygltf::Model& model, const std::string& b
     // Pre-scan materials to determine correct texture formats (sRGB vs linear)
     std::map<int, vk::Format> image_formats = scanTextureFormats(model);
 
-    // Add default 1x1 white texture at index 0
+    // Add default textures
     textures.emplace_back();
-    createDefaultTexture(engine, textures[0]); 
+    createDefaultTexture(engine, textures[0], glm::vec4(255, 255, 255, 255)); 
+
+    int index_text = 1;
+    int index_mat = 0;
+    for(const auto& material : model.materials){
+        if(material.pbrMetallicRoughness.baseColorTexture.index == -1){
+            textures.emplace_back();
+            createDefaultTexture(engine, textures[index_text], glm::vec4(material.pbrMetallicRoughness.baseColorFactor[0] * 255, 
+                                                                         material.pbrMetallicRoughness.baseColorFactor[1] * 255,
+                                                                         material.pbrMetallicRoughness.baseColorFactor[2] * 255,
+                                                                         material.pbrMetallicRoughness.baseColorFactor[3] * 255) );
+            m_dtext_mat[index_mat] = index_text;
+            index_text++;
+        }
+        index_mat++;
+    }
 
     int image_index = 0;
     uint32_t max_mips = 1;
@@ -179,7 +194,7 @@ int Gameobject::getTextureIndex(int gltfTexIdx, const tinygltf::Model& model) co
         int sourceIdx = model.textures[gltfTexIdx].source;
         if (sourceIdx >= 0 && sourceIdx < model.images.size()) {
             // +1 because textures[0] is our default white texture
-            return sourceIdx + 1; 
+            return sourceIdx + 1 + m_dtext_mat.size(); 
         }
     }
     // Return 0 (default white texture) if invalid
@@ -190,6 +205,9 @@ int Gameobject::getTextureIndex(int gltfTexIdx, const tinygltf::Model& model) co
  * @brief Loads all materials from the glTF model and parses their PBR properties and extensions.
  */
 void Gameobject::loadMaterials(const tinygltf::Model& model) {
+    bool first = true;
+    int index_material = 0;
+    std::cout << "MATERIALS SIZE: " << model.materials.size() << std::endl;
     for (const auto& mat : model.materials) {
         Material newMaterial{};
         const auto& pbr = mat.pbrMetallicRoughness;
@@ -197,6 +215,7 @@ void Gameobject::loadMaterials(const tinygltf::Model& model) {
         // --- MODIFICATION: Check for transparent/masked materials ---
         // If alphaMode is BLEND or MASK, we'll force use of the default texture (index 0)
         bool useDefaultTexture = (mat.alphaMode == "BLEND" || mat.alphaMode == "MASK");
+        useDefaultTexture = false;
         // --- END MODIFICATION ---
 
         // --- PBR Base ---
@@ -218,6 +237,9 @@ void Gameobject::loadMaterials(const tinygltf::Model& model) {
 
         // --- Texture Indices ---
         newMaterial.albedo_texture_index = useDefaultTexture ? 0 : getTextureIndex(pbr.baseColorTexture.index, model);
+        if(pbr.baseColorTexture.index == -1){
+            newMaterial.albedo_texture_index = m_dtext_mat[index_material];
+        }
         newMaterial.normal_texture_index = useDefaultTexture ? 0 : getTextureIndex(mat.normalTexture.index, model);
         newMaterial.metallic_roughness_texture_index = useDefaultTexture ? 0 : getTextureIndex(pbr.metallicRoughnessTexture.index, model);
         newMaterial.occlusion_texture_index = useDefaultTexture ? 0 : getTextureIndex(mat.occlusionTexture.index, model);
@@ -225,6 +247,7 @@ void Gameobject::loadMaterials(const tinygltf::Model& model) {
 
         // --- Occlusion ---
         newMaterial.occlusion_strength = static_cast<float>(mat.occlusionTexture.strength); 
+
         
         // --- Specular Extension ---
         newMaterial.specular_color_factor = glm::vec3(1.0f);
@@ -268,6 +291,7 @@ void Gameobject::loadMaterials(const tinygltf::Model& model) {
         }
 
         materials.push_back(std::move(newMaterial));
+        index_material++;
     }
 
     // Ensure at least one default material exists
@@ -451,12 +475,12 @@ void Gameobject::loadPrimitive(const tinygltf::Primitive& primitive, const tinyg
 
         if (has_tex_coords) {
             glm::vec2 raw_tex = *reinterpret_cast<const glm::vec2*>(tex_coord_data + (orig_idx * tex_coord_stride));
-            vertex.tex_coord = {raw_tex.x, 1.0f - raw_tex.y}; // Flip Y for Vulkan
+            vertex.tex_coord = {raw_tex.x, raw_tex.y};
         }
 
         if (has_tex_coords_1) {
             glm::vec2 raw_tex = *reinterpret_cast<const glm::vec2*>(tex_coord_data_1 + (orig_idx * tex_coord_stride_1));
-            vertex.tex_coord_1 = {raw_tex.x, 1.0f - raw_tex.y}; // Flip Y for Vulkan
+            vertex.tex_coord_1 = {raw_tex.x, raw_tex.y};
         } else if (has_tex_coords) {
             vertex.tex_coord_1 = vertex.tex_coord; // Fallback to texcoord_0
         }
@@ -596,7 +620,7 @@ void Gameobject::createMaterialDescriptorSets(Engine& engine) {
             descriptor_writes[7].dstBinding = 7;
             descriptor_writes[7].descriptorType = vk::DescriptorType::eCombinedImageSampler;
             descriptor_writes[7].descriptorCount = 1;
-            descriptor_writes[7].pImageInfo = &clearcoat_roughness_info;
+            descriptor_writes[7].pImageInfo = material.clearcoat_roughness_texture_index != 0 ? &clearcoat_roughness_info : &clearcoat_info;
 
             engine.logical_device.updateDescriptorSets(descriptor_writes, {});
         }

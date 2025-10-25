@@ -89,7 +89,7 @@ void main() {
     // --- 1. Get Material Properties ---
     
     // Albedo uses fragTexCoord1 (TEXCOORD_1)
-    vec4 albedo_tex = texture(albedoSampler, fragTexCoord1);
+    vec4 albedo_tex = texture(albedoSampler, fragTexCoord);
     vec3 albedo = albedo_tex.rgb * material.base_color_factor.rgb * fragColor; 
     float alpha = albedo_tex.a * material.base_color_factor.a;
 
@@ -101,7 +101,7 @@ void main() {
     float ao = texture(occlusionSampler, fragTexCoord).r * material.occlusion_strength;
 
     // Emissive likely uses fragTexCoord1 (same as Albedo)
-    vec3 emissive = texture(emissiveSampler, fragTexCoord1).rgb * material.emissive_factor.xyz;
+    vec3 emissive = texture(emissiveSampler, fragTexCoord).rgb * material.emissive_factor.xyz;
 
     // Clearcoat maps use fragTexCoord (TEXCOORD_0)
     float cc_factor = texture(clearcoatSampler, fragTexCoord).r * material.clearcoat_factor;

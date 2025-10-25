@@ -27,6 +27,8 @@ public:
     std::vector<AllocatedImage> textures;
     vk::raii::Sampler default_sampler = nullptr;
 
+    std::map<int, int> m_dtext_mat;
+
 
     // CPU side geometry. NOTE this could be cleaned after uploading to GPU to save RAM
     std::vector<Vertex> vertices;

@@ -68,7 +68,7 @@ void Gameobject::loadModel(std::string m_path, Engine &engine)
     indices.clear();
     textures.clear();
     materials.clear();
-    primitives.clear();
+    o_primitives.clear();
     if (default_sampler != nullptr) {
         default_sampler = nullptr; // vk::raii::Sampler will handle destruction
     }
@@ -145,22 +145,7 @@ void Gameobject::loadTextures(const tinygltf::Model& model, const std::string& b
 
     // Add default textures
     textures.emplace_back();
-    createDefaultTexture(engine, textures[0], glm::vec4(255, 255, 255, 255)); 
-
-    int index_text = 1;
-    int index_mat = 0;
-    for(const auto& material : model.materials){
-        if(material.pbrMetallicRoughness.baseColorTexture.index == -1){
-            textures.emplace_back();
-            createDefaultTexture(engine, textures[index_text], glm::vec4(material.pbrMetallicRoughness.baseColorFactor[0] * 255, 
-                                                                         material.pbrMetallicRoughness.baseColorFactor[1] * 255,
-                                                                         material.pbrMetallicRoughness.baseColorFactor[2] * 255,
-                                                                         material.pbrMetallicRoughness.baseColorFactor[3] * 255) );
-            m_dtext_mat[index_mat] = index_text;
-            index_text++;
-        }
-        index_mat++;
-    }
+    createDefaultTexture(engine, textures[0], glm::vec4(1, 1, 1, 0.1)); 
 
     int image_index = 0;
     uint32_t max_mips = 1;
@@ -193,8 +178,7 @@ int Gameobject::getTextureIndex(int gltfTexIdx, const tinygltf::Model& model) co
     if (gltfTexIdx >= 0 && gltfTexIdx < model.textures.size()) {
         int sourceIdx = model.textures[gltfTexIdx].source;
         if (sourceIdx >= 0 && sourceIdx < model.images.size()) {
-            // +1 because textures[0] is our default white texture
-            return sourceIdx + 1 + m_dtext_mat.size(); 
+            return sourceIdx + 1; // +1 for default texture
         }
     }
     // Return 0 (default white texture) if invalid
@@ -212,11 +196,8 @@ void Gameobject::loadMaterials(const tinygltf::Model& model) {
         Material newMaterial{};
         const auto& pbr = mat.pbrMetallicRoughness;
 
-        // --- MODIFICATION: Check for transparent/masked materials ---
-        // If alphaMode is BLEND or MASK, we'll force use of the default texture (index 0)
-        bool useDefaultTexture = (mat.alphaMode == "BLEND" || mat.alphaMode == "MASK");
-        useDefaultTexture = false;
-        // --- END MODIFICATION ---
+        newMaterial.is_transparent = (mat.alphaMode == "BLEND" || mat.alphaMode == "MASK");
+        
 
         // --- PBR Base ---
         const auto& bcf = pbr.baseColorFactor;
@@ -236,14 +217,11 @@ void Gameobject::loadMaterials(const tinygltf::Model& model) {
         }
 
         // --- Texture Indices ---
-        newMaterial.albedo_texture_index = useDefaultTexture ? 0 : getTextureIndex(pbr.baseColorTexture.index, model);
-        if(pbr.baseColorTexture.index == -1){
-            newMaterial.albedo_texture_index = m_dtext_mat[index_material];
-        }
-        newMaterial.normal_texture_index = useDefaultTexture ? 0 : getTextureIndex(mat.normalTexture.index, model);
-        newMaterial.metallic_roughness_texture_index = useDefaultTexture ? 0 : getTextureIndex(pbr.metallicRoughnessTexture.index, model);
-        newMaterial.occlusion_texture_index = useDefaultTexture ? 0 : getTextureIndex(mat.occlusionTexture.index, model);
-        newMaterial.emissive_texture_index = useDefaultTexture ? 0 : getTextureIndex(mat.emissiveTexture.index, model);
+        newMaterial.albedo_texture_index = getTextureIndex(pbr.baseColorTexture.index, model);
+        newMaterial.normal_texture_index = getTextureIndex(mat.normalTexture.index, model);
+        newMaterial.metallic_roughness_texture_index = getTextureIndex(pbr.metallicRoughnessTexture.index, model);
+        newMaterial.occlusion_texture_index = getTextureIndex(mat.occlusionTexture.index, model);
+        newMaterial.emissive_texture_index = getTextureIndex(mat.emissiveTexture.index, model);
 
         // --- Occlusion ---
         newMaterial.occlusion_strength = static_cast<float>(mat.occlusionTexture.strength); 
@@ -283,10 +261,10 @@ void Gameobject::loadMaterials(const tinygltf::Model& model) {
                 newMaterial.clearcoat_roughness_factor = static_cast<float>(cc_ext.Get("clearcoatRoughnessFactor").Get<double>());
             }
             if (cc_ext.Has("clearcoatTexture")) {
-                newMaterial.clearcoat_texture_index = useDefaultTexture ? 0 : getTextureIndex(cc_ext.Get("clearcoatTexture").Get("index").Get<int>(), model);
+                newMaterial.clearcoat_texture_index = getTextureIndex(cc_ext.Get("clearcoatTexture").Get("index").Get<int>(), model);
             }
             if (cc_ext.Has("clearcoatRoughnessTexture")) {
-                newMaterial.clearcoat_roughness_texture_index = useDefaultTexture ? 0 : getTextureIndex(cc_ext.Get("clearcoatRoughnessTexture").Get("index").Get<int>(), model);
+                newMaterial.clearcoat_roughness_texture_index = getTextureIndex(cc_ext.Get("clearcoatRoughnessTexture").Get("index").Get<int>(), model);
             }
         }
 
@@ -497,7 +475,12 @@ void Gameobject::loadPrimitive(const tinygltf::Primitive& primitive, const tinyg
         indices.push_back(unique_vertices[vertex]); // Add to Gameobject's member vector
     }
 
-    primitives.push_back(newPrimitive); // Add to Gameobject's member vector
+    if(materials[newPrimitive.material_index].is_transparent){
+        t_primitives.push_back(newPrimitive);
+    }
+    else{
+        o_primitives.push_back(newPrimitive); 
+    }
 }
 
 
@@ -513,7 +496,13 @@ void Gameobject::createMaterialDescriptorSets(Engine& engine) {
     };
 
     for (auto& material : materials) {
-        std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *pipeline->descriptor_set_layout);
+        std::vector<vk::DescriptorSetLayout> layouts;
+        if(material.is_transparent){
+            layouts = std::vector<vk::DescriptorSetLayout>(MAX_FRAMES_IN_FLIGHT, *t_pipeline->descriptor_set_layout);
+        }
+        else{
+            layouts = std::vector<vk::DescriptorSetLayout>(MAX_FRAMES_IN_FLIGHT, *o_pipeline->descriptor_set_layout);
+        }
         vk::DescriptorSetAllocateInfo alloc_info;
         alloc_info.descriptorPool = engine.descriptor_pool;
         alloc_info.descriptorSetCount = static_cast<uint32_t>(layouts.size());

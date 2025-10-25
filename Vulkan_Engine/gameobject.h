@@ -22,12 +22,11 @@ public:
     AllocatedBuffer geometry_buffer; 
     vk::DeviceSize index_buffer_offset = 0;
 
-    std::vector<Primitive> primitives; // all sub-meshes to draw
+    std::vector<Primitive> o_primitives; 
+    std::vector<Primitive> t_primitives;
     std::vector<Material> materials;
     std::vector<AllocatedImage> textures;
     vk::raii::Sampler default_sampler = nullptr;
-
-    std::map<int, int> m_dtext_mat;
 
 
     // CPU side geometry. NOTE this could be cleaned after uploading to GPU to save RAM
@@ -35,7 +34,8 @@ public:
     std::vector<uint32_t> indices;
 
     // --- Pipeline & Shader Information ---
-    PipelineInfo* pipeline = nullptr;
+    PipelineInfo* o_pipeline = nullptr;
+    PipelineInfo* t_pipeline = nullptr;
 
     // --- Model and texture path ---
     std::string model_path;

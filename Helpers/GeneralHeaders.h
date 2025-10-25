@@ -202,6 +202,8 @@ struct Material {
     float clearcoat_factor = 0.0f;
     float clearcoat_roughness_factor = 0.0f;
 
+    bool is_transparent = false;
+
 
 
     // One descriptor set per frame-in-flight

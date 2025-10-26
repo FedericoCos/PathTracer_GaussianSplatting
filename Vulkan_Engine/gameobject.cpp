@@ -145,7 +145,7 @@ void Gameobject::loadTextures(const tinygltf::Model& model, const std::string& b
 
     // Add default textures
     textures.emplace_back();
-    createDefaultTexture(engine, textures[0], glm::vec4(1, 1, 1, 0.1)); 
+    createDefaultTexture(engine, textures[0], glm::vec4(1, 1, 1, 1)); 
 
     int image_index = 0;
     uint32_t max_mips = 1;
@@ -473,7 +473,10 @@ void Gameobject::loadPrimitive(const tinygltf::Primitive& primitive, const tinyg
             vertices.push_back(vertex); // Add to Gameobject's member vector
         }
         indices.push_back(unique_vertices[vertex]); // Add to Gameobject's member vector
+
+        newPrimitive.center += vertex.pos;
     }
+    newPrimitive.center /= index_accessor.count;
 
     if(materials[newPrimitive.material_index].is_transparent){
         t_primitives.push_back(newPrimitive);

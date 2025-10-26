@@ -230,6 +230,8 @@ struct Primitive {
     uint32_t first_index = 0;
     uint32_t index_count = 0;
     int material_index = -1;
+
+    glm::vec3 center;
 };
 
 

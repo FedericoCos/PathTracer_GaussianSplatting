@@ -62,18 +62,29 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
     depth_stencil.depthCompareOp = vk::CompareOp::eLess;
     depth_stencil.depthBoundsTestEnable = vk::False;
     depth_stencil.stencilTestEnable = vk::False;
+    depth_stencil.depthCompareOp = vk::CompareOp::eLess;
 
     vk::PipelineColorBlendAttachmentState color_blend_attachment;
     if(is_transparent){
         color_blend_attachment.blendEnable = vk::True;
         color_blend_attachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
                                                 vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+
+        // --- Standard Alpha Blending for Color (RGB) ---
+        // FinalColor = (SrcColor * SrcAlpha) + (DstColor * (1 - SrcAlpha))
         color_blend_attachment.srcColorBlendFactor = vk::BlendFactor::eSrcAlpha;
-        color_blend_attachment.dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
+        color_blend_attachment.dstColorBlendFactor = vk::BlendFactor::eOne;
         color_blend_attachment.colorBlendOp = vk::BlendOp::eAdd;
+
+        // --- Standard Alpha Blending for Alpha (A) ---
+        // FinalAlpha = (SrcAlpha * 1) + (DstAlpha * (1 - SrcAlpha))
+        // This correctly composites the alpha channel, so the alpha of the
+        // framebuffer is correct for subsequent draws.
         color_blend_attachment.srcAlphaBlendFactor = vk::BlendFactor::eOne;
         color_blend_attachment.dstAlphaBlendFactor = vk::BlendFactor::eZero;
         color_blend_attachment.alphaBlendOp = vk::BlendOp::eAdd;
+
+        depth_stencil.depthWriteEnable = vk::False;
     }
     else{
         color_blend_attachment.blendEnable = vk::False;

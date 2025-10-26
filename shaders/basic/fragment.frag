@@ -91,7 +91,7 @@ void main() {
     // Albedo uses fragTexCoord1 (TEXCOORD_1)
     vec4 albedo_tex = texture(albedoSampler, fragTexCoord);
     vec3 albedo = albedo_tex.rgb * material.base_color_factor.rgb * fragColor; 
-    float alpha = albedo_tex.a;
+    float alpha = albedo_tex.a * material.base_color_factor.a;
 
     // Data maps use fragTexCoord (TEXCOORD_0)
     vec2 mr = texture(metallicRoughnessSampler, fragTexCoord).bg; 

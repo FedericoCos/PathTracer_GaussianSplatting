@@ -12,34 +12,6 @@
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "../Helpers/tiny_obj_loader.h"
 
-glm::vec3 getPrimitiveWorldCenter(Gameobject& obj, const Primitive& primitive) {
-    glm::vec3 local_center_sum(0.f);
-    std::unordered_set<uint32_t> unique_indices;
-    
-    // Find all unique vertices used by this primitive
-    uint32_t end_idx = primitive.first_index + primitive.index_count;
-    for (uint32_t i = primitive.first_index; i < end_idx; ++i) {
-        unique_indices.insert(obj.indices[i]);
-    }
-    
-    if (unique_indices.empty()) {
-        // Fallback: This primitive has no indices, just use the object's origin.
-        return glm::vec3(obj.model_matrix[3]);
-    }
-
-    // Average the positions of these unique vertices
-    for (uint32_t vertex_idx : unique_indices) {
-        // Use the vertex position from the object's CPU-side list
-        local_center_sum += obj.vertices[vertex_idx].pos;
-    }
-
-    // Get the local-space center
-    glm::vec3 local_center = local_center_sum / static_cast<float>(unique_indices.size());
-
-    // Transform the local center to world space
-    return glm::vec3(obj.model_matrix * glm::vec4(local_center, 1.0f));
-}
-
 
 // ------ Helper Functions
 std::vector<const char*> Engine::getRequiredExtensions(){
@@ -739,6 +711,8 @@ void Engine::run(){
 void Engine::recordCommandBuffer(uint32_t image_index){
     graphics_command_buffer[current_frame].begin({});
 
+    transparent_draws.clear();
+
     transition_image_layout(
         image_index,
         vk::ImageLayout::eUndefined,
@@ -790,39 +764,18 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     //command_buffers[current_frame].draw(vertices.size(), 1, 0, 0);
     // graphics_command_buffer[current_frame].drawIndexed(indices.size(), 1, 0, 0, 0);
 
-    struct TransparentDraw {
-        Gameobject* object; // Base pointer to the game object
-        const Primitive* primitive;
-        const Material* material;
-        float distance_sq; // Squared distance from camera
-
-        // Sort back-to-front (farthest first)
-        bool operator<(const TransparentDraw& other) const {
-            return distance_sq > other.distance_sq;
-        }
-    };
-    std::vector<TransparentDraw> transparent_draws;
-
     glm::vec3 camera_pos = camera.getCurrentState().f_camera.position;
 
     for(auto& obj : scene_objs){
         if (!obj.t_primitives.empty()) {
             for(const auto& primitive : obj.t_primitives) {
-                
-                // --- THIS IS THE FIX ---
-                // Calculate the world-space center of this specific primitive
-                glm::vec3 prim_world_center = getPrimitiveWorldCenter(obj, primitive);
-                // Calculate distance from the camera to the primitive's center
+                glm::vec3 prim_world_center = glm::vec3(obj.model_matrix * glm::vec4(primitive.center, 1.0f));
                 float distance_sq = glm::distance2(camera_pos, prim_world_center);
-                // --- END FIX ---
                 
                 const Material& material = obj.materials[primitive.material_index];
                 transparent_draws.push_back({&obj, &primitive, &material, distance_sq});
             }
         }
-    
-        // --- 5. SORT TRANSPARENT OBJECTS ---
-        std::sort(transparent_draws.begin(), transparent_draws.end());
 
 
         // Bind the geometry buffers ONCE per object
@@ -869,64 +822,62 @@ void Engine::recordCommandBuffer(uint32_t image_index){
                 0,                      // vertexOffset
                 0);                     // firstInstance
         }
+    }
 
-        graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *obj.t_pipeline->pipeline);    
-        graphics_command_buffer[current_frame].pushConstants<glm::mat4>(*obj.t_pipeline -> layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix);
+    std::sort(transparent_draws.begin(), transparent_draws.end());
 
-        if (!transparent_draws.empty()) {
-            Gameobject* last_bound_object = nullptr;
-            PipelineInfo* last_bound_pipeline = nullptr;
+    if (!transparent_draws.empty()) {
+        Gameobject* last_bound_object = nullptr;
+        PipelineInfo* last_bound_pipeline = nullptr;
 
-            for (const auto& draw : transparent_draws) {
-                Gameobject* obj = draw.object;
-                const Primitive& primitive = *draw.primitive;
-                const Material& material = *draw.material;
-                PipelineInfo* pipeline = obj->t_pipeline; // Get object's transparent pipeline
+        for (const auto& draw : transparent_draws) {
+            Gameobject* obj = draw.object;
+            const Primitive& primitive = *draw.primitive;
+            const Material& material = *draw.material;
+            PipelineInfo* pipeline = obj->t_pipeline; // Get object's transparent pipeline
 
-                // --- A. Bind Pipeline (if changed) ---
-                if (pipeline != last_bound_pipeline) {
-                    graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline->pipeline);
-                    last_bound_pipeline = pipeline;
-                }
-
-                // --- B. Bind Geometry & Model Matrix (if changed) ---
-                if (obj != last_bound_object) {
-                    graphics_command_buffer[current_frame].bindVertexBuffers(0, {obj->geometry_buffer.buffer}, {0});
-                    graphics_command_buffer[current_frame].bindIndexBuffer(obj->geometry_buffer.buffer, obj->index_buffer_offset, vk::IndexType::eUint32);
-                    graphics_command_buffer[current_frame].pushConstants<glm::mat4>(*pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, obj->model_matrix);
-                    last_bound_object = obj;
-                } 
-                // Also push matrix if pipeline changed but object didn't
-                else if (pipeline != last_bound_pipeline) {
-                    graphics_command_buffer[current_frame].pushConstants<glm::mat4>(*pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, obj->model_matrix);
-                }
-
-                // --- C. Bind Material & Draw ---
-                MaterialPushConstant mat_constants;
-                mat_constants.base_color_factor = material.base_color_factor;
-                mat_constants.metallic_factor = material.metallic_factor;
-                mat_constants.roughness_factor = material.roughness_factor;
-                mat_constants.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 1.f);
-                mat_constants.occlusion_strength = material.occlusion_strength;
-                mat_constants.specular_factor = material.specular_factor;
-                mat_constants.specular_color_factor = material.specular_color_factor;
-                mat_constants.clearcoat_factor = material.clearcoat_factor;
-                mat_constants.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
-
-                graphics_command_buffer[current_frame].pushConstants<MaterialPushConstant>(
-                    *pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), mat_constants
-                );
-
-                graphics_command_buffer[current_frame].bindDescriptorSets(
-                    vk::PipelineBindPoint::eGraphics, *pipeline->layout, 0, *material.descriptor_sets[current_frame], nullptr
-                );
-                
-                graphics_command_buffer[current_frame].drawIndexed(
-                    primitive.index_count, 1, primitive.first_index, 0, 0
-                );
+            // --- A. Bind Pipeline (if changed) ---
+            if (pipeline != last_bound_pipeline) {
+                graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline->pipeline);
+                last_bound_pipeline = pipeline;
             }
-        }
 
+            // --- B. Bind Geometry & Model Matrix (if changed) ---
+            if (obj != last_bound_object) {
+                graphics_command_buffer[current_frame].bindVertexBuffers(0, {obj->geometry_buffer.buffer}, {0});
+                graphics_command_buffer[current_frame].bindIndexBuffer(obj->geometry_buffer.buffer, obj->index_buffer_offset, vk::IndexType::eUint32);
+                graphics_command_buffer[current_frame].pushConstants<glm::mat4>(*pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, obj->model_matrix);
+                last_bound_object = obj;
+            } 
+            // Also push matrix if pipeline changed but object didn't
+            else if (pipeline != last_bound_pipeline) {
+                graphics_command_buffer[current_frame].pushConstants<glm::mat4>(*pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, obj->model_matrix);
+            }
+
+            // --- C. Bind Material & Draw ---
+            MaterialPushConstant mat_constants;
+            mat_constants.base_color_factor = material.base_color_factor;
+            mat_constants.metallic_factor = material.metallic_factor;
+            mat_constants.roughness_factor = material.roughness_factor;
+            mat_constants.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 1.f);
+            mat_constants.occlusion_strength = material.occlusion_strength;
+            mat_constants.specular_factor = material.specular_factor;
+            mat_constants.specular_color_factor = material.specular_color_factor;
+            mat_constants.clearcoat_factor = material.clearcoat_factor;
+            mat_constants.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
+
+            graphics_command_buffer[current_frame].pushConstants<MaterialPushConstant>(
+                *pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), mat_constants
+            );
+
+            graphics_command_buffer[current_frame].bindDescriptorSets(
+                vk::PipelineBindPoint::eGraphics, *pipeline->layout, 0, *material.descriptor_sets[current_frame], nullptr
+            );
+            
+            graphics_command_buffer[current_frame].drawIndexed(
+                primitive.index_count, 1, primitive.first_index, 0, 0
+            );
+        }
     }
 
     /* for(auto& pipeline : p_p_map){

@@ -29,6 +29,19 @@ constexpr bool enableValidationLayers = true;
 constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
 
+struct TransparentDraw {
+    Gameobject* object; // Base pointer to the game object
+    const Primitive* primitive;
+    const Material* material;
+    float distance_sq; // Squared distance from camera
+
+    // Sort back-to-front (farthest first)
+    bool operator<(const TransparentDraw& other) const {
+        return distance_sq > other.distance_sq;
+    }
+};
+
+
 class Engine{
 public:
     Engine(){
@@ -127,6 +140,7 @@ private:
     // Scene objects
     Torus torus;
     std::vector<P_object> scene_objs;
+    std::vector<TransparentDraw> transparent_draws;
 
     // For multisampling
     AllocatedImage color_image;

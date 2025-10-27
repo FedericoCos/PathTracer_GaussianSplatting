@@ -12,8 +12,7 @@ layout(binding = 2) uniform sampler2D normalSampler;
 layout(binding = 3) uniform sampler2D metallicRoughnessSampler;
 layout(binding = 4) uniform sampler2D occlusionSampler;
 layout(binding = 5) uniform sampler2D emissiveSampler;
-layout(binding = 6) uniform sampler2D clearcoatSampler;
-layout(binding = 7) uniform sampler2D clearcoatRoughnessSampler;
+// Bindings 6 and 7 (clearcoat) are now removed
 
 // --- FRAGMENT PUSH CONSTANT ---
 layout(push_constant) uniform FragPushConstants {
@@ -25,8 +24,7 @@ layout(push_constant) uniform FragPushConstants {
     float occlusion_strength;
     float specular_factor;
     vec3 specular_color_factor;
-    float clearcoat_factor;
-    float clearcoat_roughness_factor;
+    // clearcoat_factor and clearcoat_roughness_factor removed
 } material;
 
 // --- INPUTS (from vertex shader) ---
@@ -36,14 +34,13 @@ layout(location = 8) in vec2 fragTexCoord;
 layout(location = 9) in mat3 fragTBN;
 layout(location = 12) in vec3 fragColor; // Vertex color
 layout(location = 13) in vec2 fragTexCoord1;
+layout(location = 14) in float fragInTangentW;
 
 // --- OUTPUT ---
 layout(location = 0) out vec4 outColor;
 
 // --- PBR Constants ---
 const float PI = 3.14159265359;
-// IOR 1.5 = F0 0.04
-const vec3 F0_CLEARCOAT = vec3(0.04); 
 
 // --- Light Struct ---
 struct PointLight {
@@ -89,7 +86,7 @@ void main() {
     // --- 1. Get Material Properties ---
     
     // Albedo uses fragTexCoord1 (TEXCOORD_1)
-    vec4 albedo_tex = texture(albedoSampler, fragTexCoord);
+    vec4 albedo_tex = texture(albedoSampler, fragTexCoord1); // <-- MODIFIED
     vec3 albedo = albedo_tex.rgb * material.base_color_factor.rgb * fragColor; 
     float alpha = albedo_tex.a * material.base_color_factor.a;
 
@@ -101,19 +98,22 @@ void main() {
     float ao = texture(occlusionSampler, fragTexCoord).r * material.occlusion_strength;
 
     // Emissive likely uses fragTexCoord1 (same as Albedo)
-    vec3 emissive = texture(emissiveSampler, fragTexCoord).rgb * material.emissive_factor.xyz;
+    vec3 emissive = texture(emissiveSampler, fragTexCoord1).rgb * material.emissive_factor.xyz; // <-- MODIFIED
 
-    // Clearcoat maps use fragTexCoord (TEXCOORD_0)
-    float cc_factor = texture(clearcoatSampler, fragTexCoord).r * material.clearcoat_factor;
-    float cc_roughness = texture(clearcoatRoughnessSampler, fragTexCoord).g * material.clearcoat_roughness_factor;
+    // Clearcoat maps removed
     
     // --- 2. Calculate Base Vectors ---
     vec3 V = normalize(ubo.cameraPos - fragWorldPos); // View
-    vec3 N = normalize(fragWorldNormal);              // Base normal
+    vec3 N;               // Base normal
     
     // Normal map uses fragTexCoord (TEXCOORD_0)
-    vec3 normal_from_map = texture(normalSampler, fragTexCoord).xyz * 2.0 - 1.0;
-    N = normalize(fragTBN * normal_from_map);
+    if(fragInTangentW != 0){
+        vec3 normal_from_map = texture(normalSampler, fragTexCoord).xyz * 2.0 - 1.0;
+        N = normalize(fragTBN * normal_from_map);
+    }
+    else{
+        N = normalize(fragWorldNormal); 
+    }
     float NdotV = max(dot(N, V), 0.0);
     
     // --- 3. Calculate Base Layer F0 (Reflectivity) ---
@@ -121,21 +121,21 @@ void main() {
     vec3 F0 = mix(F0_dielectric, albedo, metallic);
 
     // --- 4. Define Lights ---
-    // 32 point lights for a large station area
-    const int NUM_POINT_LIGHTS = 32;
+    // 64 point lights for a smaller, denser area
+    const int NUM_POINT_LIGHTS = 64;
     PointLight pointLights[NUM_POINT_LIGHTS];
     
     vec3 lightColor = vec3(1.0, 0.85, 0.7); // Warmish station overhead light
-    float lightIntensity = 40000.0; // Brighter for a larger space
-    float lightY = 400.0; // High up ceiling lights
+    float lightIntensity = 40000.0; 
+    float lightY = 400; // High up ceiling lights
 
-    // 4 long rows of 8 lights each
-    float startZ = 200.0;
-    float spacingZ = -200.0;
+    // 8 long rows of 8 lights each, now closer together
+    float startZ = 150.0;       // Starting Z closer to origin
+    float spacingZ = -150.0;    // Reduced Z spacing
 
-    // Row 1 (X = -400)
+    // Row 1 (X = -200)
     for (int i = 0; i < 8; i++) {
-        pointLights[i] = PointLight(vec3(-400.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
+        pointLights[i] = PointLight(vec3(-200.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
     }
     
     // Row 2 (X = -150)
@@ -143,14 +143,34 @@ void main() {
         pointLights[i + 8] = PointLight(vec3(-150.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
     }
 
-    // Row 3 (X = 150)
+    // Row 3 (X = -100)
     for (int i = 0; i < 8; i++) {
-        pointLights[i + 16] = PointLight(vec3(150.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
+        pointLights[i + 16] = PointLight(vec3(-100.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
     }
 
-    // Row 4 (X = 400)
+    // Row 4 (X = -50)
     for (int i = 0; i < 8; i++) {
-        pointLights[i + 24] = PointLight(vec3(400.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
+        pointLights[i + 24] = PointLight(vec3(-50.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
+    }
+
+    // Row 5 (X = 50)
+    for (int i = 0; i < 8; i++) {
+        pointLights[i + 32] = PointLight(vec3(50.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
+    }
+
+    // Row 6 (X = 100)
+    for (int i = 0; i < 8; i++) {
+        pointLights[i + 40] = PointLight(vec3(100.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
+    }
+
+    // Row 7 (X = 150)
+    for (int i = 0; i < 8; i++) {
+        pointLights[i + 48] = PointLight(vec3(150.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
+    }
+    
+    // Row 8 (X = 200)
+    for (int i = 0; i < 8; i++) {
+        pointLights[i + 56] = PointLight(vec3(200.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
     }
 
 
@@ -177,25 +197,17 @@ void main() {
         vec3 F_base = F_Schlick(HdotV, F0);
         
         vec3 kS_base = F_base;
-        // *** THIS IS THE FIX ***
-        vec3 kD_base = (vec3(1.0) - kS_base) * (1.0 - metallic); // Changed 1.s0 to 1.0
+        vec3 kD_base = (vec3(1.0) - kS_base) * (1.0 - metallic);
         
         vec3 numerator_base = NDF_base * G_base * F_base;
         float denominator_base = 4.0 * NdotV * NdotL + 0.001;
         vec3 specular_base = numerator_base / denominator_base;
         vec3 diffuse_base = (kD_base * albedo / PI);
         
-        // --- (B) Clearcoat Layer ---
-        float NDF_cc = D_GGX(N, H, cc_roughness);
-        float G_cc = G_Smith(N, V, L, cc_roughness); 
-        vec3 F_cc = F_Schlick(HdotV, F0_CLEARCOAT);
-        
-        vec3 numerator_cc = NDF_cc * G_cc * F_cc;
-        float denominator_cc = 4.0 * NdotV * NdotL + 0.001;
-        vec3 specular_cc = numerator_cc / denominator_cc;
+        // --- (B) Clearcoat Layer (REMOVED) ---
 
-        // --- (C) Combine Layers ---
-        vec3 combined_lighting = (diffuse_base + specular_base) * (1.0 - cc_factor * F_cc) + (specular_cc * cc_factor);
+        // --- (C) Combine Layers (SIMPLIFIED) ---
+        vec3 combined_lighting = (diffuse_base + specular_base);
         Lo += combined_lighting * radiance * NdotL;
     }
     

@@ -490,12 +490,12 @@ void Engine::createPipelines()
         // Binding 5: Emissive
         vk::DescriptorSetLayoutBinding(5, vk::DescriptorType::eCombinedImageSampler, 1,
                                        vk::ShaderStageFlagBits::eFragment, nullptr),
-        // Binding 6: Clearcoat Texture
-        vk::DescriptorSetLayoutBinding(6, vk::DescriptorType::eCombinedImageSampler, 1, 
-                                    vk::ShaderStageFlagBits::eFragment, nullptr),
-        // Binding 7: Clearcoat Roughness Texture
-        vk::DescriptorSetLayoutBinding(7, vk::DescriptorType::eCombinedImageSampler, 1,
-                                    vk::ShaderStageFlagBits::eFragment, nullptr)
+        // Binding 6: Clearcoat Texture <-- REMOVED
+        // vk::DescriptorSetLayoutBinding(6, vk::DescriptorType::eCombinedImageSampler, 1, 
+        //                             vk::ShaderStageFlagBits::eFragment, nullptr),
+        // Binding 7: Clearcoat Roughness Texture <-- REMOVED
+        // vk::DescriptorSetLayoutBinding(7, vk::DescriptorType::eCombinedImageSampler, 1,
+        //                             vk::ShaderStageFlagBits::eFragment, nullptr)
     };
     
     // Key definition
@@ -685,8 +685,8 @@ void Engine::createDescriptorPool()
     // This MUST match your descriptor set layout
     std::array<vk::DescriptorPoolSize, 2> pool_sizes = {
         vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, total_sets),
-        // 7 samplers (Albedo, Normal, Met/Rough, AO, Emissive, clearcoat, clearcoat roughness) per set
-        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_sets * 7) 
+        // 5 samplers (Albedo, Normal, Met/Rough, AO, Emissive) per set
+        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_sets * 5) // <-- MODIFIED (7 to 5)
     };
 
     vk::DescriptorPoolCreateInfo pool_info;
@@ -840,8 +840,8 @@ void Engine::recordCommandBuffer(uint32_t image_index){
             mat_constants.occlusion_strength = material.occlusion_strength;
             mat_constants.specular_factor = material.specular_factor;
             mat_constants.specular_color_factor = material.specular_color_factor;
-            mat_constants.clearcoat_factor = material.clearcoat_factor;
-            mat_constants.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
+            // mat_constants.clearcoat_factor = material.clearcoat_factor; <-- REMOVED
+            // mat_constants.clearcoat_roughness_factor = material.clearcoat_roughness_factor; <-- REMOVED
 
             graphics_command_buffer[current_frame].pushConstants<MaterialPushConstant>(
                 *obj.o_pipeline -> layout, 
@@ -905,8 +905,8 @@ void Engine::recordCommandBuffer(uint32_t image_index){
             mat_constants.occlusion_strength = material.occlusion_strength;
             mat_constants.specular_factor = material.specular_factor;
             mat_constants.specular_color_factor = material.specular_color_factor;
-            mat_constants.clearcoat_factor = material.clearcoat_factor;
-            mat_constants.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
+            // mat_constants.clearcoat_factor = material.clearcoat_factor; <-- REMOVED
+            // mat_constants.clearcoat_roughness_factor = material.clearcoat_roughness_factor; <-- REMOVED
 
             graphics_command_buffer[current_frame].pushConstants<MaterialPushConstant>(
                 *pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), mat_constants
@@ -1124,3 +1124,4 @@ void Engine::cleanup(){
     glfwDestroyWindow(window);
     glfwTerminate();
 }
+

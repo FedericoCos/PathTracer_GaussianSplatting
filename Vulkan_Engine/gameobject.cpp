@@ -1,6 +1,9 @@
 #include "gameobject.h"
 #include "engine.h"
 #include "image.h"
+#include <map>      // Added for std::map
+#include <stack>    // Added for std::stack
+#include <utility>  // Added for std::pair
 
 // --- HELPER FUNCTION (add this to the top of gameobject.cpp) ---
 void createDefaultTexture(Engine& engine, AllocatedImage& texture, glm::vec4 color) {
@@ -111,15 +114,15 @@ std::map<int, vk::Format> Gameobject::scanTextureFormats(const tinygltf::Model& 
 
         // Check for clearcoat extensions
         if (mat.extensions.count("KHR_materials_clearcoat")) {
-            const auto& clearcoat = mat.extensions.at("KHR_materials_clearcoat");
-            if (clearcoat.Has("clearcoatTexture")) {
-                sourceIdx = getImageSourceIndex(clearcoat.Get("clearcoatTexture").Get("index").Get<int>());
-                if (sourceIdx >= 0) image_formats[sourceIdx] = vk::Format::eR8G8B8A8Unorm;
-            }
-            if (clearcoat.Has("clearcoatRoughnessTexture")) {
-                sourceIdx = getImageSourceIndex(clearcoat.Get("clearcoatRoughnessTexture").Get("index").Get<int>());
-                if (sourceIdx >= 0) image_formats[sourceIdx] = vk::Format::eR8G8B8A8Unorm;
-            }
+            // const auto& clearcoat = mat.extensions.at("KHR_materials_clearcoat"); // <-- REMOVED
+            // if (clearcoat.Has("clearcoatTexture")) { // <-- REMOVED
+            //     sourceIdx = getImageSourceIndex(clearcoat.Get("clearcoatTexture").Get("index").Get<int>()); // <-- REMOVED
+            //     if (sourceIdx >= 0) image_formats[sourceIdx] = vk::Format::eR8G8B8A8Unorm; // <-- REMOVED
+            // } // <-- REMOVED
+            // if (clearcoat.Has("clearcoatRoughnessTexture")) { // <-- REMOVED
+            //     sourceIdx = getImageSourceIndex(clearcoat.Get("clearcoatRoughnessTexture").Get("index").Get<int>()); // <-- REMOVED
+            //     if (sourceIdx >= 0) image_formats[sourceIdx] = vk::Format::eR8G8B8A8Unorm; // <-- REMOVED
+            // } // <-- REMOVED
         }
     }
     return image_formats;
@@ -253,20 +256,20 @@ void Gameobject::loadMaterials(const tinygltf::Model& model) {
 
         // --- Clearcoat Extension ---
         if (mat.extensions.count("KHR_materials_clearcoat")) {
-            const auto& cc_ext = mat.extensions.at("KHR_materials_clearcoat");
+            // const auto& cc_ext = mat.extensions.at("KHR_materials_clearcoat"); // <-- REMOVED
 
-            if (cc_ext.Has("clearcoatFactor")) {
-                newMaterial.clearcoat_factor = static_cast<float>(cc_ext.Get("clearcoatFactor").Get<double>());
-            }
-            if (cc_ext.Has("clearcoatRoughnessFactor")) {
-                newMaterial.clearcoat_roughness_factor = static_cast<float>(cc_ext.Get("clearcoatRoughnessFactor").Get<double>());
-            }
-            if (cc_ext.Has("clearcoatTexture")) {
-                newMaterial.clearcoat_texture_index = getTextureIndex(cc_ext.Get("clearcoatTexture").Get("index").Get<int>(), model);
-            }
-            if (cc_ext.Has("clearcoatRoughnessTexture")) {
-                newMaterial.clearcoat_roughness_texture_index = getTextureIndex(cc_ext.Get("clearcoatRoughnessTexture").Get("index").Get<int>(), model);
-            }
+            // if (cc_ext.Has("clearcoatFactor")) { // <-- REMOVED
+            //     newMaterial.clearcoat_factor = static_cast<float>(cc_ext.Get("clearcoatFactor").Get<double>()); // <-- REMOVED
+            // } // <-- REMOVED
+            // if (cc_ext.Has("clearcoatRoughnessFactor")) { // <-- REMOVED
+            //     newMaterial.clearcoat_roughness_factor = static_cast<float>(cc_ext.Get("clearcoatRoughnessFactor").Get<double>()); // <-- REMOVED
+            // } // <-- REMOVED
+            // if (cc_ext.Has("clearcoatTexture")) { // <-- REMOVED
+            //     newMaterial.clearcoat_texture_index = getTextureIndex(cc_ext.Get("clearcoatTexture").Get("index").Get<int>(), model); // <-- REMOVED
+            // } // <-- REMOVED
+            // if (cc_ext.Has("clearcoatRoughnessTexture")) { // <-- REMOVED
+            //     newMaterial.clearcoat_roughness_texture_index = getTextureIndex(cc_ext.Get("clearcoatRoughnessTexture").Get("index").Get<int>(), model); // <-- REMOVED
+            // } // <-- REMOVED
         }
 
         materials.push_back(std::move(newMaterial));
@@ -467,8 +470,24 @@ void Gameobject::loadPrimitive(const tinygltf::Primitive& primitive, const tinyg
         Vertex vertex{};
         vertex.color = {1.f, 1.f, 1.f};
         vertex.pos = *reinterpret_cast<const glm::vec3*>(pos_data + (orig_idx * pos_stride));
-        vertex.normal = has_normals ? *reinterpret_cast<const glm::vec3*>(normal_data + (orig_idx * normal_stride)) : glm::vec3(0.0f, 0.0f, 1.0f);
-        vertex.tangent = has_tangents ? *reinterpret_cast<const glm::vec4*>(tangent_data + (orig_idx * tangent_stride)) : glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
+        
+        // Handle Normals
+        if (has_normals) {
+            vertex.normal = *reinterpret_cast<const glm::vec3*>(normal_data + (orig_idx * normal_stride));
+        } else {
+            // Use a sensible default (Y-up). 
+            // This will be unused if tangents are also missing, but it's a good fallback.
+            vertex.normal = glm::vec3(0.0f, 1.0f, 0.0f); 
+        }
+
+        // Handle Tangents (and set our flag)
+        if (has_tangents) {
+            vertex.tangent = *reinterpret_cast<const glm::vec4*>(tangent_data + (orig_idx * tangent_stride));
+        } else {
+            // Set W to 0.0 as a flag for the shader.
+            // XYZ can be anything, but let's set T to a default X-axis.
+            vertex.tangent = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f); 
+        }
         if (has_tex_coords) {
             glm::vec2 raw_tex = *reinterpret_cast<const glm::vec2*>(tex_coord_data + (orig_idx * tex_coord_stride));
             vertex.tex_coord = {raw_tex.x, raw_tex.y};
@@ -712,17 +731,17 @@ void Gameobject::createMaterialDescriptorSets(Engine& engine) {
             emissive_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
 
-            vk::DescriptorImageInfo clearcoat_info = {};
-            clearcoat_info.sampler = *default_sampler;
-            clearcoat_info.imageView = *getImageView(material.clearcoat_texture_index);
-            clearcoat_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+            // vk::DescriptorImageInfo clearcoat_info = {}; // <-- REMOVED
+            // clearcoat_info.sampler = *default_sampler; // <-- REMOVED
+            // clearcoat_info.imageView = *getImageView(material.clearcoat_texture_index); // <-- REMOVED
+            // clearcoat_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal; // <-- REMOVED
 
-            vk::DescriptorImageInfo clearcoat_roughness_info = {};
-            clearcoat_roughness_info.sampler = *default_sampler;
-            clearcoat_roughness_info.imageView = *getImageView(material.clearcoat_roughness_texture_index);
-            clearcoat_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+            // vk::DescriptorImageInfo clearcoat_roughness_info = {}; // <-- REMOVED
+            // clearcoat_roughness_info.sampler = *default_sampler; // <-- REMOVED
+            // clearcoat_roughness_info.imageView = *getImageView(material.clearcoat_roughness_texture_index); // <-- REMOVED
+            // clearcoat_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal; // <-- REMOVED
 
-            std::array<vk::WriteDescriptorSet, 8> descriptor_writes = {};
+            std::array<vk::WriteDescriptorSet, 6> descriptor_writes = {}; // <-- MODIFIED (8 to 6)
             
             // Binding 0: UBO
             descriptor_writes[0].dstSet = material.descriptor_sets[i];
@@ -766,19 +785,19 @@ void Gameobject::createMaterialDescriptorSets(Engine& engine) {
             descriptor_writes[5].descriptorCount = 1;
             descriptor_writes[5].pImageInfo = &emissive_info;
 
-            // Binding 6: Clearcoat
-            descriptor_writes[6].dstSet = material.descriptor_sets[i];
-            descriptor_writes[6].dstBinding = 6;
-            descriptor_writes[6].descriptorType = vk::DescriptorType::eCombinedImageSampler;
-            descriptor_writes[6].descriptorCount = 1;
-            descriptor_writes[6].pImageInfo = &clearcoat_info;
+            // Binding 6: Clearcoat <-- REMOVED
+            // descriptor_writes[6].dstSet = material.descriptor_sets[i];
+            // descriptor_writes[6].dstBinding = 6;
+            // descriptor_writes[6].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+            // descriptor_writes[6].descriptorCount = 1;
+            // descriptor_writes[6].pImageInfo = &clearcoat_info;
 
-            // Binding 7: Clearcoat Roughness
-            descriptor_writes[7].dstSet = material.descriptor_sets[i];
-            descriptor_writes[7].dstBinding = 7;
-            descriptor_writes[7].descriptorType = vk::DescriptorType::eCombinedImageSampler;
-            descriptor_writes[7].descriptorCount = 1;
-            descriptor_writes[7].pImageInfo = material.clearcoat_roughness_texture_index != 0 ? &clearcoat_roughness_info : &clearcoat_info;
+            // Binding 7: Clearcoat Roughness <-- REMOVED
+            // descriptor_writes[7].dstSet = material.descriptor_sets[i];
+            // descriptor_writes[7].dstBinding = 7;
+            // descriptor_writes[7].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+            // descriptor_writes[7].descriptorCount = 1;
+            // descriptor_writes[7].pImageInfo = material.clearcoat_roughness_texture_index != 0 ? &clearcoat_roughness_info : &clearcoat_info;
 
             engine.logical_device.updateDescriptorSets(descriptor_writes, {});
         }

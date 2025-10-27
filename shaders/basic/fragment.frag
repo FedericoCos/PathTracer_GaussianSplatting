@@ -85,8 +85,8 @@ vec3 F_Schlick(float cosTheta, vec3 F0) {
 void main() {
     // --- 1. Get Material Properties ---
     
-    // Albedo uses fragTexCoord1 (TEXCOORD_1)
-    vec4 albedo_tex = texture(albedoSampler, fragTexCoord1); // <-- MODIFIED
+    // Albedo uses fragTexCoord (TEXCOORD_1)
+    vec4 albedo_tex = texture(albedoSampler, fragTexCoord); // <-- MODIFIED
     vec3 albedo = albedo_tex.rgb * material.base_color_factor.rgb * fragColor; 
     float alpha = albedo_tex.a * material.base_color_factor.a;
 
@@ -97,8 +97,8 @@ void main() {
     
     float ao = texture(occlusionSampler, fragTexCoord).r * material.occlusion_strength;
 
-    // Emissive likely uses fragTexCoord1 (same as Albedo)
-    vec3 emissive = texture(emissiveSampler, fragTexCoord1).rgb * material.emissive_factor.xyz; // <-- MODIFIED
+    // Emissive likely uses fragTexCoord (same as Albedo)
+    vec3 emissive = texture(emissiveSampler, fragTexCoord).rgb * material.emissive_factor.xyz; // <-- MODIFIED
 
     // Clearcoat maps removed
     
@@ -126,12 +126,12 @@ void main() {
     PointLight pointLights[NUM_POINT_LIGHTS];
     
     vec3 lightColor = vec3(1.0, 0.85, 0.7); // Warmish station overhead light
-    float lightIntensity = 40000.0; 
-    float lightY = 400; // High up ceiling lights
+    float lightIntensity = 4000.0; 
+    float lightY = 75; // High up ceiling lights
 
     // 8 long rows of 8 lights each, now closer together
-    float startZ = 150.0;       // Starting Z closer to origin
-    float spacingZ = -150.0;    // Reduced Z spacing
+    float startZ = 280.0;       // Starting Z closer to origin
+    float spacingZ = -70.0;    // Reduced Z spacing
 
     // Row 1 (X = -200)
     for (int i = 0; i < 8; i++) {

@@ -2,9 +2,7 @@
 #include "engine.h"
 #include "image.h"
 
-
 // --- HELPER FUNCTION (add this to the top of gameobject.cpp) ---
-// Creates a 1x1 white texture to use as a fallback.
 void createDefaultTexture(Engine& engine, AllocatedImage& texture, glm::vec4 color) {
     unsigned char colored_pixel[] = {color.x, color.y, color.z, color.w};
     vk::DeviceSize image_size = 4;
@@ -37,10 +35,7 @@ bool Gameobject::inputUpdate(InputState &input, float &dtime)
     return false;
 }
 
-// ----------------------------------------------------------------------------
-// REFACTORED MODEL LOADER
-// ----------------------------------------------------------------------------
-
+// ... (loadModel, scanTextureFormats, loadTextures, getTextureIndex, loadMaterials, loadGeometry, processNode, getNodeTransform all remain unchanged) ...
 void Gameobject::loadModel(std::string m_path, Engine &engine)
 {
     tinygltf::Model model;
@@ -69,6 +64,7 @@ void Gameobject::loadModel(std::string m_path, Engine &engine)
     textures.clear();
     materials.clear();
     o_primitives.clear();
+    t_primitives.clear(); // <-- Make sure to clear transparent primitives too
     if (default_sampler != nullptr) {
         default_sampler = nullptr; // vk::raii::Sampler will handle destruction
     }
@@ -82,13 +78,6 @@ void Gameobject::loadModel(std::string m_path, Engine &engine)
     loadGeometry(model);
 }
 
-// ----------------------------------------------------------------------------
-// MODEL LOADING HELPER FUNCTIONS
-// ----------------------------------------------------------------------------
-
-/**
- * @brief Scans all materials to determine which format (sRGB/Unorm) each image file should be.
- */
 std::map<int, vk::Format> Gameobject::scanTextureFormats(const tinygltf::Model& model) {
     std::map<int, vk::Format> image_formats;
 
@@ -136,9 +125,6 @@ std::map<int, vk::Format> Gameobject::scanTextureFormats(const tinygltf::Model& 
     return image_formats;
 }
 
-/**
- * @brief Loads all textures from the glTF model. Creates a default white texture at index 0.
- */
 void Gameobject::loadTextures(const tinygltf::Model& model, const std::string& base_dir, Engine& engine) {
     // Pre-scan materials to determine correct texture formats (sRGB vs linear)
     std::map<int, vk::Format> image_formats = scanTextureFormats(model);
@@ -170,10 +156,6 @@ void Gameobject::loadTextures(const tinygltf::Model& model, const std::string& b
     default_sampler = Image::createTextureSampler(engine.physical_device, &engine.logical_device, max_mips);
 }
 
-/**
- * @brief Helper to convert glTF texture index to our internal vector index.
- * glTF texture index -> glTF image index (source) -> our textures vector index (+1)
- */
 int Gameobject::getTextureIndex(int gltfTexIdx, const tinygltf::Model& model) const {
     if (gltfTexIdx >= 0 && gltfTexIdx < model.textures.size()) {
         int sourceIdx = model.textures[gltfTexIdx].source;
@@ -185,19 +167,38 @@ int Gameobject::getTextureIndex(int gltfTexIdx, const tinygltf::Model& model) co
     return 0; 
 }
 
-/**
- * @brief Loads all materials from the glTF model and parses their PBR properties and extensions.
- */
 void Gameobject::loadMaterials(const tinygltf::Model& model) {
     bool first = true;
-    int index_material = 0;
     std::cout << "MATERIALS SIZE: " << model.materials.size() << std::endl;
+    const float ALPHA_OPACITY_THRESHOLD = 0.95f; 
+
     for (const auto& mat : model.materials) {
         Material newMaterial{};
         const auto& pbr = mat.pbrMetallicRoughness;
 
-        newMaterial.is_transparent = (mat.alphaMode == "BLEND" || mat.alphaMode == "MASK");
-        
+        bool is_blend = (mat.alphaMode == "BLEND");
+        if (!is_blend) {
+            newMaterial.is_transparent = false; // OPAQUE mode
+        } else {
+            // It's BLEND mode. Check if we can optimize it to be opaque.
+            // We can only do this if there is NO alpha texture.
+            bool has_alpha_texture = (pbr.baseColorTexture.index >= 0);
+            float base_alpha = static_cast<float>(pbr.baseColorFactor[3]);
+
+            if (has_alpha_texture) {
+                // We can't read the texture's alpha values on the CPU, so to be safe,
+                // we must treat it as transparent if the material uses an alpha channel.
+                newMaterial.is_transparent = true; 
+            } else {
+                // No alpha texture. The *only* source of alpha is the base_color_factor.
+                // We can safely check this factor against our threshold.
+                if (base_alpha < ALPHA_OPACITY_THRESHOLD) {
+                    newMaterial.is_transparent = true; // Genuinely transparent
+                } else {
+                    newMaterial.is_transparent = false; // e.g., alpha is 0.999. Treat as opaque.
+                }
+            }
+        }
 
         // --- PBR Base ---
         const auto& bcf = pbr.baseColorFactor;
@@ -269,7 +270,6 @@ void Gameobject::loadMaterials(const tinygltf::Model& model) {
         }
 
         materials.push_back(std::move(newMaterial));
-        index_material++;
     }
 
     // Ensure at least one default material exists
@@ -279,9 +279,6 @@ void Gameobject::loadMaterials(const tinygltf::Model& model) {
     }
 }
 
-/**
- * @brief Kicks off the geometry loading process by traversing the default scene.
- */
 void Gameobject::loadGeometry(const tinygltf::Model& model) {
     // Map to deduplicate vertices
     std::unordered_map<Vertex, uint32_t> unique_vertices{};
@@ -298,9 +295,6 @@ void Gameobject::loadGeometry(const tinygltf::Model& model) {
     }
 }
 
-/**
- * @brief Recursively processes a node in the glTF scene graph.
- */
 void Gameobject::processNode(int nodeIndex, const tinygltf::Model& model, const glm::mat4& parentTransform, std::unordered_map<Vertex, uint32_t>& unique_vertices) {
     
     const tinygltf::Node& node = model.nodes[nodeIndex];
@@ -320,9 +314,6 @@ void Gameobject::processNode(int nodeIndex, const tinygltf::Model& model, const 
     }
 }
 
-/**
- * @brief Calculates the local transformation matrix for a given glTF node.
- */
 glm::mat4 Gameobject::getNodeTransform(const tinygltf::Node& node) const {
     // Check for a full matrix first
     if (node.matrix.size() == 16) {
@@ -351,141 +342,316 @@ glm::mat4 Gameobject::getNodeTransform(const tinygltf::Node& node) const {
          * glm::scale(glm::mat4(1.0f), scale);
 }
 
+
 /**
- * @brief Loads a single mesh primitive, parsing its vertices, indices, and attributes.
+ * @brief Helper struct for the transparent batching process.
+ * Stores the indices and calculated center for one connected component.
+ */
+struct TempComponent {
+    std::vector<uint32_t> component_indices; // Indices using global vertex indices
+    glm::vec3 center;
+};
+
+
+// --- NEW ---
+/**
+ * @brief Custom comparator for glm::ivec3 keys in std::map.
+ * Performs a lexicographical comparison (x, then y, then z).
+ */
+struct CompareVec3 {
+    bool operator()(const glm::ivec3& a, const glm::ivec3& b) const {
+        if (a.x != b.x) return a.x < b.x;
+        if (a.y != b.y) return a.y < b.y;
+        return a.z < b.z;
+    }
+};
+// --- END NEW ---
+
+
+/**
+ * @brief Loads a single mesh primitive.
+ * - OPAQUE primitives are loaded as a single struct.
+ * - TRANSPARENT primitives are:
+ * 1. Split into connected components.
+ * 2. Batched into spatial grid cells to reduce draw calls.
  */
 void Gameobject::loadPrimitive(const tinygltf::Primitive& primitive, const tinygltf::Model& model, const glm::mat4& transform, std::unordered_map<Vertex, uint32_t>& unique_vertices) {
     
-    Primitive newPrimitive;
-    newPrimitive.material_index = (primitive.material >= 0) ? primitive.material : 0;
-    newPrimitive.first_index = static_cast<uint32_t>(indices.size());
+    // --- 0a. CHOOSE TRANSPARENT BATCHING STRATEGY ---
+    // true:  Group nearby components into grid cells. (Fewer draw calls, less accurate sorting)
+    // false: Create one primitive per connected component. (More draw calls, perfect component sorting)
+    const bool BATCH_NEARBY_COMPONENTS = true; 
+    // ---
 
-    const tinygltf::Accessor& index_accessor = model.accessors[primitive.indices];
-    newPrimitive.index_count = static_cast<uint32_t>(index_accessor.count);
+    // --- 0b. DEFINE YOUR BATCHING RESOLUTION ---
+    /**
+     * @brief Controls the size of the 3D grid for batching.
+     * A smaller value (e.g., 0.25f) = more batches, better sorting.
+     * A larger value (e.g., 2.0f) = fewer batches, worse sorting.
+     * This is in world units (assuming 1.0 = 1 meter).
+     */
+    const float TRANSPARENT_BATCH_GRID_SIZE = 1.0f; 
+    // ---
 
-    // --- Get Pointers to Attribute Data ---
+    // --- 1. Get Material and Index Data ---
+    int material_index = (primitive.material >= 0) ? primitive.material : 0; 
+    bool is_transparent = materials[material_index].is_transparent;
+    
 
-    // Position (Required)
-    const tinygltf::Accessor& pos_accessor = model.accessors[primitive.attributes.at("POSITION")];
-    const tinygltf::BufferView& pos_buffer_view = model.bufferViews[pos_accessor.bufferView];
-    const unsigned char* pos_data = &model.buffers[pos_buffer_view.buffer].data[pos_buffer_view.byteOffset + pos_accessor.byteOffset];
-    size_t pos_stride = pos_buffer_view.byteStride ? pos_buffer_view.byteStride : sizeof(glm::vec3);
+    const tinygltf::Accessor& index_accessor = model.accessors[primitive.indices]; 
+    size_t total_index_count = index_accessor.count; 
 
-    // Normal
+    // --- 2. Get Pointers to Attribute Data ---
+    // (This section is unchanged - it just gets data pointers)
+    const tinygltf::Accessor& pos_accessor = model.accessors[primitive.attributes.at("POSITION")]; 
+    const tinygltf::BufferView& pos_buffer_view = model.bufferViews[pos_accessor.bufferView]; 
+    const unsigned char* pos_data = &model.buffers[pos_buffer_view.buffer].data[pos_buffer_view.byteOffset + pos_accessor.byteOffset]; 
+    size_t pos_stride = pos_buffer_view.byteStride ? pos_buffer_view.byteStride : sizeof(glm::vec3); 
     const unsigned char* normal_data = nullptr;
     size_t normal_stride = 0;
-    bool has_normals = primitive.attributes.count("NORMAL");
+    bool has_normals = primitive.attributes.count("NORMAL"); 
     if (has_normals) {
-        const tinygltf::Accessor& normal_accessor = model.accessors[primitive.attributes.at("NORMAL")];
-        const tinygltf::BufferView& normal_buffer_view = model.bufferViews[normal_accessor.bufferView];
-        normal_data = &model.buffers[normal_buffer_view.buffer].data[normal_buffer_view.byteOffset + normal_accessor.byteOffset];
-        normal_stride = normal_buffer_view.byteStride ? normal_buffer_view.byteStride : sizeof(glm::vec3);
+        const tinygltf::Accessor& normal_accessor = model.accessors[primitive.attributes.at("NORMAL")]; 
+        const tinygltf::BufferView& normal_buffer_view = model.bufferViews[normal_accessor.bufferView]; 
+        normal_data = &model.buffers[normal_buffer_view.buffer].data[normal_buffer_view.byteOffset + normal_accessor.byteOffset]; 
+        normal_stride = normal_buffer_view.byteStride ? normal_buffer_view.byteStride : sizeof(glm::vec3); 
     }
-
-    // Tangent
     const unsigned char* tangent_data = nullptr;
     size_t tangent_stride = 0;
-    bool has_tangents = primitive.attributes.count("TANGENT");
+    bool has_tangents = primitive.attributes.count("TANGENT"); 
     if (has_tangents) {
-        const tinygltf::Accessor& tangent_accessor = model.accessors[primitive.attributes.at("TANGENT")];
-        const tinygltf::BufferView& tangent_buffer_view = model.bufferViews[tangent_accessor.bufferView];
-        tangent_data = &model.buffers[tangent_buffer_view.buffer].data[tangent_buffer_view.byteOffset + tangent_accessor.byteOffset];
-        tangent_stride = tangent_buffer_view.byteStride ? tangent_buffer_view.byteStride : sizeof(glm::vec4);
+        const tinygltf::Accessor& tangent_accessor = model.accessors[primitive.attributes.at("TANGENT")]; 
+        const tinygltf::BufferView& tangent_buffer_view = model.bufferViews[tangent_accessor.bufferView]; 
+        tangent_data = &model.buffers[tangent_buffer_view.buffer].data[tangent_buffer_view.byteOffset + tangent_accessor.byteOffset]; 
+        tangent_stride = tangent_buffer_view.byteStride ? tangent_buffer_view.byteStride : sizeof(glm::vec4); 
     }
-
-    // TexCoord 0
     const unsigned char* tex_coord_data = nullptr;
     size_t tex_coord_stride = 0;
-    bool has_tex_coords = primitive.attributes.count("TEXCOORD_0");
+    bool has_tex_coords = primitive.attributes.count("TEXCOORD_0"); 
     if (has_tex_coords) {
-        const tinygltf::Accessor& tex_coord_accessor = model.accessors[primitive.attributes.at("TEXCOORD_0")];
-        const tinygltf::BufferView& tex_coord_buffer_view = model.bufferViews[tex_coord_accessor.bufferView];
-        tex_coord_data = &model.buffers[tex_coord_buffer_view.buffer].data[tex_coord_buffer_view.byteOffset + tex_coord_accessor.byteOffset];
-        tex_coord_stride = tex_coord_buffer_view.byteStride ? tex_coord_buffer_view.byteStride : sizeof(glm::vec2);
+        const tinygltf::Accessor& tex_coord_accessor = model.accessors[primitive.attributes.at("TEXCOORD_0")]; 
+        const tinygltf::BufferView& tex_coord_buffer_view = model.bufferViews[tex_coord_accessor.bufferView]; 
+        tex_coord_data = &model.buffers[tex_coord_buffer_view.buffer].data[tex_coord_buffer_view.byteOffset + tex_coord_accessor.byteOffset]; 
+        tex_coord_stride = tex_coord_buffer_view.byteStride ? tex_coord_buffer_view.byteStride : sizeof(glm::vec2); 
     }
-
-    // TexCoord 1
     const unsigned char* tex_coord_data_1 = nullptr;
     size_t tex_coord_stride_1 = 0;
-    bool has_tex_coords_1 = primitive.attributes.count("TEXCOORD_1");
+    bool has_tex_coords_1 = primitive.attributes.count("TEXCOORD_1"); 
     if (has_tex_coords_1) {
-        const tinygltf::Accessor& tex_coord_accessor = model.accessors[primitive.attributes.at("TEXCOORD_1")];
-        const tinygltf::BufferView& tex_coord_buffer_view = model.bufferViews[tex_coord_accessor.bufferView];
-        tex_coord_data_1 = &model.buffers[tex_coord_buffer_view.buffer].data[tex_coord_buffer_view.byteOffset + tex_coord_accessor.byteOffset];
-        tex_coord_stride_1 = tex_coord_buffer_view.byteStride ? tex_coord_buffer_view.byteStride : sizeof(glm::vec2);
+        const tinygltf::Accessor& tex_coord_accessor = model.accessors[primitive.attributes.at("TEXCOORD_1")]; 
+        const tinygltf::BufferView& tex_coord_buffer_view = model.bufferViews[tex_coord_accessor.bufferView]; 
+        tex_coord_data_1 = &model.buffers[tex_coord_buffer_view.buffer].data[tex_coord_buffer_view.byteOffset + tex_coord_accessor.byteOffset]; 
+        tex_coord_stride_1 = tex_coord_buffer_view.byteStride ? tex_coord_buffer_view.byteStride : sizeof(glm::vec2); 
     }
+    const tinygltf::BufferView& index_buffer_view = model.bufferViews[index_accessor.bufferView]; 
+    const unsigned char* index_data = &model.buffers[index_buffer_view.buffer].data[index_buffer_view.byteOffset + index_accessor.byteOffset]; 
 
-    // --- Index Data ---
-    const tinygltf::BufferView& index_buffer_view = model.bufferViews[index_accessor.bufferView];
-    const unsigned char* index_data = &model.buffers[index_buffer_view.buffer].data[index_buffer_view.byteOffset + index_accessor.byteOffset];
+    // --- 3. Process Vertices based on transparency ---
 
-    // --- Vertex Assembly Loop ---
-    // This loop iterates over indices, not vertices
-    for (size_t i = 0; i < index_accessor.count; i++) {
-        
-        // 1. Get the original vertex index from the index buffer
+    // Temporary storage for *all* final, deduplicated indices for this glTF primitive
+    std::vector<uint32_t> local_final_indices;
+    local_final_indices.reserve(total_index_count);
+
+    // --- 3a. First Pass: Load all vertices and local indices ---
+    for (size_t i = 0; i < total_index_count; i++) {
         uint32_t orig_idx = 0;
         switch (index_accessor.componentType) {
             case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
-                orig_idx = reinterpret_cast<const uint8_t*>(index_data)[i];
-                break;
+                orig_idx = reinterpret_cast<const uint8_t*>(index_data)[i]; break;
             case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
-                orig_idx = reinterpret_cast<const uint16_t*>(index_data)[i];
-                break;
+                orig_idx = reinterpret_cast<const uint16_t*>(index_data)[i]; break;
             case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
-                orig_idx = reinterpret_cast<const uint32_t*>(index_data)[i];
-                break;
-            default:
-                continue; // Should not happen with valid glTF
+                orig_idx = reinterpret_cast<const uint32_t*>(index_data)[i]; break;
         }
 
-        // 2. Assemble the vertex using the original index
         Vertex vertex{};
-        vertex.color = {1.f, 1.f, 1.f}; // Default color
-        
+        vertex.color = {1.f, 1.f, 1.f};
         vertex.pos = *reinterpret_cast<const glm::vec3*>(pos_data + (orig_idx * pos_stride));
-        
-        vertex.normal = has_normals ? *reinterpret_cast<const glm::vec3*>(normal_data + (orig_idx * normal_stride))
-                                    : glm::vec3(0.0f, 0.0f, 1.0f); // Default normal
-        
-        vertex.tangent = has_tangents ? *reinterpret_cast<const glm::vec4*>(tangent_data + (orig_idx * tangent_stride))
-                                      : glm::vec4(1.0f, 0.0f, 0.0f, 1.0f); // Default tangent
-
+        vertex.normal = has_normals ? *reinterpret_cast<const glm::vec3*>(normal_data + (orig_idx * normal_stride)) : glm::vec3(0.0f, 0.0f, 1.0f);
+        vertex.tangent = has_tangents ? *reinterpret_cast<const glm::vec4*>(tangent_data + (orig_idx * tangent_stride)) : glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
         if (has_tex_coords) {
             glm::vec2 raw_tex = *reinterpret_cast<const glm::vec2*>(tex_coord_data + (orig_idx * tex_coord_stride));
             vertex.tex_coord = {raw_tex.x, raw_tex.y};
         }
-
         if (has_tex_coords_1) {
             glm::vec2 raw_tex = *reinterpret_cast<const glm::vec2*>(tex_coord_data_1 + (orig_idx * tex_coord_stride_1));
             vertex.tex_coord_1 = {raw_tex.x, raw_tex.y};
         } else if (has_tex_coords) {
-            vertex.tex_coord_1 = vertex.tex_coord; // Fallback to texcoord_0
+            vertex.tex_coord_1 = vertex.tex_coord;
         }
 
-        // 3. Apply node transform
-        vertex.pos = glm::vec3(transform * glm::vec4(vertex.pos, 1.0f));
-        vertex.normal = glm::normalize(glm::mat3(transform) * vertex.normal);
+        vertex.pos = glm::vec3(transform * glm::vec4(vertex.pos, 1.0f)); 
+        vertex.normal = glm::normalize(glm::mat3(transform) * vertex.normal); 
 
-        // 4. Deduplicate and add to buffers
         if (!unique_vertices.contains(vertex)) {
             unique_vertices[vertex] = static_cast<uint32_t>(vertices.size());
-            vertices.push_back(vertex); // Add to Gameobject's member vector
+            vertices.push_back(vertex); 
         }
-        indices.push_back(unique_vertices[vertex]); // Add to Gameobject's member vector
-
-        newPrimitive.center += vertex.pos;
+        local_final_indices.push_back(unique_vertices[vertex]);
     }
-    newPrimitive.center /= index_accessor.count;
 
-    if(materials[newPrimitive.material_index].is_transparent){
-        t_primitives.push_back(newPrimitive);
-    }
-    else{
-        o_primitives.push_back(newPrimitive); 
+    // --- 3b. LOGIC BRANCH ---
+    if (is_transparent) {
+        // --- TRANSPARENT path: Build graph, find components, and batch them ---
+
+        // ----- 3b.1. Find all connected components -----
+        struct Triangle { uint32_t v[3]; };
+        std::vector<Triangle> local_triangles;
+        local_triangles.reserve(total_index_count / 3);
+
+        auto make_sorted_pair = [](uint32_t a, uint32_t b) {
+            return std::make_pair(std::min(a, b), std::max(a, b));
+        };
+        std::map<std::pair<uint32_t, uint32_t>, std::vector<uint32_t>> edge_to_triangles;
+        
+        for (size_t i = 0; i < local_final_indices.size(); i += 3) {
+            uint32_t v0 = local_final_indices[i];
+            uint32_t v1 = local_final_indices[i+1];
+            uint32_t v2 = local_final_indices[i+2];
+            uint32_t tri_idx = static_cast<uint32_t>(local_triangles.size());
+            local_triangles.push_back({v0, v1, v2});
+            edge_to_triangles[make_sorted_pair(v0, v1)].push_back(tri_idx);
+            edge_to_triangles[make_sorted_pair(v1, v2)].push_back(tri_idx);
+            edge_to_triangles[make_sorted_pair(v2, v0)].push_back(tri_idx);
+        }
+
+        size_t num_triangles = local_triangles.size();
+        std::vector<std::vector<uint32_t>> adj(num_triangles);
+        for (auto const& [edge, tris] : edge_to_triangles) {
+            if (tris.size() > 1) {
+                for (size_t i = 0; i < tris.size(); ++i) {
+                    for (size_t j = i + 1; j < tris.size(); ++j) {
+                        adj[tris[i]].push_back(tris[j]);
+                        adj[tris[j]].push_back(tris[i]);
+                    }
+                }
+            }
+        }
+
+        std::vector<TempComponent> all_components; // Store all found components here
+        std::vector<bool> visited(num_triangles, false);
+        
+        for (uint32_t i = 0; i < num_triangles; ++i) {
+            if (!visited[i]) {
+                // Start of a new component
+                TempComponent newComponent;
+                glm::vec3 center_sum(0.0f);
+                float vertex_count = 0.0f;
+
+                std::stack<uint32_t> stack;
+                stack.push(i);
+                visited[i] = true;
+
+                while (!stack.empty()) {
+                    uint32_t current_tri_idx = stack.top();
+                    stack.pop();
+                    const auto& tri = local_triangles[current_tri_idx];
+
+                    // Add this triangle's indices to the component's list
+                    newComponent.component_indices.push_back(tri.v[0]);
+                    newComponent.component_indices.push_back(tri.v[1]);
+                    newComponent.component_indices.push_back(tri.v[2]);
+
+                    center_sum += vertices[tri.v[0]].pos;
+                    center_sum += vertices[tri.v[1]].pos;
+                    center_sum += vertices[tri.v[2]].pos;
+                    vertex_count += 3.0f;
+
+                    for (uint32_t neighbor_idx : adj[current_tri_idx]) {
+                        if (!visited[neighbor_idx]) {
+                            visited[neighbor_idx] = true;
+                            stack.push(neighbor_idx);
+                        }
+                    }
+                }
+                newComponent.center = center_sum / vertex_count;
+                all_components.push_back(std::move(newComponent));
+            }
+        }
+
+        if (BATCH_NEARBY_COMPONENTS) {
+            // ----- 3b.2. Batch components into grid cells -----
+            
+            // Key: Voxel/grid cell coordinate
+            // Value: A list of all components that fall into this cell
+            std::map<glm::ivec3, std::vector<TempComponent*>, CompareVec3> batches;
+
+            for (auto& component : all_components) {
+                glm::ivec3 cell_coord = glm::floor(component.center / TRANSPARENT_BATCH_GRID_SIZE);
+                batches[cell_coord].push_back(&component); // This line now works
+            }
+
+            // ----- 3b.3. Create final primitives from batches -----
+            
+            for (auto& [cell, component_list] : batches) {
+                // This component_list is our new, batched primitive.
+                Primitive newPrimitive;
+                newPrimitive.material_index = material_index;
+                newPrimitive.first_index = static_cast<uint32_t>(indices.size()); // New batch starts here
+                newPrimitive.index_count = 0;
+                
+                glm::vec3 weighted_center_sum(0.0f);
+                float total_triangles = 0.0f;
+
+                // Add all indices from all components in this batch
+                for (TempComponent* comp : component_list) {
+                    // Copy all indices from the component into the GLOBAL indices buffer
+                    indices.insert(indices.end(), comp->component_indices.begin(), comp->component_indices.end());
+                    
+                    float tri_count = comp->component_indices.size() / 3.0f;
+                    newPrimitive.index_count += static_cast<uint32_t>(comp->component_indices.size());
+                    
+                    // Weight the center by the number of triangles
+                    weighted_center_sum += comp->center * tri_count;
+                    total_triangles += tri_count;
+                }
+
+                // Calculate the final weighted-average center for sorting
+                if (total_triangles > 0) {
+                    newPrimitive.center = weighted_center_sum / total_triangles;
+                } else {
+                    newPrimitive.center = glm::vec3(0.0f); // Should not happen
+                }
+
+                t_primitives.push_back(newPrimitive);
+            }
+        } else {
+            // ----- 3b.2 (Alternate): Create one primitive per component -----
+            for (auto& comp : all_components) {
+                Primitive newPrimitive;
+                newPrimitive.material_index = material_index;
+                newPrimitive.first_index = static_cast<uint32_t>(indices.size()); // New primitive starts here
+                newPrimitive.index_count = static_cast<uint32_t>(comp.component_indices.size());
+                newPrimitive.center = comp.center;
+
+                // Copy this component's indices into the GLOBAL index buffer
+                indices.insert(indices.end(), comp.component_indices.begin(), comp.component_indices.end());
+
+                t_primitives.push_back(newPrimitive);
+            }
+        }
+
+    } else {
+        // --- OPAQUE path: Create ONE primitive (Unchanged) ---
+        Primitive opaquePrimitive;
+        glm::vec3 bbMin( std::numeric_limits<float>::max());
+        glm::vec3 bbMax(-std::numeric_limits<float>::max());
+        
+        opaquePrimitive.material_index = material_index;
+        opaquePrimitive.first_index = static_cast<uint32_t>(indices.size());
+        opaquePrimitive.index_count = static_cast<uint32_t>(total_index_count);
+
+        for (uint32_t final_index : local_final_indices) {
+            indices.push_back(final_index);
+            const auto& pos = vertices[final_index].pos;
+            bbMin = glm::min(bbMin, pos);
+            bbMax = glm::max(bbMax, pos);
+        }
+
+        opaquePrimitive.center = 0.5f * (bbMin + bbMax);
+        o_primitives.push_back(opaquePrimitive);
     }
 }
-
 
 
 void Gameobject::createMaterialDescriptorSets(Engine& engine) {
@@ -553,7 +719,7 @@ void Gameobject::createMaterialDescriptorSets(Engine& engine) {
 
             vk::DescriptorImageInfo clearcoat_roughness_info = {};
             clearcoat_roughness_info.sampler = *default_sampler;
-            clearcoat_info.imageView = *getImageView(material.clearcoat_roughness_texture_index);
+            clearcoat_roughness_info.imageView = *getImageView(material.clearcoat_roughness_texture_index);
             clearcoat_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
             std::array<vk::WriteDescriptorSet, 8> descriptor_writes = {};
@@ -618,3 +784,4 @@ void Gameobject::createMaterialDescriptorSets(Engine& engine) {
         }
     }
 }
+

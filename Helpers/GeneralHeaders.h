@@ -17,6 +17,10 @@
 #include <cmath>
 #include <fstream>
 #include <tuple>
+#include <map>
+#include <stack>
+#include <utility>
+#include <bits/stdc++.h>
 
 #include <vulkan/vulkan_raii.hpp> // this library handles for us the vkCreateXXX
                                   // vkAllocateXXX, vkDestroyXXX, and vkFreeXXX
@@ -203,8 +207,6 @@ struct Material {
     float clearcoat_roughness_factor = 0.0f;
 
     bool is_transparent = false;
-
-
 
     // One descriptor set per frame-in-flight
     std::vector<vk::raii::DescriptorSet> descriptor_sets;

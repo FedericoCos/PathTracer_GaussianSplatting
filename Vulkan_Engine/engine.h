@@ -141,6 +141,9 @@ private:
     Torus torus;
     std::vector<P_object> scene_objs;
     std::vector<TransparentDraw> transparent_draws;
+    Gameobject debug_cube;
+
+    Gameobject createDebugCube();
 
     // For multisampling
     AllocatedImage color_image;

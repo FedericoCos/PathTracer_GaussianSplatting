@@ -44,6 +44,48 @@ void Engine::setupDebugMessanger(){
 
 }
 
+Gameobject Engine::createDebugCube()
+{
+    Gameobject cube;
+    cube.vertices.resize(8);
+    cube.vertices[0].pos = {-0.5f, -0.5f, -0.5f};
+    cube.vertices[1].pos = { 0.5f, -0.5f, -0.5f};
+    cube.vertices[2].pos = { 0.5f,  0.5f, -0.5f};
+    cube.vertices[3].pos = {-0.5f,  0.5f, -0.5f};
+    cube.vertices[4].pos = {-0.5f, -0.5f,  0.5f};
+    cube.vertices[5].pos = { 0.5f, -0.5f,  0.5f};
+    cube.vertices[6].pos = { 0.5f,  0.5f,  0.5f};
+    cube.vertices[7].pos = {-0.5f,  0.5f,  0.5f};
+
+    // Set default values for other attributes to satisfy the PBR pipeline
+    for(auto& v : cube.vertices) {
+        v.normal = {0.0f, 1.0f, 0.0f};
+        v.color = {1.0f, 1.0f, 1.0f};
+        v.tex_coord = {0.0f, 0.0f};
+        v.tex_coord_1 = {0.0f, 0.0f};
+        v.tangent = {1.0f, 0.0f, 0.0f, 1.0f};
+    }
+
+    cube.indices = {
+        // front
+        0, 1, 2, 2, 3, 0,
+        // back
+        4, 5, 6, 6, 7, 4,
+        // left
+        4, 7, 3, 3, 0, 4,
+        // right
+        1, 5, 6, 6, 2, 1,
+        // top
+        3, 2, 6, 6, 7, 3,
+        // bottom
+        0, 1, 5, 5, 4, 0
+    };
+
+    // Create the GPU buffer for the cube
+    createModel(cube);
+    return cube;
+}
+
 void Engine::transition_image_layout(
         uint32_t image_index,
         vk::ImageLayout old_layout,
@@ -333,6 +375,7 @@ bool Engine::initVulkan(){
     createPipelines();
 
     loadObjects("resources/scene.json");
+    debug_cube = createDebugCube();
     createTorusModel();
 
     createUniformBuffers();
@@ -825,7 +868,6 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     }
 
     std::sort(transparent_draws.begin(), transparent_draws.end());
-
     if (!transparent_draws.empty()) {
         Gameobject* last_bound_object = nullptr;
         PipelineInfo* last_bound_pipeline = nullptr;
@@ -879,62 +921,6 @@ void Engine::recordCommandBuffer(uint32_t image_index){
             );
         }
     }
-
-    /* for(auto& pipeline : p_p_map){
-        if(pipeline.first.v_shader == v_shader_torus){
-            continue;
-        }
-        graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline.second.pipeline);
-
-        for(auto& gameobject : p_o_map[pipeline.first]){
-            
-            // Bind the geometry buffers ONCE per object
-            graphics_command_buffer[current_frame].bindVertexBuffers(0, {gameobject.geometry_buffer.buffer}, {0});
-            graphics_command_buffer[current_frame].bindIndexBuffer(gameobject.geometry_buffer.buffer, gameobject.index_buffer_offset, vk::IndexType::eUint32);
-            
-            // Push the model matrix ONCE per object
-            graphics_command_buffer[current_frame].pushConstants<glm::mat4>(*gameobject.o_pipeline -> layout, vk::ShaderStageFlagBits::eVertex, 0, gameobject.model_matrix);
-
-            // --- NEW: Loop over primitives ---
-            for (const auto& primitive : gameobject.o_primitives) {
-                // Get the material for this primitive
-                const Material& material = gameobject.materials[primitive.material_index];
-
-                MaterialPushConstant mat_constants;
-                mat_constants.base_color_factor = material.base_color_factor;
-                mat_constants.metallic_factor = material.metallic_factor;
-                mat_constants.roughness_factor = material.roughness_factor;
-                mat_constants.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 1.f);
-                mat_constants.occlusion_strength = material.occlusion_strength;
-                mat_constants.specular_factor = material.specular_factor;
-                mat_constants.specular_color_factor = material.specular_color_factor;
-                mat_constants.clearcoat_factor = material.clearcoat_factor;
-                mat_constants.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
-
-                graphics_command_buffer[current_frame].pushConstants<MaterialPushConstant>(
-                    *gameobject.o_pipeline -> layout, 
-                    vk::ShaderStageFlagBits::eFragment, 
-                    sizeof(glm::mat4), // The offset we defined
-                    mat_constants
-                );
-
-                // Bind the material's descriptor set
-                graphics_command_buffer[current_frame].bindDescriptorSets(
-                    vk::PipelineBindPoint::eGraphics, 
-                    *gameobject.o_pipeline -> layout, 0, 
-                    *material.descriptor_sets[current_frame], 
-                    nullptr);
-                
-                // Draw the primitive
-                graphics_command_buffer[current_frame].drawIndexed(
-                    primitive.index_count,   // indexCount
-                    1,                      // instanceCount
-                    primitive.first_index,   // firstIndex
-                    0,                      // vertexOffset
-                    0);                     // firstInstance
-            }
-        }
-    } */
 
     
     // --- MODIFIED: Torus drawing (must also use primitive loop) ---

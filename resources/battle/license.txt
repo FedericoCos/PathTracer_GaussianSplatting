@@ -1,0 +1,11 @@
+Model Information:
+* title:	Battle-Armour Sonar Titan [ Virlance ]
+* source:	https://sketchfab.com/3d-models/battle-armour-sonar-titan-virlance-ef1b453c53fe4f709c781262fafa8a3e
+* author:	Zeldrix (https://sketchfab.com/Zeldrix)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Battle-Armour Sonar Titan [ Virlance ]" (https://sketchfab.com/3d-models/battle-armour-sonar-titan-virlance-ef1b453c53fe4f709c781262fafa8a3e) by Zeldrix (https://sketchfab.com/Zeldrix) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

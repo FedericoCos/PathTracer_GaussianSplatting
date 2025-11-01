@@ -180,6 +180,9 @@ void Gameobject::loadMaterials(const tinygltf::Model& model) {
         const auto& pbr = mat.pbrMetallicRoughness;
 
         bool is_blend = (mat.alphaMode == "BLEND");
+        if(mat.doubleSided){
+            newMaterial.is_doublesided = true;
+        }
         if (!is_blend) {
             newMaterial.is_transparent = false; // OPAQUE mode
         } else {
@@ -510,7 +513,7 @@ void Gameobject::loadPrimitive(const tinygltf::Primitive& primitive, const tinyg
     }
 
     // --- 3b. LOGIC BRANCH ---
-    if (is_transparent) {
+    if (false) { 
         // --- TRANSPARENT path: Build graph, find components, and batch them ---
 
         // ----- 3b.1. Find all connected components -----
@@ -668,7 +671,11 @@ void Gameobject::loadPrimitive(const tinygltf::Primitive& primitive, const tinyg
         }
 
         opaquePrimitive.center = 0.5f * (bbMin + bbMax);
-        o_primitives.push_back(opaquePrimitive);
+
+        if(!is_transparent)
+            o_primitives.push_back(opaquePrimitive);
+        else
+            t_primitives.push_back(opaquePrimitive);
     }
 }
 

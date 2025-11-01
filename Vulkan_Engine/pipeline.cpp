@@ -8,7 +8,7 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
     PipelineInfo *p_info, 
     std::string v_shader, 
     std::string f_shader,
-    bool is_transparent,
+    TransparencyMode mode,
     vk::CullModeFlagBits cull_mode)
 {
     vk::raii::ShaderModule vertex_shader_module = createShaderModule(readFile(v_shader), &engine.logical_device);
@@ -30,11 +30,23 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
 
     auto binding_description = Vertex::getBindingDescription();
     auto attribute_descriptions = Vertex::getAttributeDescriptions();
+    
     vk::PipelineVertexInputStateCreateInfo vertex_input_info;
-    vertex_input_info.vertexBindingDescriptionCount = 1;
-    vertex_input_info.pVertexBindingDescriptions = &binding_description;
-    vertex_input_info.vertexAttributeDescriptionCount = attribute_descriptions.size();
-    vertex_input_info.pVertexAttributeDescriptions = attribute_descriptions.data();
+    if (mode == TransparencyMode::OIT_COMPOSITE) {
+        // Fullscreen quad has no vertex inputs
+        vertex_input_info.vertexBindingDescriptionCount = 0;
+        vertex_input_info.pVertexBindingDescriptions = nullptr; // Be explicit
+        vertex_input_info.vertexAttributeDescriptionCount = 0;
+        vertex_input_info.pVertexAttributeDescriptions = nullptr; // Be explicit
+    } else {
+        // Standard PBR/OIT object
+        // Now we just assign the pointers, since the variables
+        // are in the outer scope and will not be destroyed.
+        vertex_input_info.vertexBindingDescriptionCount = 1;
+        vertex_input_info.pVertexBindingDescriptions = &binding_description; 
+        vertex_input_info.vertexAttributeDescriptionCount = static_cast<uint32_t>(attribute_descriptions.size()); // Good practice to cast
+        vertex_input_info.pVertexAttributeDescriptions = attribute_descriptions.data(); 
+    }
     
     vk::PipelineInputAssemblyStateCreateInfo input_assembly;
     input_assembly.topology = vk::PrimitiveTopology::eTriangleList;
@@ -57,80 +69,144 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
     multisampling.sampleShadingEnable = vk::False;
 
     vk::PipelineDepthStencilStateCreateInfo depth_stencil = {};
-    depth_stencil.depthTestEnable = vk::True;
-    depth_stencil.depthWriteEnable = vk::True;
-    depth_stencil.depthCompareOp = vk::CompareOp::eLess;
-    depth_stencil.depthBoundsTestEnable = vk::False;
-    depth_stencil.stencilTestEnable = vk::False;
-    depth_stencil.depthCompareOp = vk::CompareOp::eLess;
-
-    vk::PipelineColorBlendAttachmentState color_blend_attachment;
-    if(is_transparent){
-        color_blend_attachment.blendEnable = vk::True;
-        color_blend_attachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
-                                                vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
-
-        color_blend_attachment.srcColorBlendFactor = vk::BlendFactor::eSrcAlpha;
-        color_blend_attachment.dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
-        color_blend_attachment.colorBlendOp = vk::BlendOp::eAdd;
-
-        color_blend_attachment.srcAlphaBlendFactor = vk::BlendFactor::eOne;
-        color_blend_attachment.dstAlphaBlendFactor = vk::BlendFactor::eZero;
-        color_blend_attachment.alphaBlendOp = vk::BlendOp::eAdd;
-
+    if(mode == TransparencyMode::OIT_COMPOSITE){
+        depth_stencil.depthTestEnable = vk::False;
         depth_stencil.depthWriteEnable = vk::False;
+    } else{
+        depth_stencil.depthTestEnable = vk::True;
+        depth_stencil.depthWriteEnable = (mode == TransparencyMode::OPAQUE) ? vk::True : vk::False;
+        depth_stencil.depthCompareOp = vk::CompareOp::eLess;
+        depth_stencil.depthBoundsTestEnable = vk::False;
+        depth_stencil.stencilTestEnable = vk::False;
+        depth_stencil.depthCompareOp = vk::CompareOp::eLess;
     }
-    else{
-        color_blend_attachment.blendEnable = vk::False;
-        color_blend_attachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
-                                                vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
-    }
-    
+
+    vk::PipelineColorBlendAttachmentState color_blend_attachment; // For Opawaue/OIT_COMPOSITE
+    std::array<vk::PipelineColorBlendAttachmentState, 2> oit_blend_attachments; // For OIT_WRITE
+
     vk::PipelineColorBlendStateCreateInfo color_blending;
     color_blending.logicOpEnable = vk::False;
-    color_blending.attachmentCount = 1;
-    color_blending.pAttachments = &color_blend_attachment;
+
+    switch(mode){
+        case TransparencyMode::OPAQUE:
+            color_blend_attachment.blendEnable = vk::False;
+            color_blend_attachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                                                    vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+            color_blending.attachmentCount = 1;
+            color_blending.pAttachments = &color_blend_attachment;
+            break;
+
+        case TransparencyMode::OIT_WRITE:
+            // Attachment 0: Accumulation (Additive)
+            oit_blend_attachments[0].blendEnable = vk::True;
+            oit_blend_attachments[0].colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                                                    vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+            oit_blend_attachments[0].srcColorBlendFactor = vk::BlendFactor::eOne;
+            oit_blend_attachments[0].dstColorBlendFactor = vk::BlendFactor::eOne;
+            oit_blend_attachments[0].colorBlendOp = vk::BlendOp::eAdd;
+            oit_blend_attachments[0].srcAlphaBlendFactor = vk::BlendFactor::eOne; 
+            oit_blend_attachments[0].dstAlphaBlendFactor = vk::BlendFactor::eOne;
+            oit_blend_attachments[0].alphaBlendOp = vk::BlendOp::eAdd;
+
+            // Attachment 1: Revealage (Multiplicative)
+            // Result = Src * Dst + Dst * 0 = (1 - alpha) * OldReveal
+            oit_blend_attachments[1].blendEnable = vk::True;
+            oit_blend_attachments[1].colorWriteMask = vk::ColorComponentFlagBits::eR; // Only need one channel
+            oit_blend_attachments[1].srcColorBlendFactor = vk::BlendFactor::eDstColor;
+            oit_blend_attachments[1].dstColorBlendFactor = vk::BlendFactor::eZero;
+            oit_blend_attachments[1].colorBlendOp = vk::BlendOp::eAdd;
+            oit_blend_attachments[1].srcAlphaBlendFactor = vk::BlendFactor::eZero; // (Not really used)
+            oit_blend_attachments[1].dstAlphaBlendFactor = vk::BlendFactor::eZero;
+            oit_blend_attachments[1].alphaBlendOp = vk::BlendOp::eAdd;
+
+            color_blending.attachmentCount = 2;
+            color_blending.pAttachments = oit_blend_attachments.data();
+            break;
+        
+        case TransparencyMode::OIT_COMPOSITE:
+            color_blend_attachment.blendEnable = vk::True;
+            color_blend_attachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                                                    vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+            color_blend_attachment.srcColorBlendFactor = vk::BlendFactor::eSrcAlpha;
+            color_blend_attachment.dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
+            color_blend_attachment.colorBlendOp = vk::BlendOp::eAdd;
+            color_blend_attachment.srcAlphaBlendFactor = vk::BlendFactor::eOne;
+            color_blend_attachment.dstAlphaBlendFactor = vk::BlendFactor::eZero;
+            color_blend_attachment.alphaBlendOp = vk::BlendOp::eAdd;
+            
+            color_blending.attachmentCount = 1;
+            color_blending.pAttachments = &color_blend_attachment;
+            break;
+
+    }
 
     std::vector dynamic_states = {
         vk::DynamicState::eViewport,
-        vk::DynamicState::eScissor
+        vk::DynamicState::eScissor,
+        vk::DynamicState::eCullMode
     };
     vk::PipelineDynamicStateCreateInfo dynamic_state;
     dynamic_state.dynamicStateCount = static_cast<uint32_t>(dynamic_states.size());
     dynamic_state.pDynamicStates = dynamic_states.data();
 
     // --- PUSH CONSTANT SETUP ---
-    // Vertex Push Constant (Model Matrix)
-    vk::PushConstantRange vert_push_constant_range;
-    vert_push_constant_range.stageFlags = vk::ShaderStageFlagBits::eVertex;
-    vert_push_constant_range.offset = 0;
-    vert_push_constant_range.size = sizeof(glm::mat4);
+    std::vector<vk::PushConstantRange> push_constant_ranges;
+    if(mode != TransparencyMode::OIT_COMPOSITE){
+        // Vertex Push Constant (Model Matrix)
+        vk::PushConstantRange vert_push_constant_range;
+        vert_push_constant_range.stageFlags = vk::ShaderStageFlagBits::eVertex;
+        vert_push_constant_range.offset = 0;
+        vert_push_constant_range.size = sizeof(glm::mat4);
+        push_constant_ranges.push_back(vert_push_constant_range);
 
-    // Fragment Push Constant (Material Data)
-    vk::PushConstantRange frag_push_constant_range;
-    frag_push_constant_range.stageFlags = vk::ShaderStageFlagBits::eFragment;
-    frag_push_constant_range.offset = sizeof(glm::mat4); // Offset it after the vertex data
-    frag_push_constant_range.size = sizeof(MaterialPushConstant);
-
-    std::array<vk::PushConstantRange, 2> push_constant_ranges = {
-        vert_push_constant_range, frag_push_constant_range
-    };
+        // Fragment Push Constant (Material Data)
+        vk::PushConstantRange frag_push_constant_range;
+        frag_push_constant_range.stageFlags = vk::ShaderStageFlagBits::eFragment;
+        frag_push_constant_range.offset = sizeof(glm::mat4); // Offset it after the vertex data
+        frag_push_constant_range.size = sizeof(MaterialPushConstant);
+        push_constant_ranges.push_back(frag_push_constant_range);
+    }
+    // (OIT_COMPOSITE has no push constants)
 
 
     vk::PipelineLayoutCreateInfo pipeline_layout_info; 
-    pipeline_layout_info.setLayoutCount = 1;
-    pipeline_layout_info.pSetLayouts = &*(p_info -> descriptor_set_layout);
+    if(mode == TransparencyMode::OIT_COMPOSITE){
+        pipeline_layout_info.setLayoutCount = 1;
+        pipeline_layout_info.pSetLayouts = &*engine.oit_composite_pipeline.descriptor_set_layout;
+    }
+    else{
+        pipeline_layout_info.setLayoutCount = 1;
+        pipeline_layout_info.pSetLayouts = &*(p_info -> descriptor_set_layout);
+    }
     pipeline_layout_info.pushConstantRangeCount = static_cast<uint32_t>(push_constant_ranges.size());; // Use one push constant range
     pipeline_layout_info.pPushConstantRanges = push_constant_ranges.data(); // Point to our range
 
     p_info -> layout = vk::raii::PipelineLayout(engine.logical_device, pipeline_layout_info);
 
+    // --- Rendering Info
     vk::Format depth_format = findDepthFormat(engine.physical_device);
-
     vk::PipelineRenderingCreateInfo pipeline_rendering_create_info;
-    pipeline_rendering_create_info.colorAttachmentCount = 1;
-    pipeline_rendering_create_info.pColorAttachmentFormats = &engine.swapchain.format;
-    pipeline_rendering_create_info.depthAttachmentFormat = depth_format;
+    
+    // Setup attachment formats based on pass
+    std::array<vk::Format, 2> oit_write_formats = { 
+        static_cast<vk::Format>(engine.oit_accum_image.image_format), 
+        static_cast<vk::Format>(engine.oit_reveal_image.image_format) 
+    };
+
+    switch(mode){
+        case TransparencyMode::OIT_WRITE:
+            pipeline_rendering_create_info.colorAttachmentCount = 2;
+            pipeline_rendering_create_info.pColorAttachmentFormats = oit_write_formats.data();
+            pipeline_rendering_create_info.depthAttachmentFormat = depth_format;
+            break;
+        case TransparencyMode::OPAQUE:
+        case TransparencyMode::OIT_COMPOSITE:
+            pipeline_rendering_create_info.colorAttachmentCount = 1;
+            pipeline_rendering_create_info.pColorAttachmentFormats = &engine.swapchain.format;
+            // OPAQUE has depth, COMPOSITE does not
+            pipeline_rendering_create_info.depthAttachmentFormat = (mode == TransparencyMode::OPAQUE) ? depth_format : vk::Format::eUndefined;
+            break;
+    }
 
     vk::GraphicsPipelineCreateInfo pipeline_info;
     pipeline_info.pNext = &pipeline_rendering_create_info;

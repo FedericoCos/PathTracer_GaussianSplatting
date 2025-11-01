@@ -54,6 +54,13 @@ using json = nlohmann::json;
 
 
 // Structures used in all the project
+enum class TransparencyMode{
+    OPAQUE,
+    OIT_WRITE,
+    OIT_COMPOSITE
+};
+
+
 struct Vertex{
     glm::vec3 pos;
     glm::vec3 normal;
@@ -207,6 +214,7 @@ struct Material {
     float clearcoat_roughness_factor = 0.0f;
 
     bool is_transparent = false;
+    bool is_doublesided = false;
 
     // One descriptor set per frame-in-flight
     std::vector<vk::raii::DescriptorSet> descriptor_sets;
@@ -343,12 +351,12 @@ struct CameraState{
 struct PipelineKey {
     std::string v_shader;
     std::string f_shader;
-    bool is_transparent;
+    TransparencyMode mode;
     vk::CullModeFlagBits cull_mode;
 
     bool operator<(const PipelineKey& other)const {
-        return std::tie(v_shader, f_shader, is_transparent, cull_mode) <
-                std::tie(other.v_shader, other.f_shader, other.is_transparent, other.cull_mode);
+        return std::tie(v_shader, f_shader, mode, cull_mode) <
+                std::tie(other.v_shader, other.f_shader, other.mode, other.cull_mode);
     }
 };
 

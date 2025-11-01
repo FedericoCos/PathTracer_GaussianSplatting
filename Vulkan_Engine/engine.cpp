@@ -86,6 +86,55 @@ Gameobject Engine::createDebugCube()
     return cube;
 }
 
+// Simple barrier helper
+void Engine::transitionImage(vk::raii::CommandBuffer& cmd, vk::Image image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout) {
+    vk::ImageMemoryBarrier2 barrier;
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    // Set masks based on layout
+    if (oldLayout == vk::ImageLayout::eUndefined && newLayout == vk::ImageLayout::eTransferDstOptimal) {
+        barrier.srcAccessMask = {};
+        barrier.dstAccessMask = vk::AccessFlagBits2::eTransferWrite;
+        barrier.srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe;
+        barrier.dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
+    } else if (oldLayout == vk::ImageLayout::eTransferDstOptimal && newLayout == vk::ImageLayout::eShaderReadOnlyOptimal) {
+        barrier.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
+        barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead;
+        barrier.srcStageMask = vk::PipelineStageFlagBits2::eTransfer;
+        barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
+    } else if (oldLayout == vk::ImageLayout::eColorAttachmentOptimal && newLayout == vk::ImageLayout::eTransferSrcOptimal) {
+        barrier.srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite;
+        barrier.dstAccessMask = vk::AccessFlagBits2::eTransferRead;
+        barrier.srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
+        barrier.dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
+    } else if (oldLayout == vk::ImageLayout::eUndefined && newLayout == vk::ImageLayout::eColorAttachmentOptimal) {
+        barrier.srcAccessMask = {};
+        barrier.dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite;
+        barrier.srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe;
+        barrier.dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
+    } else {
+        // Generic (less optimal)
+        barrier.srcAccessMask = vk::AccessFlagBits2::eMemoryWrite;
+        barrier.dstAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite;
+        barrier.srcStageMask = vk::PipelineStageFlagBits2::eAllCommands;
+        barrier.dstStageMask = vk::PipelineStageFlagBits2::eAllCommands;
+    }
+
+    vk::DependencyInfo dependency_info;
+    dependency_info.imageMemoryBarrierCount = 1;
+    dependency_info.pImageMemoryBarriers = &barrier;
+    cmd.pipelineBarrier2(dependency_info);
+}
+
 void Engine::transition_image_layout(
         uint32_t image_index,
         vk::ImageLayout old_layout,
@@ -370,6 +419,7 @@ bool Engine::initVulkan(){
                 vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
     color_image.image_view = Image::createImageView(color_image, *this);
     Image::createDepthResources(physical_device, depth_image, swapchain.extent.width, swapchain.extent.height, *this);
+    createOITResources();
 
     // PIPELINE CREATION
     createPipelines();
@@ -381,6 +431,9 @@ bool Engine::initVulkan(){
     createUniformBuffers();
     createDescriptorPool();
     createDescriptorSets();
+
+    createOITDescriptorSets();
+
     createGraphicsCommandBuffers();
     createSyncObjects();
 
@@ -501,7 +554,7 @@ void Engine::createPipelines()
     // Key definition
     p_key.v_shader = v_shader_pbr;
     p_key.f_shader = f_shader_pbr;
-    p_key.is_transparent = false;
+    p_key.mode = TransparencyMode::OPAQUE;
     p_key.cull_mode = vk::CullModeFlagBits::eBack;
 
     // Pipeline creation
@@ -512,12 +565,13 @@ void Engine::createPipelines()
         &p_info,
         p_key.v_shader,
         p_key.f_shader,
-        p_key.is_transparent,
+        p_key.mode,
         p_key.cull_mode
     );
 
-    // transparent variation
-    p_key.is_transparent = true;
+    // OIT Write PBR pipeline
+    p_key.f_shader = f_shader_oit_write;
+    p_key.mode = TransparencyMode::OIT_WRITE;
     PipelineInfo& p_info_transparent = p_p_map[p_key];
     p_info_transparent.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings);
     p_info_transparent.pipeline = Pipeline::createGraphicsPipeline(
@@ -525,7 +579,7 @@ void Engine::createPipelines()
         &p_info_transparent,
         p_key.v_shader,
         p_key.f_shader,
-        p_key.is_transparent,
+        p_key.mode,
         p_key.cull_mode
     );
 
@@ -538,7 +592,7 @@ void Engine::createPipelines()
     };
     p_key.v_shader = v_shader_torus;
     p_key.f_shader = f_shader_torus;
-    p_key.is_transparent = true;
+    p_key.mode = TransparencyMode::OIT_WRITE;
     p_key.cull_mode = vk::CullModeFlagBits::eBack;
 
     PipelineInfo& p_info_torus = p_p_map[p_key];
@@ -548,9 +602,12 @@ void Engine::createPipelines()
         &p_info_torus,
         p_key.v_shader,
         p_key.f_shader,
-        p_key.is_transparent,
+        p_key.mode,
         p_key.cull_mode
     );
+
+
+    createOITCompositePipeline();
 
 }
 
@@ -603,7 +660,7 @@ void Engine::loadObjects(const std::string &scene_path)
         PipelineKey p_key;
         p_key.v_shader = "shaders/basic/vertex.spv";
         p_key.f_shader = "shaders/basic/fragment.spv";
-        p_key.is_transparent = false;
+        p_key.mode = TransparencyMode::OPAQUE;
         p_key.cull_mode = vk::CullModeFlagBits::eBack;
 
         if(!p_p_map.contains(p_key)){
@@ -611,7 +668,8 @@ void Engine::loadObjects(const std::string &scene_path)
             p_key.f_shader << std::endl;
         }
         new_object.o_pipeline = &p_p_map[p_key];
-        p_key.is_transparent = true;
+        p_key.mode = TransparencyMode::OIT_WRITE;
+        p_key.f_shader = f_shader_oit_write;
         new_object.t_pipeline = &p_p_map[p_key];
 
         scene_objs.emplace_back(std::move(new_object));
@@ -683,15 +741,17 @@ void Engine::createDescriptorPool()
     uint32_t total_sets = total_materials * MAX_FRAMES_IN_FLIGHT;
     
     // This MUST match your descriptor set layout
-    std::array<vk::DescriptorPoolSize, 2> pool_sizes = {
+    std::vector<vk::DescriptorPoolSize> pool_sizes = {
         vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, total_sets),
         // 5 samplers (Albedo, Normal, Met/Rough, AO, Emissive) per set
-        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_sets * 5) // <-- MODIFIED (7 to 5)
+        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_sets * 5),
+        // 2 samplers (accum, reveal) * MAX_FRAMES_IN_FLIGHT
+        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, MAX_FRAMES_IN_FLIGHT * 2)
     };
 
     vk::DescriptorPoolCreateInfo pool_info;
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    pool_info.maxSets = total_sets;
+    pool_info.maxSets = total_sets + MAX_FRAMES_IN_FLIGHT; // TO CHECK
     pool_info.poolSizeCount = static_cast<uint32_t>(pool_sizes.size()); 
     pool_info.pPoolSizes = pool_sizes.data();
 
@@ -738,6 +798,120 @@ void Engine::createSyncObjects(){
     }
 }
 
+
+void Engine::createOITResources(){
+    // 1. MSAA Accumulation Buffer
+    oit_accum_image = Image::createImage(
+        swapchain.extent.width, swapchain.extent.height, 1, mssa_samples,
+        vk::Format::eR16G16B16A16Sfloat,
+        vk::ImageTiling::eOptimal,
+        vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc,
+        vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
+    oit_accum_image.image_view = Image::createImageView(oit_accum_image, *this);
+    
+    // 2. MSAA Revealage Buffer
+    oit_reveal_image = Image::createImage(
+        swapchain.extent.width, swapchain.extent.height, 1, mssa_samples,
+        vk::Format::eR16Sfloat, // Only need one float channel
+        vk::ImageTiling::eOptimal,
+        vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc, // Source for resolve
+        vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
+    oit_reveal_image.image_view = Image::createImageView(oit_reveal_image, *this);
+    
+    // 3. Resolved Accumulation Buffer (for sampling)
+    oit_accum_resolved = Image::createImage(
+        swapchain.extent.width, swapchain.extent.height, 1, vk::SampleCountFlagBits::e1, // Not MSAA
+        vk::Format::eR16G16B16A16Sfloat,
+        vk::ImageTiling::eOptimal,
+        vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, // Dest for resolve
+        vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
+    oit_accum_resolved.image_view = Image::createImageView(oit_accum_resolved, *this);
+    
+    // 4. Resolved Revealage Buffer (for sampling)
+    oit_reveal_resolved = Image::createImage(
+        swapchain.extent.width, swapchain.extent.height, 1, vk::SampleCountFlagBits::e1, // Not MSAA
+        vk::Format::eR16Sfloat,
+        vk::ImageTiling::eOptimal,
+        vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, // Dest for resolve
+        vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
+    oit_reveal_resolved.image_view = Image::createImageView(oit_reveal_resolved, *this);
+
+    // 5. Sampler for resolved images
+    vk::SamplerCreateInfo sampler_info;
+    sampler_info.magFilter = vk::Filter::eNearest;
+    sampler_info.minFilter = vk::Filter::eNearest;
+    sampler_info.addressModeU = vk::SamplerAddressMode::eClampToEdge;
+    sampler_info.addressModeV = vk::SamplerAddressMode::eClampToEdge;
+    sampler_info.addressModeW = vk::SamplerAddressMode::eClampToEdge;
+    sampler_info.anisotropyEnable = vk::False;
+    sampler_info.borderColor = vk::BorderColor::eFloatOpaqueBlack;
+    sampler_info.unnormalizedCoordinates = vk::False;
+    sampler_info.compareEnable = vk::False;
+    sampler_info.mipmapMode = vk::SamplerMipmapMode::eNearest;
+    oit_sampler = vk::raii::Sampler(logical_device, sampler_info);
+}
+
+void Engine::createOITCompositePipeline(){
+    // 1. Create Descriptor Set Layout
+    std::vector<vk::DescriptorSetLayoutBinding> bindings = {
+        // Binding 0: Accumulation buffer
+        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eCombinedImageSampler, 1,
+                                        vk::ShaderStageFlagBits::eFragment, nullptr),
+        // Binding 1: Revealage Buffer
+        vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eCombinedImageSampler, 1,
+                                        vk::ShaderStageFlagBits::eFragment, nullptr)  
+    };
+    oit_composite_pipeline.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings);
+
+    // 2. Create Pipeline
+    oit_composite_pipeline.pipeline = Pipeline::createGraphicsPipeline(
+        *this,
+        &oit_composite_pipeline,
+        v_shader_oit_composite,
+        f_shader_oit_composite,
+        TransparencyMode::OIT_COMPOSITE,
+        vk::CullModeFlagBits::eNone
+    );
+}
+
+void Engine::createOITDescriptorSets() {
+    std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *oit_composite_pipeline.descriptor_set_layout);
+    vk::DescriptorSetAllocateInfo alloc_info(
+        *descriptor_pool,
+        static_cast<uint32_t>(layouts.size()),
+        layouts.data()
+    );
+    oit_composite_descriptor_sets = logical_device.allocateDescriptorSets(alloc_info);
+
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        vk::DescriptorImageInfo accum_info;
+        accum_info.sampler = *oit_sampler;
+        accum_info.imageView = *oit_accum_resolved.image_view; // Sample from resolved
+        accum_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+
+        vk::DescriptorImageInfo reveal_info;
+        reveal_info.sampler = *oit_sampler;
+        reveal_info.imageView = *oit_reveal_resolved.image_view; // Sample from resolved
+        reveal_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        
+        std::array<vk::WriteDescriptorSet, 2> writes = {};
+        writes[0].dstSet = *oit_composite_descriptor_sets[i];
+        writes[0].dstBinding = 0;
+        writes[0].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        writes[0].descriptorCount = 1;
+        writes[0].pImageInfo = &accum_info;
+
+        writes[1].dstSet = *oit_composite_descriptor_sets[i];
+        writes[1].dstBinding = 1;
+        writes[1].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        writes[1].descriptorCount = 1;
+        writes[1].pImageInfo = &reveal_info;
+        
+        logical_device.updateDescriptorSets(writes, {});
+    }
+}
+
+
 // ------ Render Loop Functions
 
 void Engine::run(){
@@ -752,199 +926,309 @@ void Engine::run(){
 }
 
 void Engine::recordCommandBuffer(uint32_t image_index){
-    graphics_command_buffer[current_frame].begin({});
+    auto& cmd = graphics_command_buffer[current_frame];
+    cmd.begin({});
 
+    // --- 1. GATHER TRANSPARENTS ---
     transparent_draws.clear();
-
-    transition_image_layout(
-        image_index,
-        vk::ImageLayout::eUndefined,
-        vk::ImageLayout::eColorAttachmentOptimal,
-        {},
-        vk::AccessFlagBits2::eColorAttachmentWrite,
-        vk::PipelineStageFlagBits2::eTopOfPipe,
-        vk::PipelineStageFlagBits2::eColorAttachmentOutput
-    );
-
-    vk::ClearValue clear_color = vk::ClearColorValue(0.f, 0.f, 0.f, 1.f);
-    vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
-    vk::RenderingAttachmentInfo color_attachment_info{};
-    color_attachment_info.imageView = color_image.image_view;
-    color_attachment_info.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-    color_attachment_info.loadOp = vk::AttachmentLoadOp::eClear;
-    color_attachment_info.storeOp = vk::AttachmentStoreOp::eDontCare;
-    color_attachment_info.clearValue = clear_color;
-
-    color_attachment_info.resolveMode = vk::ResolveModeFlagBits::eAverage;
-    color_attachment_info.resolveImageView = swapchain.image_views[image_index];
-    color_attachment_info.resolveImageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-
-    vk::RenderingAttachmentInfo depth_attachment_info = {};
-    depth_attachment_info.imageView = depth_image.image_view;
-    depth_attachment_info.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
-    depth_attachment_info.loadOp = vk::AttachmentLoadOp::eClear;
-    depth_attachment_info.storeOp = vk::AttachmentStoreOp::eDontCare;
-    depth_attachment_info.clearValue = clear_depth;
-
-    vk::RenderingInfo rendering_info;
-    rendering_info.renderArea.offset = vk::Offset2D{0, 0};
-    rendering_info.renderArea.extent = swapchain.extent;
-    rendering_info.layerCount = 1;
-    rendering_info.colorAttachmentCount = 1;
-    rendering_info.pColorAttachments = &color_attachment_info;
-    rendering_info.pDepthAttachment = &depth_attachment_info;
-
-    graphics_command_buffer[current_frame].beginRendering(rendering_info);
-
-    graphics_command_buffer[current_frame].setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain.extent.width), static_cast<float>(swapchain.extent.height), 0.f, 1.f));
-    graphics_command_buffer[current_frame].setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain.extent));
-    /**
-     * vertexCount -> number of vertices
-     * instanceCount -> used for instanced rendering, use 1 if not using it
-     * firstVertex -> used as an offset into the vertex buffer, defines the lowest value of SV_VertexId
-     * firstInstance -> used as an offset for instanced rendering, defines the lowest value of SV_InstanceID
-     */
-    //command_buffers[current_frame].draw(vertices.size(), 1, 0, 0);
-    // graphics_command_buffer[current_frame].drawIndexed(indices.size(), 1, 0, 0, 0);
-
     glm::vec3 camera_pos = camera.getCurrentState().f_camera.position;
-
     for(auto& obj : scene_objs){
         if (!obj.t_primitives.empty()) {
             for(const auto& primitive : obj.t_primitives) {
-                glm::vec3 prim_world_center = glm::vec3(obj.model_matrix * glm::vec4(primitive.center, 1.0f));
-                float distance_sq = glm::distance2(camera_pos, prim_world_center);
-                
+                // We still need the list, just not for sorting.
                 const Material& material = obj.materials[primitive.material_index];
-                transparent_draws.push_back({&obj, &primitive, &material, distance_sq});
+                transparent_draws.push_back({&obj, &primitive, &material, 0.0f}); // Distance doesn't matter
             }
         }
-
-
-        // Bind the geometry buffers ONCE per object
-        graphics_command_buffer[current_frame].bindVertexBuffers(0, {obj.geometry_buffer.buffer}, {0});
-        graphics_command_buffer[current_frame].bindIndexBuffer(obj.geometry_buffer.buffer, obj.index_buffer_offset, vk::IndexType::eUint32);
-
-        graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *obj.o_pipeline->pipeline);    
-        graphics_command_buffer[current_frame].pushConstants<glm::mat4>(*obj.o_pipeline -> layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix);
-
-        for(auto& primitive : obj.o_primitives){
-            // Get the material for this primitive
-            const Material& material = obj.materials[primitive.material_index];
-
-            MaterialPushConstant mat_constants;
-            mat_constants.base_color_factor = material.base_color_factor;
-            mat_constants.metallic_factor = material.metallic_factor;
-            mat_constants.roughness_factor = material.roughness_factor;
-            mat_constants.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 1.f);
-            mat_constants.occlusion_strength = material.occlusion_strength;
-            mat_constants.specular_factor = material.specular_factor;
-            mat_constants.specular_color_factor = material.specular_color_factor;
-            // mat_constants.clearcoat_factor = material.clearcoat_factor; <-- REMOVED
-            // mat_constants.clearcoat_roughness_factor = material.clearcoat_roughness_factor; <-- REMOVED
-
-            graphics_command_buffer[current_frame].pushConstants<MaterialPushConstant>(
-                *obj.o_pipeline -> layout, 
-                vk::ShaderStageFlagBits::eFragment, 
-                sizeof(glm::mat4), // The offset we defined
-                mat_constants
-            );
-
-            // Bind the material's descriptor set
-            graphics_command_buffer[current_frame].bindDescriptorSets(
-                vk::PipelineBindPoint::eGraphics, 
-                *obj.o_pipeline -> layout, 0, 
-                *material.descriptor_sets[current_frame], 
-                nullptr);
-            
-            // Draw the primitive
-            graphics_command_buffer[current_frame].drawIndexed(
-                primitive.index_count,   // indexCount
-                1,                      // instanceCount
-                primitive.first_index,   // firstIndex
-                0,                      // vertexOffset
-                0);                     // firstInstance
-        }
     }
+    // std::sort(transparent_draws.begin(), transparent_draws.end()); // <-- NO LONGER NEEDED
 
-    std::sort(transparent_draws.begin(), transparent_draws.end());
-    if (!transparent_draws.empty()) {
-        Gameobject* last_bound_object = nullptr;
+    // --- 2. OPAQUE PASS ---
+    // Renders to msaa color_image and msaa depth_image
+    {
+        // Transition swapchain image (for final resolve)
+        transition_image_layout(
+            image_index,
+            vk::ImageLayout::eUndefined,
+            vk::ImageLayout::eColorAttachmentOptimal,
+            {}, vk::AccessFlagBits2::eColorAttachmentWrite,
+            vk::PipelineStageFlagBits2::eTopOfPipe,
+            vk::PipelineStageFlagBits2::eColorAttachmentOutput
+        );
+
+        vk::ClearValue clear_color = vk::ClearColorValue(0.f, 0.f, 0.f, 1.f);
+        vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
+
+        // Main color attachment
+        vk::RenderingAttachmentInfo color_attachment_info{};
+        color_attachment_info.imageView = color_image.image_view;
+        color_attachment_info.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+        color_attachment_info.loadOp = vk::AttachmentLoadOp::eClear;
+        color_attachment_info.storeOp = vk::AttachmentStoreOp::eStore; // MUST store
+        color_attachment_info.clearValue = clear_color;
+        // NO resolve here yet
+
+        // Main depth attachment
+        vk::RenderingAttachmentInfo depth_attachment_info = {};
+        depth_attachment_info.imageView = depth_image.image_view;
+        depth_attachment_info.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+        depth_attachment_info.loadOp = vk::AttachmentLoadOp::eClear;
+        depth_attachment_info.storeOp = vk::AttachmentStoreOp::eStore; // MUST store for OIT pass
+        depth_attachment_info.clearValue = clear_depth;
+
+        vk::RenderingInfo rendering_info;
+        rendering_info.renderArea.offset = vk::Offset2D{0, 0};
+        rendering_info.renderArea.extent = swapchain.extent;
+        rendering_info.layerCount = 1;
+        rendering_info.colorAttachmentCount = 1;
+        rendering_info.pColorAttachments = &color_attachment_info;
+        rendering_info.pDepthAttachment = &depth_attachment_info;
+
+        cmd.beginRendering(rendering_info);
+
+        cmd.setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain.extent.width), static_cast<float>(swapchain.extent.height), 0.f, 1.f));
+        cmd.setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain.extent));
+
+        // --- OPAQUE DRAW LOOP ---
         PipelineInfo* last_bound_pipeline = nullptr;
+        Gameobject* last_bound_object = nullptr;
 
-        for (const auto& draw : transparent_draws) {
-            Gameobject* obj = draw.object;
-            const Primitive& primitive = *draw.primitive;
-            const Material& material = *draw.material;
-            PipelineInfo* pipeline = obj->t_pipeline; // Get object's transparent pipeline
+        for(auto& obj : scene_objs){
+            if (obj.o_primitives.empty()) continue; // Skip if no opaque parts
 
-            // --- A. Bind Pipeline (if changed) ---
-            if (pipeline != last_bound_pipeline) {
-                graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline->pipeline);
-                last_bound_pipeline = pipeline;
+            // Bind pipeline if different
+            if (obj.o_pipeline != last_bound_pipeline) {
+                cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *obj.o_pipeline->pipeline);
+                last_bound_pipeline = obj.o_pipeline;
             }
 
-            // --- B. Bind Geometry & Model Matrix (if changed) ---
-            if (obj != last_bound_object) {
-                graphics_command_buffer[current_frame].bindVertexBuffers(0, {obj->geometry_buffer.buffer}, {0});
-                graphics_command_buffer[current_frame].bindIndexBuffer(obj->geometry_buffer.buffer, obj->index_buffer_offset, vk::IndexType::eUint32);
-                graphics_command_buffer[current_frame].pushConstants<glm::mat4>(*pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, obj->model_matrix);
-                last_bound_object = obj;
-            } 
-            // Also push matrix if pipeline changed but object didn't
-            else if (pipeline != last_bound_pipeline) {
-                graphics_command_buffer[current_frame].pushConstants<glm::mat4>(*pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, obj->model_matrix);
+            // Bind geometry if different
+            if (&obj != last_bound_object) {
+                cmd.bindVertexBuffers(0, {obj.geometry_buffer.buffer}, {0});
+                cmd.bindIndexBuffer(obj.geometry_buffer.buffer, obj.index_buffer_offset, vk::IndexType::eUint32);
+                last_bound_object = &obj;
             }
-
-            // --- C. Bind Material & Draw ---
-            MaterialPushConstant mat_constants;
-            mat_constants.base_color_factor = material.base_color_factor;
-            mat_constants.metallic_factor = material.metallic_factor;
-            mat_constants.roughness_factor = material.roughness_factor;
-            mat_constants.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 1.f);
-            mat_constants.occlusion_strength = material.occlusion_strength;
-            mat_constants.specular_factor = material.specular_factor;
-            mat_constants.specular_color_factor = material.specular_color_factor;
-            // mat_constants.clearcoat_factor = material.clearcoat_factor; <-- REMOVED
-            // mat_constants.clearcoat_roughness_factor = material.clearcoat_roughness_factor; <-- REMOVED
-
-            graphics_command_buffer[current_frame].pushConstants<MaterialPushConstant>(
-                *pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), mat_constants
-            );
-
-            graphics_command_buffer[current_frame].bindDescriptorSets(
-                vk::PipelineBindPoint::eGraphics, *pipeline->layout, 0, *material.descriptor_sets[current_frame], nullptr
-            );
             
-            graphics_command_buffer[current_frame].drawIndexed(
-                primitive.index_count, 1, primitive.first_index, 0, 0
-            );
+            // Push vertex constant (model matrix)
+            cmd.pushConstants<glm::mat4>(*obj.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix);
+
+            // Loop and draw all opaque primitives for this object
+            for(auto& primitive : obj.o_primitives) {
+                const Material& material = obj.materials[primitive.material_index];
+
+                if(material.is_doublesided){
+                    cmd.setCullMode(vk::CullModeFlagBits::eNone);
+                }else{
+                    cmd.setCullMode(vk::CullModeFlagBits::eBack);
+                }
+
+                // Setup material push constant
+                MaterialPushConstant p_const;
+                p_const.base_color_factor = material.base_color_factor;
+                p_const.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 0.0f);
+                p_const.metallic_factor = material.metallic_factor;
+                p_const.roughness_factor = material.roughness_factor;
+                p_const.occlusion_strength = material.occlusion_strength;
+                p_const.specular_factor = material.specular_factor;
+                p_const.specular_color_factor = material.specular_color_factor;
+
+                cmd.pushConstants<MaterialPushConstant>(*obj.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
+
+                // Bind material descriptor set
+                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *obj.o_pipeline->layout, 0, {*material.descriptor_sets[current_frame]}, {});
+                
+                // Draw
+                cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
+            }
         }
+        cmd.endRendering();
     }
 
-    
-    // --- MODIFIED: Torus drawing (must also use primitive loop) ---
-    /* graphics_command_buffer[current_frame].bindPipeline(vk::PipelineBindPoint::eGraphics, *torus.pipeline->pipeline);
-    glm::mat4 model_toroid = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.5f, 0.0f)); // TO FIX
-    graphics_command_buffer[current_frame].pushConstants<glm::mat4>(*torus.pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, model_toroid);
+    // --- 3. OIT WRITE PASS ---
+    // Renders to msaa oit_accum/reveal images
+    // Reads from msaa depth_image
+    {
+        // Transition OIT buffers to be written to
+        transitionImage(cmd, oit_accum_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal);
+        transitionImage(cmd, oit_reveal_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal);
+        
+        vk::ClearValue clear_accum = vk::ClearColorValue(0.f, 0.f, 0.f, 0.f);
+        vk::ClearValue clear_reveal = vk::ClearColorValue(1.f, 0.f, 0.f, 0.f); // Clear R to 1.0
+        
+        std::array<vk::RenderingAttachmentInfo, 2> oit_attachments_info;
+        // Accum
+        oit_attachments_info[0].imageView = oit_accum_image.image_view;
+        oit_attachments_info[0].imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+        oit_attachments_info[0].loadOp = vk::AttachmentLoadOp::eClear;
+        oit_attachments_info[0].storeOp = vk::AttachmentStoreOp::eStore; // Must store
+        oit_attachments_info[0].clearValue = clear_accum;
+        // Reveal
+        oit_attachments_info[1].imageView = oit_reveal_image.image_view;
+        oit_attachments_info[1].imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+        oit_attachments_info[1].loadOp = vk::AttachmentLoadOp::eClear;
+        oit_attachments_info[1].storeOp = vk::AttachmentStoreOp::eStore; // Must store
+        oit_attachments_info[1].clearValue = clear_reveal;
 
-    // Bind torus geometry
-    graphics_command_buffer[current_frame].bindVertexBuffers(0, {torus.geometry_buffer.buffer}, {0});
-    graphics_command_buffer[current_frame].bindIndexBuffer(torus.geometry_buffer.buffer, torus.index_buffer_offset, vk::IndexType::eUint32);
+        // Depth attachment (LOAD, don't clear)
+        vk::RenderingAttachmentInfo depth_attachment_info = {};
+        depth_attachment_info.imageView = depth_image.image_view;
+        depth_attachment_info.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+        depth_attachment_info.loadOp = vk::AttachmentLoadOp::eLoad; // LOAD opaque depth
+        depth_attachment_info.storeOp = vk::AttachmentStoreOp::eDontCare; // Don't need it after this
+        
+        vk::RenderingInfo oit_rendering_info;
+        oit_rendering_info.renderArea.offset = vk::Offset2D{0, 0};
+        oit_rendering_info.renderArea.extent = swapchain.extent;
+        oit_rendering_info.layerCount = 1;
+        oit_rendering_info.colorAttachmentCount = 2;
+        oit_rendering_info.pColorAttachments = oit_attachments_info.data();
+        oit_rendering_info.pDepthAttachment = &depth_attachment_info;
 
-    // Loop over torus primitives (even if there's only one)
-    for (const auto& primitive : torus.primitives) {
-        const Material& material = torus.materials[primitive.material_index];
-        graphics_command_buffer[current_frame].bindDescriptorSets(
-            vk::PipelineBindPoint::eGraphics, 
-            *torus.pipeline -> layout, 0, 
-            *material.descriptor_sets[current_frame], 
-            nullptr);
-            
-        graphics_command_buffer[current_frame].drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
-    } */
-    graphics_command_buffer[current_frame].endRendering();
+        cmd.beginRendering(oit_rendering_info);
+        
+        // Set viewport/scissor again
+        cmd.setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain.extent.width), static_cast<float>(swapchain.extent.height), 0.f, 1.f));
+        cmd.setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain.extent));
 
+
+        // --- OIT WRITE DRAW LOOP ---
+        if (!transparent_draws.empty()) {
+            Gameobject* last_bound_object = nullptr;
+            PipelineInfo* last_bound_pipeline = nullptr;
+
+            for (const auto& draw : transparent_draws) {
+                Gameobject* obj = draw.object;
+                const Primitive& primitive = *draw.primitive;
+                const Material& material = *draw.material;
+                PipelineInfo* pipeline = obj->t_pipeline; // Get OIT_WRITE pipeline
+
+                if(material.is_doublesided){
+                    cmd.setCullMode(vk::CullModeFlagBits::eNone);
+                }else{
+                    cmd.setCullMode(vk::CullModeFlagBits::eBack);
+                }
+
+                // Bind pipeline if different
+                if (pipeline != last_bound_pipeline) {
+                    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline->pipeline);
+                    last_bound_pipeline = pipeline;
+                }
+                
+                // Bind geometry if different
+                if (obj != last_bound_object) {
+                    cmd.bindVertexBuffers(0, {obj->geometry_buffer.buffer}, {0});
+                    cmd.bindIndexBuffer(obj->geometry_buffer.buffer, obj->index_buffer_offset, vk::IndexType::eUint32);
+                    last_bound_object = obj;
+                }
+
+                // Push vertex constant (model matrix)
+                cmd.pushConstants<glm::mat4>(*pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, obj->model_matrix);
+
+                // Setup material push constant
+                MaterialPushConstant p_const;
+                p_const.base_color_factor = material.base_color_factor;
+                p_const.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 0.0f);
+                p_const.metallic_factor = material.metallic_factor;
+                p_const.roughness_factor = material.roughness_factor;
+                p_const.occlusion_strength = material.occlusion_strength;
+                p_const.specular_factor = material.specular_factor;
+                p_const.specular_color_factor = material.specular_color_factor;
+
+
+                cmd.pushConstants<MaterialPushConstant>(*pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
+
+                // Bind material descriptor set
+                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipeline->layout, 0, {*material.descriptor_sets[current_frame]}, {});
+                
+                // Draw
+                cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
+            }
+        }
+        cmd.endRendering();
+    }
+
+    // --- 4. RESOLVE PASS ---
+    // Resolve MSAA OIT buffers to standard images for sampling
+    {
+        // Transition OIT images for resolve
+        transitionImage(cmd, oit_accum_image.image, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal);
+        transitionImage(cmd, oit_reveal_image.image, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal);
+        transitionImage(cmd, oit_accum_resolved.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
+        transitionImage(cmd, oit_reveal_resolved.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
+
+        vk::ImageResolve resolve_region;
+        resolve_region.srcSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
+        resolve_region.srcSubresource.layerCount = 1;
+        resolve_region.dstSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
+        resolve_region.dstSubresource.layerCount = 1;
+        resolve_region.extent.width = swapchain.extent.width;
+        resolve_region.extent.height = swapchain.extent.height;
+        resolve_region.extent.depth = 1;
+
+        // Resolve Accum
+        cmd.resolveImage(oit_accum_image.image, vk::ImageLayout::eTransferSrcOptimal,
+                         oit_accum_resolved.image, vk::ImageLayout::eTransferDstOptimal,
+                         resolve_region);
+        // Resolve Reveal
+        cmd.resolveImage(oit_reveal_image.image, vk::ImageLayout::eTransferSrcOptimal,
+                         oit_reveal_resolved.image, vk::ImageLayout::eTransferDstOptimal,
+                         resolve_region);
+
+        // Transition resolved images for sampling in composite pass
+        transitionImage(cmd, oit_accum_resolved.image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal);
+        transitionImage(cmd, oit_reveal_resolved.image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal);
+    }
+
+    // --- 5. COMPOSITE PASS ---
+    // Renders fullscreen quad to msaa color_image
+    // Reads from resolved oit buffers
+    // Blends OVER the existing opaque scene in color_image
+    // Resolves final msaa color_image to swapchain image
+    {
+        // Main color attachment (LOAD, don't clear)
+        vk::RenderingAttachmentInfo color_attachment_info{};
+        color_attachment_info.imageView = color_image.image_view;
+        color_attachment_info.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+        color_attachment_info.loadOp = vk::AttachmentLoadOp::eLoad; // LOAD opaque scene
+        color_attachment_info.storeOp = vk::AttachmentStoreOp::eDontCare; // Don't care, we resolve
+        
+        // Add the resolve op here
+        color_attachment_info.resolveMode = vk::ResolveModeFlagBits::eAverage;
+        color_attachment_info.resolveImageView = swapchain.image_views[image_index];
+        color_attachment_info.resolveImageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+
+        vk::RenderingInfo composite_rendering_info;
+        composite_rendering_info.renderArea.offset = vk::Offset2D{0, 0};
+        composite_rendering_info.renderArea.extent = swapchain.extent;
+        composite_rendering_info.layerCount = 1;
+        composite_rendering_info.colorAttachmentCount = 1;
+        composite_rendering_info.pColorAttachments = &color_attachment_info;
+        composite_rendering_info.pDepthAttachment = nullptr; // No depth test/write
+
+        cmd.beginRendering(composite_rendering_info);
+        
+        cmd.setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain.extent.width), static_cast<float>(swapchain.extent.height), 0.f, 1.f));
+        cmd.setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain.extent));
+        cmd.setCullMode(vk::CullModeFlagBits::eNone);
+
+        // Bind composite pipeline and descriptors
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *oit_composite_pipeline.pipeline);
+        cmd.bindDescriptorSets(
+            vk::PipelineBindPoint::eGraphics,
+            *oit_composite_pipeline.layout, 0,
+            *oit_composite_descriptor_sets[current_frame],
+            nullptr
+        );
+        
+        // Draw fullscreen triangle (3 vertices)
+        cmd.draw(3, 1, 0, 0);
+
+        cmd.endRendering();
+    }
+
+
+    // --- 6. FINAL TRANSITION ---
+    // Transition the swapchain image for presentation
     transition_image_layout(
         image_index,
         vk::ImageLayout::eColorAttachmentOptimal,
@@ -952,10 +1236,10 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         vk::AccessFlagBits2::eColorAttachmentWrite,
         {},
         vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-        vk::PipelineStageFlagBits2::eBottomOfPipe // a "sink" stage that ensures all prior work is finished before transitioning
+        vk::PipelineStageFlagBits2::eBottomOfPipe
     );
 
-    graphics_command_buffer[current_frame].end();
+    cmd.end();
 }
 
 void Engine::drawFrame(){

@@ -1,0 +1,11 @@
+Model Information:
+* title:	Toilet
+* source:	https://sketchfab.com/3d-models/toilet-9befba766b7c47fdb134f5d2d6072bc9
+* author:	Pasha (https://sketchfab.com/Pasha.)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Toilet" (https://sketchfab.com/3d-models/toilet-9befba766b7c47fdb134f5d2d6072bc9) by Pasha (https://sketchfab.com/Pasha.) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

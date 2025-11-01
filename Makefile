@@ -33,8 +33,10 @@ test: $(TARGET)
 	glslc shaders/basic/vertex_torus.vert -o shaders/basic/vertex_torus.spv
 	glslc shaders/basic/vertex_torus.vert -o shaders/basic/vertex_torus.spv
 	glslc shaders/basic/oit_write.frag -o shaders/basic/oit_write.spv
+	glslc shaders/basic/oit_ppll_write.frag -o shaders/basic/oit_ppll_write.spv
 	glslc shaders/basic/oit_composite.vert -o shaders/basic/oit_composite_vert.spv
 	glslc shaders/basic/oit_composite.frag -o shaders/basic/oit_composite_frag.spv
+	glslc shaders/basic/oit_ppll_composite.frag -o shaders/basic/oit_ppll_composite_frag.spv
 	./$(TARGET)
 
 # Clean up the build files

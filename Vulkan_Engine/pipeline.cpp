@@ -75,14 +75,12 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
     } else{
         depth_stencil.depthTestEnable = vk::True;
         depth_stencil.depthWriteEnable = (mode == TransparencyMode::OPAQUE) ? vk::True : vk::False;
-        depth_stencil.depthCompareOp = vk::CompareOp::eLess;
         depth_stencil.depthBoundsTestEnable = vk::False;
         depth_stencil.stencilTestEnable = vk::False;
         depth_stencil.depthCompareOp = vk::CompareOp::eLess;
     }
 
     vk::PipelineColorBlendAttachmentState color_blend_attachment; // For Opawaue/OIT_COMPOSITE
-    std::array<vk::PipelineColorBlendAttachmentState, 2> oit_blend_attachments; // For OIT_WRITE
 
     vk::PipelineColorBlendStateCreateInfo color_blending;
     color_blending.logicOpEnable = vk::False;
@@ -97,41 +95,22 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
             break;
 
         case TransparencyMode::OIT_WRITE:
-            // Attachment 0: Accumulation (Additive)
-            oit_blend_attachments[0].blendEnable = vk::True;
-            oit_blend_attachments[0].colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
-                                                    vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
-            oit_blend_attachments[0].srcColorBlendFactor = vk::BlendFactor::eOne;
-            oit_blend_attachments[0].dstColorBlendFactor = vk::BlendFactor::eOne;
-            oit_blend_attachments[0].colorBlendOp = vk::BlendOp::eAdd;
-            oit_blend_attachments[0].srcAlphaBlendFactor = vk::BlendFactor::eOne; 
-            oit_blend_attachments[0].dstAlphaBlendFactor = vk::BlendFactor::eOne;
-            oit_blend_attachments[0].alphaBlendOp = vk::BlendOp::eAdd;
-
-            // Attachment 1: Revealage (Multiplicative)
-            // Result = Src * Dst + Dst * 0 = (1 - alpha) * OldReveal
-            oit_blend_attachments[1].blendEnable = vk::True;
-            oit_blend_attachments[1].colorWriteMask = vk::ColorComponentFlagBits::eR; // Only need one channel
-            oit_blend_attachments[1].srcColorBlendFactor = vk::BlendFactor::eDstColor;
-            oit_blend_attachments[1].dstColorBlendFactor = vk::BlendFactor::eZero;
-            oit_blend_attachments[1].colorBlendOp = vk::BlendOp::eAdd;
-            oit_blend_attachments[1].srcAlphaBlendFactor = vk::BlendFactor::eZero; // (Not really used)
-            oit_blend_attachments[1].dstAlphaBlendFactor = vk::BlendFactor::eZero;
-            oit_blend_attachments[1].alphaBlendOp = vk::BlendOp::eAdd;
-
-            color_blending.attachmentCount = 2;
-            color_blending.pAttachments = oit_blend_attachments.data();
+            // OIT_WRITE pass no longer writes to ANY color attachments.
+            // It writes to SSBOs/storage images.
+            color_blending.attachmentCount = 0; // <-- MODIFIED
+            color_blending.pAttachments = nullptr; // <-- MODIFIED
             break;
         
         case TransparencyMode::OIT_COMPOSITE:
+            // This is for the final quad, which blends onto the opaque scene
             color_blend_attachment.blendEnable = vk::True;
             color_blend_attachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
                                                     vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
             color_blend_attachment.srcColorBlendFactor = vk::BlendFactor::eSrcAlpha;
             color_blend_attachment.dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
             color_blend_attachment.colorBlendOp = vk::BlendOp::eAdd;
-            color_blend_attachment.srcAlphaBlendFactor = vk::BlendFactor::eOne;
-            color_blend_attachment.dstAlphaBlendFactor = vk::BlendFactor::eZero;
+            color_blend_attachment.srcAlphaBlendFactor = vk::BlendFactor::eOne; // Use source alpha
+            color_blend_attachment.dstAlphaBlendFactor = vk::BlendFactor::eZero; // Add to existing
             color_blend_attachment.alphaBlendOp = vk::BlendOp::eAdd;
             
             color_blending.attachmentCount = 1;
@@ -170,11 +149,20 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
 
 
     vk::PipelineLayoutCreateInfo pipeline_layout_info; 
+    std::array<vk::DescriptorSetLayout, 2> oit_write_layouts;
     if(mode == TransparencyMode::OIT_COMPOSITE){
         pipeline_layout_info.setLayoutCount = 1;
         pipeline_layout_info.pSetLayouts = &*engine.oit_composite_pipeline.descriptor_set_layout;
     }
-    else{
+    else if(mode == TransparencyMode::OIT_WRITE){
+        // OIT_WRITE needs Set 0 (Material) and Set 1 (PPLL buffers)
+        oit_write_layouts[0] = *(p_info -> descriptor_set_layout); // Material set
+        oit_write_layouts[1] = *engine.oit_composite_pipeline.descriptor_set_layout; // PPLL set
+        
+        pipeline_layout_info.setLayoutCount = 2; // <-- Two sets
+        pipeline_layout_info.pSetLayouts = oit_write_layouts.data();
+    }
+    else{ // OPAQUE
         pipeline_layout_info.setLayoutCount = 1;
         pipeline_layout_info.pSetLayouts = &*(p_info -> descriptor_set_layout);
     }
@@ -186,17 +174,11 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
     // --- Rendering Info
     vk::Format depth_format = findDepthFormat(engine.physical_device);
     vk::PipelineRenderingCreateInfo pipeline_rendering_create_info;
-    
-    // Setup attachment formats based on pass
-    std::array<vk::Format, 2> oit_write_formats = { 
-        static_cast<vk::Format>(engine.oit_accum_image.image_format), 
-        static_cast<vk::Format>(engine.oit_reveal_image.image_format) 
-    };
 
     switch(mode){
         case TransparencyMode::OIT_WRITE:
-            pipeline_rendering_create_info.colorAttachmentCount = 2;
-            pipeline_rendering_create_info.pColorAttachmentFormats = oit_write_formats.data();
+            pipeline_rendering_create_info.colorAttachmentCount = 0;
+            pipeline_rendering_create_info.pColorAttachmentFormats = nullptr;
             pipeline_rendering_create_info.depthAttachmentFormat = depth_format;
             break;
         case TransparencyMode::OPAQUE:

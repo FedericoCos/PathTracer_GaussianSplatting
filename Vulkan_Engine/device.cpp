@@ -63,7 +63,9 @@ bool Device::isDeviceSuitable(const vk::raii::PhysicalDevice &device, bool descr
         features.template get<vk::PhysicalDeviceFeatures2>().features.independentBlend &&
         features.template get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering &&
         features.template get<vk::PhysicalDeviceVulkan13Features>().synchronization2 &&
-        features.template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState;
+        features.template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState &&
+        features.template get<vk::PhysicalDeviceFeatures2>().features.shaderStorageImageMultisample &&
+        features.template get<vk::PhysicalDeviceFeatures2>().features.sampleRateShading;
 
 
 
@@ -155,6 +157,10 @@ vk::raii::Device Device::createLogicalDevice(const Engine &engine, QueueFamilyIn
     vk::PhysicalDeviceFeatures2 deviceFeatures2 = {};
     deviceFeatures2.features.samplerAnisotropy = true;
     deviceFeatures2.features.independentBlend = true;
+    deviceFeatures2.features.fragmentStoresAndAtomics = vk::True; 
+    deviceFeatures2.features.shaderStorageImageMultisample = vk::True;
+    deviceFeatures2.features.sampleRateShading = vk::True;
+    
 
     vk::StructureChain<
     vk::PhysicalDeviceFeatures2,

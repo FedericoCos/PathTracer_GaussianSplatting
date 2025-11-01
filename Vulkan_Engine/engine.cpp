@@ -569,6 +569,8 @@ void Engine::createPipelines()
         p_key.cull_mode
     );
 
+    createOITCompositePipeline();
+
     // OIT Write PBR pipeline
     p_key.f_shader = f_shader_oit_write;
     p_key.mode = TransparencyMode::OIT_WRITE;
@@ -605,9 +607,6 @@ void Engine::createPipelines()
         p_key.mode,
         p_key.cull_mode
     );
-
-
-    createOITCompositePipeline();
 
 }
 
@@ -745,8 +744,10 @@ void Engine::createDescriptorPool()
         vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, total_sets),
         // 5 samplers (Albedo, Normal, Met/Rough, AO, Emissive) per set
         vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_sets * 5),
-        // 2 samplers (accum, reveal) * MAX_FRAMES_IN_FLIGHT
-        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, MAX_FRAMES_IN_FLIGHT * 2)
+        // We need 1 set per frame for the PPLL buffers
+        // 1 storage image, 2 storage buffers per set
+        vk::DescriptorPoolSize(vk::DescriptorType::eStorageImage, MAX_FRAMES_IN_FLIGHT),
+        vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, MAX_FRAMES_IN_FLIGHT * 2)
     };
 
     vk::DescriptorPoolCreateInfo pool_info;
@@ -800,70 +801,66 @@ void Engine::createSyncObjects(){
 
 
 void Engine::createOITResources(){
-    // 1. MSAA Accumulation Buffer
-    oit_accum_image = Image::createImage(
-        swapchain.extent.width, swapchain.extent.height, 1, mssa_samples,
-        vk::Format::eR16G16B16A16Sfloat,
-        vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc,
-        vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
-    oit_accum_image.image_view = Image::createImageView(oit_accum_image, *this);
-    
-    // 2. MSAA Revealage Buffer
-    oit_reveal_image = Image::createImage(
-        swapchain.extent.width, swapchain.extent.height, 1, mssa_samples,
-        vk::Format::eR16Sfloat, // Only need one float channel
-        vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc, // Source for resolve
-        vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
-    oit_reveal_image.image_view = Image::createImageView(oit_reveal_image, *this);
-    
-    // 3. Resolved Accumulation Buffer (for sampling)
-    oit_accum_resolved = Image::createImage(
-        swapchain.extent.width, swapchain.extent.height, 1, vk::SampleCountFlagBits::e1, // Not MSAA
-        vk::Format::eR16G16B16A16Sfloat,
-        vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, // Dest for resolve
-        vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
-    oit_accum_resolved.image_view = Image::createImageView(oit_accum_resolved, *this);
-    
-    // 4. Resolved Revealage Buffer (for sampling)
-    oit_reveal_resolved = Image::createImage(
-        swapchain.extent.width, swapchain.extent.height, 1, vk::SampleCountFlagBits::e1, // Not MSAA
-        vk::Format::eR16Sfloat,
-        vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, // Dest for resolve
-        vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
-    oit_reveal_resolved.image_view = Image::createImageView(oit_reveal_resolved, *this);
+    oit_max_fragments = swapchain.extent.width * swapchain.extent.height * 50;
 
-    // 5. Sampler for resolved images
-    vk::SamplerCreateInfo sampler_info;
-    sampler_info.magFilter = vk::Filter::eNearest;
-    sampler_info.minFilter = vk::Filter::eNearest;
-    sampler_info.addressModeU = vk::SamplerAddressMode::eClampToEdge;
-    sampler_info.addressModeV = vk::SamplerAddressMode::eClampToEdge;
-    sampler_info.addressModeW = vk::SamplerAddressMode::eClampToEdge;
-    sampler_info.anisotropyEnable = vk::False;
-    sampler_info.borderColor = vk::BorderColor::eFloatOpaqueBlack;
-    sampler_info.unnormalizedCoordinates = vk::False;
-    sampler_info.compareEnable = vk::False;
-    sampler_info.mipmapMode = vk::SamplerMipmapMode::eNearest;
-    oit_sampler = vk::raii::Sampler(logical_device, sampler_info);
+    // 2. Atomic Counter Buffer
+    // Initialized to 0 before OIT pass
+    createBuffer(vma_allocator, sizeof(uint32_t),
+                 vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst, // Need to clear it
+                 vk::MemoryPropertyFlagBits::eDeviceLocal,
+                 oit_atomic_counter_buffer);
+
+    // 3. Fragment List Buffer
+    // Struct: vec4(color) + float(depth) + uint(next)
+    // std430 layout: vec4(16), float(4), uint(4). Total = 24.
+    // Next struct starts at 24. This is fine.
+    // Let's use 32 bytes for safety and alignment.
+    size_t node_size = sizeof(glm::vec4) + sizeof(float) + sizeof(uint32_t) + 8; // (16 + 4 + 4 + 8 padding) = 32
+    vk::DeviceSize fragment_buffer_size = oit_max_fragments * node_size; 
+    
+    createBuffer(vma_allocator, fragment_buffer_size,
+                 vk::BufferUsageFlagBits::eStorageBuffer,
+                 vk::MemoryPropertyFlagBits::eDeviceLocal,
+                 oit_fragment_list_buffer);
+
+    // 4. Start Offset Image (Head Pointer)
+    // Initialized to 0xFFFFFFFF before OIT pass
+    oit_start_offset_image = Image::createImage(
+        swapchain.extent.width, swapchain.extent.height, 1, vk::SampleCountFlagBits::e1,
+        vk::Format::eR32Uint, // 32-bit unsigned int per pixel
+        vk::ImageTiling::eOptimal,
+        vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferDst, // Storage image + clear
+        vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
+    
+    // Use the 3-arg version of createImageView from GeneralHeaders.h
+    oit_start_offset_image.image_view = Image::createImageView(
+        oit_start_offset_image, *this);
+    
+    // Transition image to eGeneral layout for storage access
+    // We do this once here, and it will stay in eGeneral forever.
+    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_transfer, &logical_device);
+    transitionImage(cmd, oit_start_offset_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral);
+    endSingleTimeCommands(cmd, transfer_queue);
 }
 
 void Engine::createOITCompositePipeline(){
     // 1. Create Descriptor Set Layout
     std::vector<vk::DescriptorSetLayoutBinding> bindings = {
-        // Binding 0: Accumulation buffer
-        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eCombinedImageSampler, 1,
+        // Binding 0: Atomic Counter
+        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eStorageBuffer, 1,
                                         vk::ShaderStageFlagBits::eFragment, nullptr),
-        // Binding 1: Revealage Buffer
-        vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eCombinedImageSampler, 1,
+        // Binding 1: Fragment List
+        vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eStorageBuffer, 1,
+                                        vk::ShaderStageFlagBits::eFragment, nullptr),
+        // Binding 2: Start Offset Image (Head Pointers)
+        vk::DescriptorSetLayoutBinding(2, vk::DescriptorType::eStorageImage, 1,
                                         vk::ShaderStageFlagBits::eFragment, nullptr)  
     };
+    // This layout is shared, so store it on the engine
     oit_composite_pipeline.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings);
 
     // 2. Create Pipeline
+    
     oit_composite_pipeline.pipeline = Pipeline::createGraphicsPipeline(
         *this,
         &oit_composite_pipeline,
@@ -875,37 +872,55 @@ void Engine::createOITCompositePipeline(){
 }
 
 void Engine::createOITDescriptorSets() {
+    // This function now creates the *shared* PPLL descriptor set
+    // oit_composite_descriptor_sets.clear(); // <-- REMOVED
+    oit_ppll_descriptor_sets.clear();
+
     std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *oit_composite_pipeline.descriptor_set_layout);
     vk::DescriptorSetAllocateInfo alloc_info(
         *descriptor_pool,
         static_cast<uint32_t>(layouts.size()),
         layouts.data()
     );
-    oit_composite_descriptor_sets = logical_device.allocateDescriptorSets(alloc_info);
+    oit_ppll_descriptor_sets = logical_device.allocateDescriptorSets(alloc_info);
 
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        vk::DescriptorImageInfo accum_info;
-        accum_info.sampler = *oit_sampler;
-        accum_info.imageView = *oit_accum_resolved.image_view; // Sample from resolved
-        accum_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        vk::DescriptorBufferInfo atomic_counter_info;
+        atomic_counter_info.buffer = oit_atomic_counter_buffer.buffer;
+        atomic_counter_info.offset = 0;
+        atomic_counter_info.range = sizeof(uint32_t);
 
-        vk::DescriptorImageInfo reveal_info;
-        reveal_info.sampler = *oit_sampler;
-        reveal_info.imageView = *oit_reveal_resolved.image_view; // Sample from resolved
-        reveal_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        vk::DescriptorBufferInfo fragment_list_info;
+        fragment_list_info.buffer = oit_fragment_list_buffer.buffer;
+        fragment_list_info.offset = 0;
+        fragment_list_info.range = VK_WHOLE_SIZE; // Use the whole buffer
         
-        std::array<vk::WriteDescriptorSet, 2> writes = {};
-        writes[0].dstSet = *oit_composite_descriptor_sets[i];
+        vk::DescriptorImageInfo start_offset_info;
+        start_offset_info.imageView = *oit_start_offset_image.image_view;
+        start_offset_info.imageLayout = vk::ImageLayout::eGeneral; // Stays in general layout
+        
+        std::array<vk::WriteDescriptorSet, 3> writes = {};
+        
+        // Binding 0: Atomic Counter
+        writes[0].dstSet = *oit_ppll_descriptor_sets[i];
         writes[0].dstBinding = 0;
-        writes[0].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        writes[0].descriptorType = vk::DescriptorType::eStorageBuffer;
         writes[0].descriptorCount = 1;
-        writes[0].pImageInfo = &accum_info;
+        writes[0].pBufferInfo = &atomic_counter_info;
 
-        writes[1].dstSet = *oit_composite_descriptor_sets[i];
+        // Binding 1: Fragment List
+        writes[1].dstSet = *oit_ppll_descriptor_sets[i];
         writes[1].dstBinding = 1;
-        writes[1].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        writes[1].descriptorType = vk::DescriptorType::eStorageBuffer;
         writes[1].descriptorCount = 1;
-        writes[1].pImageInfo = &reveal_info;
+        writes[1].pBufferInfo = &fragment_list_info;
+
+        // Binding 2: Start Offset Image
+        writes[2].dstSet = *oit_ppll_descriptor_sets[i];
+        writes[2].dstBinding = 2;
+        writes[2].descriptorType = vk::DescriptorType::eStorageImage;
+        writes[2].descriptorCount = 1;
+        writes[2].pImageInfo = &start_offset_info;
         
         logical_device.updateDescriptorSets(writes, {});
     }
@@ -931,11 +946,11 @@ void Engine::recordCommandBuffer(uint32_t image_index){
 
     // --- 1. GATHER TRANSPARENTS ---
     transparent_draws.clear();
-    glm::vec3 camera_pos = camera.getCurrentState().f_camera.position;
+    // We still gather all transparent primitives, but sorting is no longer needed
+    // as the PPLL composite shader will handle sorting on the GPU.
     for(auto& obj : scene_objs){
         if (!obj.t_primitives.empty()) {
             for(const auto& primitive : obj.t_primitives) {
-                // We still need the list, just not for sorting.
                 const Material& material = obj.materials[primitive.material_index];
                 transparent_draws.push_back({&obj, &primitive, &material, 0.0f}); // Distance doesn't matter
             }
@@ -945,6 +960,7 @@ void Engine::recordCommandBuffer(uint32_t image_index){
 
     // --- 2. OPAQUE PASS ---
     // Renders to msaa color_image and msaa depth_image
+    // This pass is identical to your original implementation.
     {
         // Transition swapchain image (for final resolve)
         transition_image_layout(
@@ -964,9 +980,8 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         color_attachment_info.imageView = color_image.image_view;
         color_attachment_info.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
         color_attachment_info.loadOp = vk::AttachmentLoadOp::eClear;
-        color_attachment_info.storeOp = vk::AttachmentStoreOp::eStore; // MUST store
+        color_attachment_info.storeOp = vk::AttachmentStoreOp::eStore; // MUST store for composite pass
         color_attachment_info.clearValue = clear_color;
-        // NO resolve here yet
 
         // Main depth attachment
         vk::RenderingAttachmentInfo depth_attachment_info = {};
@@ -1045,31 +1060,33 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     }
 
     // --- 3. OIT WRITE PASS ---
-    // Renders to msaa oit_accum/reveal images
+    // Renders to PPLL buffers (SSBOs)
     // Reads from msaa depth_image
     {
-        // Transition OIT buffers to be written to
-        transitionImage(cmd, oit_accum_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal);
-        transitionImage(cmd, oit_reveal_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal);
+        // --- CLEAR OIT BUFFERS ---
+        // We must clear the atomic counter to 0
+        cmd.fillBuffer(oit_atomic_counter_buffer.buffer, 0, sizeof(uint32_t), 0);
         
-        vk::ClearValue clear_accum = vk::ClearColorValue(0.f, 0.f, 0.f, 0.f);
-        vk::ClearValue clear_reveal = vk::ClearColorValue(1.f, 0.f, 0.f, 0.f); // Clear R to 1.0
-        
-        std::array<vk::RenderingAttachmentInfo, 2> oit_attachments_info;
-        // Accum
-        oit_attachments_info[0].imageView = oit_accum_image.image_view;
-        oit_attachments_info[0].imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-        oit_attachments_info[0].loadOp = vk::AttachmentLoadOp::eClear;
-        oit_attachments_info[0].storeOp = vk::AttachmentStoreOp::eStore; // Must store
-        oit_attachments_info[0].clearValue = clear_accum;
-        // Reveal
-        oit_attachments_info[1].imageView = oit_reveal_image.image_view;
-        oit_attachments_info[1].imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-        oit_attachments_info[1].loadOp = vk::AttachmentLoadOp::eClear;
-        oit_attachments_info[1].storeOp = vk::AttachmentStoreOp::eStore; // Must store
-        oit_attachments_info[1].clearValue = clear_reveal;
+        // We must clear the head-pointer image to 0xFFFFFFFF (our "null" pointer)
+        vk::ClearColorValue clear_uint(std::array<uint32_t, 4>{ 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF });
+        vk::ImageSubresourceRange clear_range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
+        cmd.clearColorImage(oit_start_offset_image.image, 
+                            vk::ImageLayout::eGeneral, // Image is already in eGeneral
+                            clear_uint, clear_range);
 
-        // Depth attachment (LOAD, don't clear)
+        // Add a barrier to ensure clears are finished before shader writes
+        vk::MemoryBarrier2 mem_barrier;
+        mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eTransfer;
+        mem_barrier.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
+        mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
+        mem_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageWrite | vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderRead;
+        vk::DependencyInfo dep_info;
+        dep_info.memoryBarrierCount = 1;
+        dep_info.pMemoryBarriers = &mem_barrier;
+        cmd.pipelineBarrier2(dep_info);
+        // --- END OIT CLEAR ---
+
+        // Depth attachment (LOAD, don't clear, don't write)
         vk::RenderingAttachmentInfo depth_attachment_info = {};
         depth_attachment_info.imageView = depth_image.image_view;
         depth_attachment_info.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
@@ -1080,8 +1097,8 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         oit_rendering_info.renderArea.offset = vk::Offset2D{0, 0};
         oit_rendering_info.renderArea.extent = swapchain.extent;
         oit_rendering_info.layerCount = 1;
-        oit_rendering_info.colorAttachmentCount = 2;
-        oit_rendering_info.pColorAttachments = oit_attachments_info.data();
+        oit_rendering_info.colorAttachmentCount = 0; // No color attachments
+        oit_rendering_info.pColorAttachments = nullptr;
         oit_rendering_info.pDepthAttachment = &depth_attachment_info;
 
         cmd.beginRendering(oit_rendering_info);
@@ -1137,8 +1154,16 @@ void Engine::recordCommandBuffer(uint32_t image_index){
 
                 cmd.pushConstants<MaterialPushConstant>(*pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
 
-                // Bind material descriptor set
-                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipeline->layout, 0, {*material.descriptor_sets[current_frame]}, {});
+                // Bind *both* descriptor sets
+                std::array<vk::DescriptorSet, 2> descriptor_sets_to_bind = {
+                    *material.descriptor_sets[current_frame], // Set 0: Material
+                    *oit_ppll_descriptor_sets[current_frame]  // Set 1: PPLL Buffers
+                };
+
+                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                                     *pipeline->layout, 0, // Start at set 0
+                                     descriptor_sets_to_bind, // Bind 2 sets
+                                     {});
                 
                 // Draw
                 cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
@@ -1148,40 +1173,24 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     }
 
     // --- 4. RESOLVE PASS ---
-    // Resolve MSAA OIT buffers to standard images for sampling
+    // This pass is no longer needed with PPLL.
+    // We add a barrier to ensure all SSBO writes from the OIT Write pass
+    // are finished before the Composite pass reads from them.
     {
-        // Transition OIT images for resolve
-        transitionImage(cmd, oit_accum_image.image, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal);
-        transitionImage(cmd, oit_reveal_image.image, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal);
-        transitionImage(cmd, oit_accum_resolved.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
-        transitionImage(cmd, oit_reveal_resolved.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
-
-        vk::ImageResolve resolve_region;
-        resolve_region.srcSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
-        resolve_region.srcSubresource.layerCount = 1;
-        resolve_region.dstSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
-        resolve_region.dstSubresource.layerCount = 1;
-        resolve_region.extent.width = swapchain.extent.width;
-        resolve_region.extent.height = swapchain.extent.height;
-        resolve_region.extent.depth = 1;
-
-        // Resolve Accum
-        cmd.resolveImage(oit_accum_image.image, vk::ImageLayout::eTransferSrcOptimal,
-                         oit_accum_resolved.image, vk::ImageLayout::eTransferDstOptimal,
-                         resolve_region);
-        // Resolve Reveal
-        cmd.resolveImage(oit_reveal_image.image, vk::ImageLayout::eTransferSrcOptimal,
-                         oit_reveal_resolved.image, vk::ImageLayout::eTransferDstOptimal,
-                         resolve_region);
-
-        // Transition resolved images for sampling in composite pass
-        transitionImage(cmd, oit_accum_resolved.image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal);
-        transitionImage(cmd, oit_reveal_resolved.image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal);
+        vk::MemoryBarrier2 mem_barrier;
+        mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
+        mem_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
+        mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
+        mem_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead;
+        vk::DependencyInfo dep_info;
+        dep_info.memoryBarrierCount = 1;
+        dep_info.pMemoryBarriers = &mem_barrier;
+        cmd.pipelineBarrier2(dep_info);
     }
 
     // --- 5. COMPOSITE PASS ---
     // Renders fullscreen quad to msaa color_image
-    // Reads from resolved oit buffers
+    // Reads from PPLL SSBOs
     // Blends OVER the existing opaque scene in color_image
     // Resolves final msaa color_image to swapchain image
     {
@@ -1215,8 +1224,8 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *oit_composite_pipeline.pipeline);
         cmd.bindDescriptorSets(
             vk::PipelineBindPoint::eGraphics,
-            *oit_composite_pipeline.layout, 0,
-            *oit_composite_descriptor_sets[current_frame],
+            *oit_composite_pipeline.layout, 0, // Bind to Set 0
+            *oit_ppll_descriptor_sets[current_frame], // The PPLL descriptor set
             nullptr
         );
         

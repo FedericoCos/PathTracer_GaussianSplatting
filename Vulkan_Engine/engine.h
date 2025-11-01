@@ -104,14 +104,23 @@ public:
 
 
     // OIT variables
-    AllocatedImage oit_accum_image; // MSAA Accumulation buffer
+    /* AllocatedImage oit_accum_image; // MSAA Accumulation buffer
     AllocatedImage oit_reveal_image; // MSAA revealage buffer
     AllocatedImage oit_accum_resolved; // Resolved (non-MSAA) accum
     AllocatedImage oit_reveal_resolved; // Resolved (non-MSAA) reveal
     vk::raii::Sampler oit_sampler = nullptr;
 
     PipelineInfo oit_composite_pipeline;
-    std::vector<vk::raii::DescriptorSet> oit_composite_descriptor_sets;
+    std::vector<vk::raii::DescriptorSet> oit_composite_descriptor_sets; */
+
+    AllocatedBuffer oit_atomic_counter_buffer;
+    AllocatedBuffer oit_fragment_list_buffer;
+    AllocatedImage oit_start_offset_image;
+    uint32_t oit_max_fragments;
+
+    std::vector<vk::raii::DescriptorSet> oit_ppll_descriptor_sets;
+    PipelineInfo oit_composite_pipeline;
+
 
 private:
     // Window variables
@@ -129,9 +138,9 @@ private:
     std::map<PipelineKey, PipelineInfo> p_p_map;
     const std::string v_shader_pbr = "shaders/basic/vertex.spv";
     const std::string f_shader_pbr = "shaders/basic/fragment.spv";
-    const std::string f_shader_oit_write = "shaders/basic/oit_write.spv"; 
+    const std::string f_shader_oit_write = "shaders/basic/oit_ppll_write.spv"; 
     const std::string v_shader_oit_composite = "shaders/basic/oit_composite_vert.spv"; 
-    const std::string f_shader_oit_composite = "shaders/basic/oit_composite_frag.spv"; 
+    const std::string f_shader_oit_composite = "shaders/basic/oit_ppll_composite_frag.spv"; 
     
     const std::string v_shader_torus = "shaders/basic/vertex_torus.spv";
     const std::string f_shader_torus = "shaders/basic/fragment_torus.spv";

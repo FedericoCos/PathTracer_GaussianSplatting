@@ -208,8 +208,19 @@ void main() {
     
     // Weight function emphasizes fragments closer to the camera
     // gl_FragCoord.z is in [0, 1] range
-    float w = pow(gl_FragCoord.z, 4.0);
-    float weight = clamp(w * 1000.0, 1e-2, 3e3);
+    float dist = length(ubo.cameraPos - fragWorldPos);
+    
+    // Prevent division by zero and set a minimum distance
+    dist = max(dist, 0.01); 
+
+    // Calculate weight using an inverse-square falloff
+    // You can "tune" the 2.0 to a higher value (3.0, 4.0)
+    // to make the falloff even more aggressive.
+    float weight = 1.0 / pow(dist, 2.0);
+    
+    // Apply a global multiplier to keep values large
+    // This can also be tuned.
+    weight *= 10.0;
 
     // 1. Premultiply color by alpha
     vec3 premultiplied_color = color * alpha;

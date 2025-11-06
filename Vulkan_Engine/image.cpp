@@ -65,7 +65,24 @@ AllocatedImage Image::createImage(uint32_t width, uint32_t height, uint32_t mip_
     if(engine.vma_allocator == nullptr){
         std::cout << "Error\n";
     }
-    vmaCreateImage(engine.vma_allocator, reinterpret_cast<const VkImageCreateInfo*>(&image_info), &alloc_info, &image.image, &image.allocation, nullptr);
+    VkResult result = vmaCreateImage(engine.vma_allocator, reinterpret_cast<const VkImageCreateInfo*>(&image_info), &alloc_info, &image.image, &image.allocation, nullptr);
+
+    if (result != VK_SUCCESS)
+    {
+        // Now you can see the *actual* error
+        std::cerr << "Error: vmaCreateImage failed with code: " << result << std::endl;
+
+        if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            std::cerr << "--> CONFIRMED: You are out of GPU device memory." << std::endl;
+        } else if (result == VK_ERROR_OUT_OF_HOST_MEMORY) {
+            std::cerr << "--> CONFIRMED: You are out of system (host) memory." << std::endl;
+        } else {
+            std::cerr << "--> This is NOT an out-of-memory error. Check parameters." << std::endl;
+        }
+        
+        image.image = VK_NULL_HANDLE; // Ensure handle is null on failure
+    }
+
 
     return image;
 }

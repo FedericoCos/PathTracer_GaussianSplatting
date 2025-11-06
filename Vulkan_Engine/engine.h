@@ -121,6 +121,11 @@ public:
     std::vector<vk::raii::DescriptorSet> oit_ppll_descriptor_sets;
     PipelineInfo oit_composite_pipeline;
 
+    // Uniform Buffer
+    UniformBufferObject ubo{};
+
+    void printGpuMemoryUsage();
+
 
 private:
     // Window variables
@@ -166,6 +171,7 @@ private:
     Gameobject debug_cube;
 
     Gameobject createDebugCube();
+    void createRTBox(const std::string& rtbox_path);
 
     // For multisampling
     AllocatedImage color_image;
@@ -199,8 +205,37 @@ private:
         {GLFW_KEY_M, Action::HEIGHT_UP},
         {GLFW_KEY_N, Action::HEIGHT_DOWN},
 
+        // LIGHTS
+        {GLFW_KEY_Z, Action::DEBUG_LIGHTS},
+        {GLFW_KEY_5, Action::TOGGLE_FLOOR_LIGHT},
+        {GLFW_KEY_6, Action::TOGGLE_CEILING_LIGHT},
+        {GLFW_KEY_7, Action::TOGGLE_BACK_LIGHT},
+        {GLFW_KEY_8, Action::TOGGLE_LEFT_LIGHT},
+        {GLFW_KEY_9, Action::TOGGLE_RIGHT_LIGHT},
+        {GLFW_KEY_E, Action::TOGGLE_EMISSIVE},
+        {GLFW_KEY_Q, Action::TOGGLE_MANUAL}
+
     };
     std::unordered_set<int> pressed_keys;
+
+    // Lights
+    bool debug_lights = false;
+    Gameobject rt_box;
+    bool use_rt_box = false;
+
+    // Light Storage
+    std::vector<Pointlight> manual_lights;
+    std::vector<Pointlight> emissive_lights;
+    std::vector<Pointlight> panel_lights;
+    std::vector<bool> panel_lights_on;
+    Pointlight left_panel_light;
+    Pointlight right_panel_light;
+
+    // Light Toggles
+    bool use_manual_lights = false;
+    bool use_emissive_lights = false;
+    bool left_panel_light_on = true;
+    bool right_panel_light_on = true;
 
 
     // ----- Helper functions
@@ -249,6 +284,7 @@ private:
 
     void createPipelines();
     void loadObjects(const std::string& scene_path);
+    void loadManualLights(const std::string& lights_path);
     void createTorusModel();
     void createUniformBuffers();
     void createDescriptorPool();

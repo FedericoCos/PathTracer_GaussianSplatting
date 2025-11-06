@@ -1,0 +1,11 @@
+Model Information:
+* title:	Watterson House Smaller
+* source:	https://sketchfab.com/3d-models/watterson-house-smaller-dbb5620563bd4a3eab3c38114e5d08d6
+* author:	Jayexe the accurate model creator (https://sketchfab.com/jayexethemodeler)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Watterson House Smaller" (https://sketchfab.com/3d-models/watterson-house-smaller-dbb5620563bd4a3eab3c38114e5d08d6) by Jayexe the accurate model creator (https://sketchfab.com/jayexethemodeler) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

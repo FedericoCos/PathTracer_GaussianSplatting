@@ -6,7 +6,7 @@
 #include <utility>  // Added for std::pair
 
 // --- HELPER FUNCTION (add this to the top of gameobject.cpp) ---
-void createDefaultTexture(Engine& engine, AllocatedImage& texture, glm::vec4 color) {
+void Gameobject::createDefaultTexture(Engine& engine, AllocatedImage& texture, glm::vec4 color) {
     unsigned char colored_pixel[] = {color.x, color.y, color.z, color.w};
     vk::DeviceSize image_size = 4;
 
@@ -67,9 +67,9 @@ void Gameobject::loadModel(std::string m_path, Engine &engine)
     textures.clear();
     materials.clear();
     o_primitives.clear();
-    t_primitives.clear(); // <-- Make sure to clear transparent primitives too
+    t_primitives.clear();
     if (default_sampler != nullptr) {
-        default_sampler = nullptr; // vk::raii::Sampler will handle destruction
+        default_sampler = nullptr;
     }
 
     std::string base_dir = m_path.substr(0, m_path.find_last_of('/') + 1);
@@ -112,17 +112,26 @@ std::map<int, vk::Format> Gameobject::scanTextureFormats(const tinygltf::Model& 
         sourceIdx = getImageSourceIndex(mat.occlusionTexture.index);
         if (sourceIdx >= 0) image_formats[sourceIdx] = vk::Format::eR8G8B8A8Unorm;
 
-        // Check for clearcoat extensions
-        if (mat.extensions.count("KHR_materials_clearcoat")) {
-            // const auto& clearcoat = mat.extensions.at("KHR_materials_clearcoat"); // <-- REMOVED
-            // if (clearcoat.Has("clearcoatTexture")) { // <-- REMOVED
-            //     sourceIdx = getImageSourceIndex(clearcoat.Get("clearcoatTexture").Get("index").Get<int>()); // <-- REMOVED
-            //     if (sourceIdx >= 0) image_formats[sourceIdx] = vk::Format::eR8G8B8A8Unorm; // <-- REMOVED
-            // } // <-- REMOVED
-            // if (clearcoat.Has("clearcoatRoughnessTexture")) { // <-- REMOVED
-            //     sourceIdx = getImageSourceIndex(clearcoat.Get("clearcoatRoughnessTexture").Get("index").Get<int>()); // <-- REMOVED
-            //     if (sourceIdx >= 0) image_formats[sourceIdx] = vk::Format::eR8G8B8A8Unorm; // <-- REMOVED
-            // } // <-- REMOVED
+        if(mat.extensions.count("KHR_materials_transmission")){
+            const auto& transmission = mat.extensions.at("KHR_materials_transmission");
+            if(transmission.Has("transmissionTexture")){
+                sourceIdx = getImageSourceIndex(transmission.Get("transmissionTexture").Get("index").Get<int>());
+                if(sourceIdx >= 0) image_formats[sourceIdx] = vk::Format::eR8G8B8A8Unorm;
+            }
+        }
+
+        if(mat.extensions.count("KHR_materials_clearcoat")){
+            const auto& clearcoat = mat.extensions.at("KHR_materials_clearcoat");
+
+            if(clearcoat.Has("clearcoatTexture")){
+                sourceIdx = getImageSourceIndex(clearcoat.Get("clearcoatTexture").Get("index").Get<int>());
+                if(sourceIdx >= 0) image_formats[sourceIdx] = vk::Format::eR8G8B8A8Unorm;
+            }
+
+            if(clearcoat.Has("clearcoatRoughnessTexture")){
+                sourceIdx = getImageSourceIndex(clearcoat.Get("clearcoatRoughnessTexture").Get("index").Get<int>());
+                if(sourceIdx >= 0) image_formats[sourceIdx] = vk::Format::eR8G8B8A8Unorm;
+            }
         }
     }
     return image_formats;
@@ -143,16 +152,18 @@ void Gameobject::loadTextures(const tinygltf::Model& model, const std::string& b
     for (const auto& image : model.images) {
         std::string texture_path = base_dir + image.uri;
         
-        // Default to sRGB, but use scanned formimage_indexat if available
+        // Default to sRGB, but use scanned format image if available
         vk::Format format = vk::Format::eR8G8B8A8Srgb;
         if (image_formats.contains(image_index)) {
             format = image_formats[image_index];
         }
 
+        std::cout << "Creating texture: " << image.uri << std::endl;
         textures.push_back(Image::createTextureImage(engine, texture_path.c_str(), format));
 
         // Track the highest mip level for the sampler
         max_mips = std::max<uint32_t>(max_mips, textures.back().mip_levels);
+        image_index++;
     }
 
     // Create a single sampler for all textures
@@ -171,7 +182,6 @@ int Gameobject::getTextureIndex(int gltfTexIdx, const tinygltf::Model& model) co
 }
 
 void Gameobject::loadMaterials(const tinygltf::Model& model) {
-    bool first = true;
     std::cout << "MATERIALS SIZE: " << model.materials.size() << std::endl;
     const float ALPHA_OPACITY_THRESHOLD = 0.95f; 
 
@@ -179,32 +189,13 @@ void Gameobject::loadMaterials(const tinygltf::Model& model) {
         Material newMaterial{};
         const auto& pbr = mat.pbrMetallicRoughness;
 
-        bool is_blend = (mat.alphaMode == "BLEND");
+        newMaterial.is_transparent = (mat.alphaMode == "BLEND");
         if(mat.doubleSided){
             newMaterial.is_doublesided = true;
         }
-        if (!is_blend) {
-            newMaterial.is_transparent = false; // OPAQUE mode
-        } else {
-            // It's BLEND mode. Check if we can optimize it to be opaque.
-            // We can only do this if there is NO alpha texture.
-            bool has_alpha_texture = (pbr.baseColorTexture.index >= 0);
-            float base_alpha = static_cast<float>(pbr.baseColorFactor[3]);
 
-            if (has_alpha_texture) {
-                // We can't read the texture's alpha values on the CPU, so to be safe,
-                // we must treat it as transparent if the material uses an alpha channel.
-                newMaterial.is_transparent = true; 
-            } else {
-                // No alpha texture. The *only* source of alpha is the base_color_factor.
-                // We can safely check this factor against our threshold.
-                if (base_alpha < ALPHA_OPACITY_THRESHOLD) {
-                    newMaterial.is_transparent = true; // Genuinely transparent
-                } else {
-                    newMaterial.is_transparent = false; // e.g., alpha is 0.999. Treat as opaque.
-                }
-            }
-        }
+        if(mat.alphaMode == "MASK")
+            newMaterial.alpha_cutoff = static_cast<float>(mat.alphaCutoff);
 
         // --- PBR Base ---
         const auto& bcf = pbr.baseColorFactor;
@@ -257,22 +248,36 @@ void Gameobject::loadMaterials(const tinygltf::Model& model) {
             }
         }
 
-        // --- Clearcoat Extension ---
-        if (mat.extensions.count("KHR_materials_clearcoat")) {
-            // const auto& cc_ext = mat.extensions.at("KHR_materials_clearcoat"); // <-- REMOVED
+        // --- Transmission Extension ---
+        if(mat.extensions.count("KHR_materials_transmission")){
+            const auto& transmission = mat.extensions.at("KHR_materials_transmission");
+            if (transmission.Has("TransmissionFactor")){
+                newMaterial.transmission_factor = static_cast<float>(transmission.Get("transmissionFactor").Get<double>());
+            }
+            if(transmission.Has("transmissionTexture")){
+                newMaterial.transmission_texture_index = getTextureIndex(transmission.Get("transmissionTexture").Get("index").Get<int>(), model);
+            }
 
-            // if (cc_ext.Has("clearcoatFactor")) { // <-- REMOVED
-            //     newMaterial.clearcoat_factor = static_cast<float>(cc_ext.Get("clearcoatFactor").Get<double>()); // <-- REMOVED
-            // } // <-- REMOVED
-            // if (cc_ext.Has("clearcoatRoughnessFactor")) { // <-- REMOVED
-            //     newMaterial.clearcoat_roughness_factor = static_cast<float>(cc_ext.Get("clearcoatRoughnessFactor").Get<double>()); // <-- REMOVED
-            // } // <-- REMOVED
-            // if (cc_ext.Has("clearcoatTexture")) { // <-- REMOVED
-            //     newMaterial.clearcoat_texture_index = getTextureIndex(cc_ext.Get("clearcoatTexture").Get("index").Get<int>(), model); // <-- REMOVED
-            // } // <-- REMOVED
-            // if (cc_ext.Has("clearcoatRoughnessTexture")) { // <-- REMOVED
-            //     newMaterial.clearcoat_roughness_texture_index = getTextureIndex(cc_ext.Get("clearcoatRoughnessTexture").Get("index").Get<int>(), model); // <-- REMOVED
-            // } // <-- REMOVED
+            if(newMaterial.transmission_factor > 0.0f || transmission.Has("transmissionTexture")){
+                newMaterial.is_transparent = true;
+            }
+        }
+
+        if(mat.extensions.count("KHR_materials_clearcoat")){
+            const auto& clearcoat = mat.extensions.at("KHR_materials_clearcoat");
+
+            if(clearcoat.Has("clearcoatFactor")){
+                newMaterial.clearcoat_factor = static_cast<float>(clearcoat.Get("clearcoatFactor").Get<double>());
+            }
+            if(clearcoat.Has("clearcoatRoughnessFactor")){
+                newMaterial.clearcoat_roughness_factor = static_cast<float>(clearcoat.Get("clearcoatRoughnessFactor").Get<double>());
+            }
+            if(clearcoat.Has("clearcoatTexture")){
+                newMaterial.clearcoat_texture_index = getTextureIndex(clearcoat.Get("clearcoatTexture").Get("index").Get<int>(), model);
+            }
+            if(clearcoat.Has("clearcoatRoughnessTexture")){
+                newMaterial.clearcoat_roughness_texture_index = getTextureIndex(clearcoat.Get("clearcoatRoughnessTexture").Get("index").Get<int>(), model);
+            }
         }
 
         materials.push_back(std::move(newMaterial));
@@ -304,18 +309,41 @@ void Gameobject::loadGeometry(const tinygltf::Model& model) {
 void Gameobject::processNode(int nodeIndex, const tinygltf::Model& model, const glm::mat4& parentTransform, std::unordered_map<Vertex, uint32_t>& unique_vertices) {
     
     const tinygltf::Node& node = model.nodes[nodeIndex];
-    glm::mat4 localTransform = parentTransform * getNodeTransform(node);
+    
+    // This is the node's individual transform (e.g., its own translation/rotation)
+    glm::mat4 nodeTransform = getNodeTransform(node);
+    
+    // This is the full transform from the root down to this node
+    glm::mat4 localTransform = parentTransform * nodeTransform;
+
+    // This is the transform we will bake into the vertices
+    glm::mat4 meshTransform;
+
+    if (node.skin >= 0) {
+        // This node has a skin. This means its transform is for a JOINT.
+        // A static loader must NOT bake a joint transform into the vertices.
+        // We use the PARENT'S transform, which places the mesh in the scene
+        // without applying the (incorrect) joint distortion.
+        meshTransform = parentTransform;
+    } else {
+        // This is a regular static node. Bake the full local transform.
+        meshTransform = localTransform;
+    }
+
 
     // Load all primitives for the mesh associated with this node
     if (node.mesh >= 0) {
         const tinygltf::Mesh& mesh = model.meshes[node.mesh];
         for (const auto& primitive : mesh.primitives) {
-            loadPrimitive(primitive, model, localTransform, unique_vertices);
+            // Pass the corrected 'meshTransform' to loadPrimitive
+            loadPrimitive(primitive, model, meshTransform, unique_vertices);
         }
     }
 
     // Recursively process all children
     for (int childIndex : node.children) {
+        // IMPORTANT: Always pass the full 'localTransform' down the hierarchy
+        // so that child nodes are positioned correctly relative to this node.
         processNode(childIndex, model, localTransform, unique_vertices);
     }
 }
@@ -375,30 +403,9 @@ struct CompareVec3 {
 
 
 /**
- * @brief Loads a single mesh primitive.
- * - OPAQUE primitives are loaded as a single struct.
- * - TRANSPARENT primitives are:
- * 1. Split into connected components.
- * 2. Batched into spatial grid cells to reduce draw calls.
+ * @brief Loads a single mesh primitive and divide them in transparent and opaque.
  */
 void Gameobject::loadPrimitive(const tinygltf::Primitive& primitive, const tinygltf::Model& model, const glm::mat4& transform, std::unordered_map<Vertex, uint32_t>& unique_vertices) {
-    
-    // --- 0a. CHOOSE TRANSPARENT BATCHING STRATEGY ---
-    // true:  Group nearby components into grid cells. (Fewer draw calls, less accurate sorting)
-    // false: Create one primitive per connected component. (More draw calls, perfect component sorting)
-    const bool BATCH_NEARBY_COMPONENTS = true; 
-    // ---
-
-    // --- 0b. DEFINE YOUR BATCHING RESOLUTION ---
-    /**
-     * @brief Controls the size of the 3D grid for batching.
-     * A smaller value (e.g., 0.25f) = more batches, better sorting.
-     * A larger value (e.g., 2.0f) = fewer batches, worse sorting.
-     * This is in world units (assuming 1.0 = 1 meter).
-     */
-    const float TRANSPARENT_BATCH_GRID_SIZE = 1.0f; 
-    // ---
-
     // --- 1. Get Material and Index Data ---
     int material_index = (primitive.material >= 0) ? primitive.material : 0; 
     bool is_transparent = materials[material_index].is_transparent;
@@ -503,7 +510,8 @@ void Gameobject::loadPrimitive(const tinygltf::Primitive& primitive, const tinyg
         }
 
         vertex.pos = glm::vec3(transform * glm::vec4(vertex.pos, 1.0f)); 
-        vertex.normal = glm::normalize(glm::mat3(transform) * vertex.normal); 
+        glm::mat3 normal_matrix = glm::transpose(glm::inverse(glm::mat3(transform)));
+        vertex.normal = glm::normalize(normal_matrix * vertex.normal);
 
         if (!unique_vertices.contains(vertex)) {
             unique_vertices[vertex] = static_cast<uint32_t>(vertices.size());
@@ -512,171 +520,36 @@ void Gameobject::loadPrimitive(const tinygltf::Primitive& primitive, const tinyg
         local_final_indices.push_back(unique_vertices[vertex]);
     }
 
-    // --- 3b. LOGIC BRANCH ---
-    if (false) { 
-        // --- TRANSPARENT path: Build graph, find components, and batch them ---
+    // --- OPAQUE path: Create ONE primitive (Unchanged) ---
+    Primitive new_primitive;
+    glm::vec3 bbMin( std::numeric_limits<float>::max());
+    glm::vec3 bbMax(-std::numeric_limits<float>::max());
+    
+    new_primitive.material_index = material_index;
+    new_primitive.first_index = static_cast<uint32_t>(indices.size());
+    new_primitive.index_count = static_cast<uint32_t>(total_index_count);
 
-        // ----- 3b.1. Find all connected components -----
-        struct Triangle { uint32_t v[3]; };
-        std::vector<Triangle> local_triangles;
-        local_triangles.reserve(total_index_count / 3);
-
-        auto make_sorted_pair = [](uint32_t a, uint32_t b) {
-            return std::make_pair(std::min(a, b), std::max(a, b));
-        };
-        std::map<std::pair<uint32_t, uint32_t>, std::vector<uint32_t>> edge_to_triangles;
-        
-        for (size_t i = 0; i < local_final_indices.size(); i += 3) {
-            uint32_t v0 = local_final_indices[i];
-            uint32_t v1 = local_final_indices[i+1];
-            uint32_t v2 = local_final_indices[i+2];
-            uint32_t tri_idx = static_cast<uint32_t>(local_triangles.size());
-            local_triangles.push_back({v0, v1, v2});
-            edge_to_triangles[make_sorted_pair(v0, v1)].push_back(tri_idx);
-            edge_to_triangles[make_sorted_pair(v1, v2)].push_back(tri_idx);
-            edge_to_triangles[make_sorted_pair(v2, v0)].push_back(tri_idx);
-        }
-
-        size_t num_triangles = local_triangles.size();
-        std::vector<std::vector<uint32_t>> adj(num_triangles);
-        for (auto const& [edge, tris] : edge_to_triangles) {
-            if (tris.size() > 1) {
-                for (size_t i = 0; i < tris.size(); ++i) {
-                    for (size_t j = i + 1; j < tris.size(); ++j) {
-                        adj[tris[i]].push_back(tris[j]);
-                        adj[tris[j]].push_back(tris[i]);
-                    }
-                }
-            }
-        }
-
-        std::vector<TempComponent> all_components; // Store all found components here
-        std::vector<bool> visited(num_triangles, false);
-        
-        for (uint32_t i = 0; i < num_triangles; ++i) {
-            if (!visited[i]) {
-                // Start of a new component
-                TempComponent newComponent;
-                glm::vec3 center_sum(0.0f);
-                float vertex_count = 0.0f;
-
-                std::stack<uint32_t> stack;
-                stack.push(i);
-                visited[i] = true;
-
-                while (!stack.empty()) {
-                    uint32_t current_tri_idx = stack.top();
-                    stack.pop();
-                    const auto& tri = local_triangles[current_tri_idx];
-
-                    // Add this triangle's indices to the component's list
-                    newComponent.component_indices.push_back(tri.v[0]);
-                    newComponent.component_indices.push_back(tri.v[1]);
-                    newComponent.component_indices.push_back(tri.v[2]);
-
-                    center_sum += vertices[tri.v[0]].pos;
-                    center_sum += vertices[tri.v[1]].pos;
-                    center_sum += vertices[tri.v[2]].pos;
-                    vertex_count += 3.0f;
-
-                    for (uint32_t neighbor_idx : adj[current_tri_idx]) {
-                        if (!visited[neighbor_idx]) {
-                            visited[neighbor_idx] = true;
-                            stack.push(neighbor_idx);
-                        }
-                    }
-                }
-                newComponent.center = center_sum / vertex_count;
-                all_components.push_back(std::move(newComponent));
-            }
-        }
-
-        if (BATCH_NEARBY_COMPONENTS) {
-            // ----- 3b.2. Batch components into grid cells -----
-            
-            // Key: Voxel/grid cell coordinate
-            // Value: A list of all components that fall into this cell
-            std::map<glm::ivec3, std::vector<TempComponent*>, CompareVec3> batches;
-
-            for (auto& component : all_components) {
-                glm::ivec3 cell_coord = glm::floor(component.center / TRANSPARENT_BATCH_GRID_SIZE);
-                batches[cell_coord].push_back(&component); // This line now works
-            }
-
-            // ----- 3b.3. Create final primitives from batches -----
-            
-            for (auto& [cell, component_list] : batches) {
-                // This component_list is our new, batched primitive.
-                Primitive newPrimitive;
-                newPrimitive.material_index = material_index;
-                newPrimitive.first_index = static_cast<uint32_t>(indices.size()); // New batch starts here
-                newPrimitive.index_count = 0;
-                
-                glm::vec3 weighted_center_sum(0.0f);
-                float total_triangles = 0.0f;
-
-                // Add all indices from all components in this batch
-                for (TempComponent* comp : component_list) {
-                    // Copy all indices from the component into the GLOBAL indices buffer
-                    indices.insert(indices.end(), comp->component_indices.begin(), comp->component_indices.end());
-                    
-                    float tri_count = comp->component_indices.size() / 3.0f;
-                    newPrimitive.index_count += static_cast<uint32_t>(comp->component_indices.size());
-                    
-                    // Weight the center by the number of triangles
-                    weighted_center_sum += comp->center * tri_count;
-                    total_triangles += tri_count;
-                }
-
-                // Calculate the final weighted-average center for sorting
-                if (total_triangles > 0) {
-                    newPrimitive.center = weighted_center_sum / total_triangles;
-                } else {
-                    newPrimitive.center = glm::vec3(0.0f); // Should not happen
-                }
-
-                t_primitives.push_back(newPrimitive);
-            }
-        } else {
-            // ----- 3b.2 (Alternate): Create one primitive per component -----
-            for (auto& comp : all_components) {
-                Primitive newPrimitive;
-                newPrimitive.material_index = material_index;
-                newPrimitive.first_index = static_cast<uint32_t>(indices.size()); // New primitive starts here
-                newPrimitive.index_count = static_cast<uint32_t>(comp.component_indices.size());
-                newPrimitive.center = comp.center;
-
-                // Copy this component's indices into the GLOBAL index buffer
-                indices.insert(indices.end(), comp.component_indices.begin(), comp.component_indices.end());
-
-                t_primitives.push_back(newPrimitive);
-            }
-        }
-
-    } else {
-        // --- OPAQUE path: Create ONE primitive (Unchanged) ---
-        Primitive opaquePrimitive;
-        glm::vec3 bbMin( std::numeric_limits<float>::max());
-        glm::vec3 bbMax(-std::numeric_limits<float>::max());
-        
-        opaquePrimitive.material_index = material_index;
-        opaquePrimitive.first_index = static_cast<uint32_t>(indices.size());
-        opaquePrimitive.index_count = static_cast<uint32_t>(total_index_count);
-
-        for (uint32_t final_index : local_final_indices) {
-            indices.push_back(final_index);
-            const auto& pos = vertices[final_index].pos;
-            bbMin = glm::min(bbMin, pos);
-            bbMax = glm::max(bbMax, pos);
-        }
-
-        opaquePrimitive.center = 0.5f * (bbMin + bbMax);
-
-        if(!is_transparent)
-            o_primitives.push_back(opaquePrimitive);
-        else
-            t_primitives.push_back(opaquePrimitive);
+    for (uint32_t final_index : local_final_indices) {
+        indices.push_back(final_index);
+        const auto& pos = vertices[final_index].pos;
+        bbMin = glm::min(bbMin, pos);
+        bbMax = glm::max(bbMax, pos);
     }
+
+    new_primitive.center = 0.5f * (bbMin + bbMax);
+
+    const Material& mat = materials[material_index];
+    // Check if material is emissive
+    if (glm::length(mat.emissive_factor) > 0.001f) 
+    {
+        // Store the local center and emissive color
+        emissive_primitives.push_back({new_primitive.center, mat.emissive_factor});
+    }
+
+    if(!is_transparent)
+        o_primitives.push_back(new_primitive);
+    else
+        t_primitives.push_back(new_primitive);
 }
 
 
@@ -727,28 +600,32 @@ void Gameobject::createMaterialDescriptorSets(Engine& engine) {
             met_rough_info.imageView = *getImageView(material.metallic_roughness_texture_index);
             met_rough_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
-            vk::DescriptorImageInfo ao_info = {}; // <-- NEW
+            vk::DescriptorImageInfo ao_info = {};
             ao_info.sampler = *default_sampler;
             ao_info.imageView = *getImageView(material.occlusion_texture_index);
             ao_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
-            vk::DescriptorImageInfo emissive_info = {}; // <-- NEW
+            vk::DescriptorImageInfo emissive_info = {}; 
             emissive_info.sampler = *default_sampler;
             emissive_info.imageView = *getImageView(material.emissive_texture_index);
             emissive_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
+            vk::DescriptorImageInfo transmission_info = {};
+            transmission_info.sampler = *default_sampler;
+            transmission_info.imageView = *getImageView(material.transmission_texture_index);
+            transmission_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
-            // vk::DescriptorImageInfo clearcoat_info = {}; // <-- REMOVED
-            // clearcoat_info.sampler = *default_sampler; // <-- REMOVED
-            // clearcoat_info.imageView = *getImageView(material.clearcoat_texture_index); // <-- REMOVED
-            // clearcoat_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal; // <-- REMOVED
+            vk::DescriptorImageInfo clearcoat_info = {};
+            clearcoat_info.sampler = *default_sampler;
+            clearcoat_info.imageView = *getImageView(material.clearcoat_texture_index);
+            clearcoat_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
-            // vk::DescriptorImageInfo clearcoat_roughness_info = {}; // <-- REMOVED
-            // clearcoat_roughness_info.sampler = *default_sampler; // <-- REMOVED
-            // clearcoat_roughness_info.imageView = *getImageView(material.clearcoat_roughness_texture_index); // <-- REMOVED
-            // clearcoat_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal; // <-- REMOVED
+            vk::DescriptorImageInfo clearcoat_roughness_info = {};
+            clearcoat_roughness_info.sampler = *default_sampler;
+            clearcoat_roughness_info.imageView = *getImageView(material.clearcoat_roughness_texture_index);
+            clearcoat_roughness_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
-            std::array<vk::WriteDescriptorSet, 6> descriptor_writes = {}; // <-- MODIFIED (8 to 6)
+            std::array<vk::WriteDescriptorSet, 9> descriptor_writes = {};
             
             // Binding 0: UBO
             descriptor_writes[0].dstSet = material.descriptor_sets[i];
@@ -792,22 +669,55 @@ void Gameobject::createMaterialDescriptorSets(Engine& engine) {
             descriptor_writes[5].descriptorCount = 1;
             descriptor_writes[5].pImageInfo = &emissive_info;
 
-            // Binding 6: Clearcoat <-- REMOVED
-            // descriptor_writes[6].dstSet = material.descriptor_sets[i];
-            // descriptor_writes[6].dstBinding = 6;
-            // descriptor_writes[6].descriptorType = vk::DescriptorType::eCombinedImageSampler;
-            // descriptor_writes[6].descriptorCount = 1;
-            // descriptor_writes[6].pImageInfo = &clearcoat_info;
+            // Binding 6: transmission
+            descriptor_writes[6].dstSet = material.descriptor_sets[i];
+            descriptor_writes[6].dstBinding = 6;
+            descriptor_writes[6].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+            descriptor_writes[6].descriptorCount = 1;
+            descriptor_writes[6].pImageInfo = &transmission_info;
 
-            // Binding 7: Clearcoat Roughness <-- REMOVED
-            // descriptor_writes[7].dstSet = material.descriptor_sets[i];
-            // descriptor_writes[7].dstBinding = 7;
-            // descriptor_writes[7].descriptorType = vk::DescriptorType::eCombinedImageSampler;
-            // descriptor_writes[7].descriptorCount = 1;
-            // descriptor_writes[7].pImageInfo = material.clearcoat_roughness_texture_index != 0 ? &clearcoat_roughness_info : &clearcoat_info;
+            // Binding 7: clearcoat
+            descriptor_writes[7].dstSet = material.descriptor_sets[i];
+            descriptor_writes[7].dstBinding = 7;
+            descriptor_writes[7].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+            descriptor_writes[7].descriptorCount = 1;
+            descriptor_writes[7].pImageInfo = &clearcoat_info;
+
+            // Binding 8: clearcoat roughness
+            descriptor_writes[8].dstSet = material.descriptor_sets[i];
+            descriptor_writes[8].dstBinding = 8;
+            descriptor_writes[8].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+            descriptor_writes[8].descriptorCount = 1;
+            descriptor_writes[8].pImageInfo = &clearcoat_roughness_info;
 
             engine.logical_device.updateDescriptorSets(descriptor_writes, {});
         }
     }
 }
 
+std::vector<Pointlight> Gameobject::createEmissiveLights(float intensity_multiplier) {
+    std::vector<Pointlight> lights;
+    
+    // Nothing to do if no emissive parts
+    if (emissive_primitives.empty()) {
+        return lights;
+    }
+
+    // Process all stored emissive primitives
+    for (const auto& emissive_prim : emissive_primitives) {
+        
+        const glm::vec3& local_center = emissive_prim.first;
+        const glm::vec3& emissive_color_and_strength = emissive_prim.second;
+        
+        // Transform local center to world space
+        glm::vec4 world_center = model_matrix * glm::vec4(local_center, 1.0f);
+
+        // Create the new light
+        Pointlight new_light;
+        new_light.position = world_center;
+        new_light.color = glm::vec4(emissive_color_and_strength, intensity_multiplier);
+        
+        lights.push_back(new_light);
+    }
+    return lights;
+}

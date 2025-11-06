@@ -1,0 +1,11 @@
+Model Information:
+* title:	The Twins | Atomic Heart
+* source:	https://sketchfab.com/3d-models/the-twins-atomic-heart-5f3672744aff40199d7188947655f5a3
+* author:	LLIypuk (https://sketchfab.com/LLIypuk)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "The Twins | Atomic Heart" (https://sketchfab.com/3d-models/the-twins-atomic-heart-5f3672744aff40199d7188947655f5a3) by LLIypuk (https://sketchfab.com/LLIypuk) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

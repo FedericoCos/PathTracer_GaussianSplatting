@@ -14,6 +14,40 @@
 
 
 // ------ Helper Functions
+void Engine::printGpuMemoryUsage()
+{
+    // Get memory properties from the physical device
+    vk::PhysicalDeviceMemoryProperties mem_properties = physical_device.getMemoryProperties();
+
+    // VmaBudget array to hold data for each heap
+    std::vector<VmaBudget> budgets(mem_properties.memoryHeapCount);
+    
+    // Get the budgets
+    vmaGetHeapBudgets(vma_allocator, budgets.data());
+
+    std::cout << "--- GPU Memory Usage ---" << std::endl;
+    for(uint32_t i = 0; i < mem_properties.memoryHeapCount; ++i)
+    {
+        // Convert bytes to MiB
+        double usage_mib = static_cast<double>(budgets[i].usage) / (1024.0 * 1024.0);
+        double budget_mib = static_cast<double>(budgets[i].budget) / (1024.0 * 1024.0);
+        
+        std::cout << "Heap " << i << ": ";
+        if(mem_properties.memoryHeaps[i].flags & vk::MemoryHeapFlagBits::eDeviceLocal) {
+            std::cout << "[VRAM] ";
+        } else {
+            std::cout << "[System RAM] ";
+        }
+        
+        std::cout.precision(2);
+        std::cout << std::fixed << usage_mib << " MiB used / " 
+                  << std::fixed << budget_mib << " MiB budget" << std::endl;
+    }
+    std::cout << "------------------------" << std::endl;
+}
+
+
+
 std::vector<const char*> Engine::getRequiredExtensions(){
     uint32_t glfw_extension_count = 0;
     auto glfw_extensions = glfwGetRequiredInstanceExtensions(&glfw_extension_count);
@@ -47,43 +81,244 @@ void Engine::setupDebugMessanger(){
 Gameobject Engine::createDebugCube()
 {
     Gameobject cube;
-    cube.vertices.resize(8);
-    cube.vertices[0].pos = {-0.5f, -0.5f, -0.5f};
-    cube.vertices[1].pos = { 0.5f, -0.5f, -0.5f};
-    cube.vertices[2].pos = { 0.5f,  0.5f, -0.5f};
-    cube.vertices[3].pos = {-0.5f,  0.5f, -0.5f};
-    cube.vertices[4].pos = {-0.5f, -0.5f,  0.5f};
-    cube.vertices[5].pos = { 0.5f, -0.5f,  0.5f};
-    cube.vertices[6].pos = { 0.5f,  0.5f,  0.5f};
-    cube.vertices[7].pos = {-0.5f,  0.5f,  0.5f};
+    // We need 24 vertices (4 vertices per face * 6 faces)
+    cube.vertices.resize(24);
 
-    // Set default values for other attributes to satisfy the PBR pipeline
-    for(auto& v : cube.vertices) {
-        v.normal = {0.0f, 1.0f, 0.0f};
+    // --- Define vertices PER FACE with correct normals ---
+    // Front face (Z = -0.5)
+    cube.vertices[0].pos = {-0.5f, -0.5f, -0.5f}; cube.vertices[0].normal = {0.0f, 0.0f, -1.0f};
+    cube.vertices[1].pos = { 0.5f, -0.5f, -0.5f}; cube.vertices[1].normal = {0.0f, 0.0f, -1.0f};
+    cube.vertices[2].pos = { 0.5f,  0.5f, -0.5f}; cube.vertices[2].normal = {0.0f, 0.0f, -1.0f};
+    cube.vertices[3].pos = {-0.5f,  0.5f, -0.5f}; cube.vertices[3].normal = {0.0f, 0.0f, -1.0f};
+    // Back face (Z = 0.5)
+    cube.vertices[4].pos = {-0.5f, -0.5f,  0.5f}; cube.vertices[4].normal = {0.0f, 0.0f, 1.0f};
+    cube.vertices[5].pos = { 0.5f, -0.5f,  0.5f}; cube.vertices[5].normal = {0.0f, 0.0f, 1.0f};
+    cube.vertices[6].pos = { 0.5f,  0.5f,  0.5f}; cube.vertices[6].normal = {0.0f, 0.0f, 1.0f};
+    cube.vertices[7].pos = {-0.5f,  0.5f,  0.5f}; cube.vertices[7].normal = {0.0f, 0.0f, 1.0f};
+    // Left face (X = -0.5)
+    cube.vertices[8].pos = {-0.5f, -0.5f,  0.5f}; cube.vertices[8].normal = {-1.0f, 0.0f, 0.0f};
+    cube.vertices[9].pos = {-0.5f, -0.5f, -0.5f}; cube.vertices[9].normal = {-1.0f, 0.0f, 0.0f};
+    cube.vertices[10].pos = {-0.5f,  0.5f, -0.5f}; cube.vertices[10].normal = {-1.0f, 0.0f, 0.0f};
+    cube.vertices[11].pos = {-0.5f,  0.5f,  0.5f}; cube.vertices[11].normal = {-1.0f, 0.0f, 0.0f};
+    // Right face (X = 0.5)
+    cube.vertices[12].pos = { 0.5f, -0.5f, -0.5f}; cube.vertices[12].normal = {1.0f, 0.0f, 0.0f};
+    cube.vertices[13].pos = { 0.5f, -0.5f,  0.5f}; cube.vertices[13].normal = {1.0f, 0.0f, 0.0f};
+    cube.vertices[14].pos = { 0.5f,  0.5f,  0.5f}; cube.vertices[14].normal = {1.0f, 0.0f, 0.0f};
+    cube.vertices[15].pos = { 0.5f,  0.5f, -0.5f}; cube.vertices[15].normal = {1.0f, 0.0f, 0.0f};
+    // Top face (Y = 0.5)
+    cube.vertices[16].pos = {-0.5f,  0.5f, -0.5f}; cube.vertices[16].normal = {0.0f, 1.0f, 0.0f};
+    cube.vertices[17].pos = { 0.5f,  0.5f, -0.5f}; cube.vertices[17].normal = {0.0f, 1.0f, 0.0f};
+    cube.vertices[18].pos = { 0.5f,  0.5f,  0.5f}; cube.vertices[18].normal = {0.0f, 1.0f, 0.0f};
+    cube.vertices[19].pos = {-0.5f,  0.5f,  0.5f}; cube.vertices[19].normal = {0.0f, 1.0f, 0.0f};
+    // Bottom face (Y = -0.5)
+    cube.vertices[20].pos = {-0.5f, -0.5f, -0.5f}; cube.vertices[20].normal = {0.0f, -1.0f, 0.0f};
+    cube.vertices[21].pos = { 0.5f, -0.5f, -0.5f}; cube.vertices[21].normal = {0.0f, -1.0f, 0.0f};
+    cube.vertices[22].pos = { 0.5f, -0.5f,  0.5f}; cube.vertices[22].normal = {0.0f, -1.0f, 0.0f};
+    cube.vertices[23].pos = {-0.5f, -0.5f,  0.5f}; cube.vertices[23].normal = {0.0f, -1.0f, 0.0f};
+
+    // Set default values for other attributes
+    for(int i = 0; i < 24; ++i) {
+        auto& v = cube.vertices[i];
         v.color = {1.0f, 1.0f, 1.0f};
-        v.tex_coord = {0.0f, 0.0f};
-        v.tex_coord_1 = {0.0f, 0.0f};
-        v.tangent = {1.0f, 0.0f, 0.0f, 1.0f};
+        // Simple UV mapping for a cube
+        if (v.normal.z != 0.0f) { // Front/Back
+            v.tex_coord = {v.pos.x + 0.5f, v.pos.y + 0.5f};
+        } else if (v.normal.x != 0.0f) { // Left/Right
+            v.tex_coord = {v.pos.z + 0.5f, v.pos.y + 0.5f};
+        } else { // Top/Bottom
+            v.tex_coord = {v.pos.x + 0.5f, v.pos.z + 0.5f};
+        }
+        v.tex_coord_1 = v.tex_coord;
+        // Simple tangent
+        if (abs(v.normal.y) > 0.9f) { // Top/Bottom
+             v.tangent = {1.0f, 0.0f, 0.0f, 1.0f};
+        } else { // Sides
+             v.tangent = {0.0f, 1.0f, 0.0f, 1.0f};
+        }
     }
 
+    // Indices are now sequential for each face
     cube.indices = {
         // front
         0, 1, 2, 2, 3, 0,
         // back
         4, 5, 6, 6, 7, 4,
         // left
-        4, 7, 3, 3, 0, 4,
+        8, 9, 10, 10, 11, 8,
         // right
-        1, 5, 6, 6, 2, 1,
+        12, 13, 14, 14, 15, 12,
         // top
-        3, 2, 6, 6, 7, 3,
+        16, 17, 18, 18, 19, 16,
         // bottom
-        0, 1, 5, 5, 4, 0
+        20, 21, 22, 22, 23, 20
     };
 
-    // Create the GPU buffer for the cube
+    // --- Material and Primitive setup remains the same ---
+    Material mat;
+    mat.albedo_texture_index = -1; 
+    mat.base_color_factor = glm::vec4(1.0f, 1.0f, 0.0f, 1.0f); 
+    mat.emissive_factor = glm::vec3(1.0f, 1.0f, 0.0f); 
+    mat.metallic_factor = 0.0f;
+    mat.roughness_factor = 1.0f;
+    mat.is_transparent = false;
+    cube.materials.push_back(std::move(mat));
+
+    Primitive prim;
+    prim.index_count = static_cast<uint32_t>(cube.indices.size());
+    prim.first_index = 0;
+    prim.material_index = 0; 
+    prim.center = glm::vec3(0.0f, 0.0f, 0.0f);
+    cube.o_primitives.push_back(prim); 
+
+    cube.textures.emplace_back();
+    cube.default_sampler = Image::createTextureSampler(physical_device, &logical_device, 1);
+    cube.createDefaultTexture(*this, cube.textures[0], glm::vec4(1.0, 1.0, 1.0, 1.0));
+
     createModel(cube);
     return cube;
+}
+
+void Engine::createRTBox(const std::string& rtbox_path)
+{
+    std::ifstream rtbox_file(rtbox_path);
+    if (!rtbox_file.is_open()) {
+        std::cerr << "Warning: Failed to open rtbox file: " << rtbox_path << std::endl;
+        return;
+    }
+    json config = json::parse(rtbox_file);
+
+    // --- 1. Parse Config ---
+    glm::vec3 pos = {
+        config["position"][0].get<float>(),
+        config["position"][1].get<float>(),
+        config["position"][2].get<float>()
+    };
+    glm::vec3 dim = {
+        config["dimensions"][0].get<float>(),
+        config["dimensions"][1].get<float>(),
+        config["dimensions"][2].get<float>()
+    };
+
+    // Half dimensions for easier vertex placement
+    float w = dim.x / 2.0f;
+    float h = dim.y; // Height is full dimension
+    float d = dim.z / 2.0f;
+    float y_bot = pos.y;
+    float y_top = pos.y + h;
+
+    rt_box.vertices.resize(20); // 5 faces * 4 vertices
+    rt_box.indices.resize(30);  // 5 faces * 6 indices (2 tris)
+
+    // --- 2. Define Vertices (using pos and dim) ---
+    // Floor (Y = y_bot)
+    rt_box.vertices[0].pos = {pos.x - w, y_bot, pos.z - d}; rt_box.vertices[0].normal = {0, 1, 0};
+    rt_box.vertices[1].pos = {pos.x + w, y_bot, pos.z - d}; rt_box.vertices[1].normal = {0, 1, 0};
+    rt_box.vertices[2].pos = {pos.x + w, y_bot, pos.z + d}; rt_box.vertices[2].normal = {0, 1, 0};
+    rt_box.vertices[3].pos = {pos.x - w, y_bot, pos.z + d}; rt_box.vertices[3].normal = {0, 1, 0};
+    // Ceiling (Y = y_top)
+    rt_box.vertices[4].pos = {pos.x - w, y_top, pos.z - d}; rt_box.vertices[4].normal = {0, -1, 0};
+    rt_box.vertices[5].pos = {pos.x + w, y_top, pos.z - d}; rt_box.vertices[5].normal = {0, -1, 0};
+    rt_box.vertices[6].pos = {pos.x + w, y_top, pos.z + d}; rt_box.vertices[6].normal = {0, -1, 0};
+    rt_box.vertices[7].pos = {pos.x - w, y_top, pos.z + d}; rt_box.vertices[7].normal = {0, -1, 0};
+    // Back Wall (Z = pos.z - d)
+    rt_box.vertices[8].pos = {pos.x - w, y_bot, pos.z - d}; rt_box.vertices[8].normal = {0, 0, 1};
+    rt_box.vertices[9].pos = {pos.x + w, y_bot, pos.z - d}; rt_box.vertices[9].normal = {0, 0, 1};
+    rt_box.vertices[10].pos = {pos.x + w, y_top, pos.z - d}; rt_box.vertices[10].normal = {0, 0, 1};
+    rt_box.vertices[11].pos = {pos.x - w, y_top, pos.z - d}; rt_box.vertices[11].normal = {0, 0, 1};
+    // Left Wall (X = pos.x - w)
+    rt_box.vertices[12].pos = {pos.x - w, y_bot, pos.z + d}; rt_box.vertices[12].normal = {1, 0, 0};
+    rt_box.vertices[13].pos = {pos.x - w, y_bot, pos.z - d}; rt_box.vertices[13].normal = {1, 0, 0};
+    rt_box.vertices[14].pos = {pos.x - w, y_top, pos.z - d}; rt_box.vertices[14].normal = {1, 0, 0};
+    rt_box.vertices[15].pos = {pos.x - w, y_top, pos.z + d}; rt_box.vertices[15].normal = {1, 0, 0};
+    // Right Wall (X = pos.x + w)
+    rt_box.vertices[16].pos = {pos.x + w, y_bot, pos.z - d}; rt_box.vertices[16].normal = {-1, 0, 0};
+    rt_box.vertices[17].pos = {pos.x + w, y_bot, pos.z + d}; rt_box.vertices[17].normal = {-1, 0, 0};
+    rt_box.vertices[18].pos = {pos.x + w, y_top, pos.z + d}; rt_box.vertices[18].normal = {-1, 0, 0};
+    rt_box.vertices[19].pos = {pos.x + w, y_top, pos.z - d}; rt_box.vertices[19].normal = {-1, 0, 0};
+    
+    for(auto& v : rt_box.vertices) {
+        v.color = {1.f, 1.f, 1.f};
+        v.tex_coord = {0.f, 0.f};
+        v.tex_coord_1 = {0.f, 0.f};
+        v.tangent = {1.f, 0.f, 0.f, 0.f}; // W = 0 for no normal map
+    }
+
+    // Indices (5 faces * 6 indices)
+    rt_box.indices = {
+        0, 3, 2, 2, 1, 0,   // Floor
+        4, 5, 6, 6, 7, 4,   // Ceiling
+        8, 9, 10, 10, 11, 8, // Back
+        12, 13, 14, 14, 15, 12, // Left
+        16, 17, 18, 18, 19, 16  // Right
+    };
+    
+    // --- 3. Helper to create materials from JSON ---
+    auto createMatFromJson = [&](const json& mat_config) -> Material {
+        Material mat;
+        mat.base_color_factor = glm::vec4(
+            1.0f
+        );
+        mat.metallic_factor = mat_config.value("metallic", 0.0f);
+        mat.roughness_factor = mat_config.value("roughness", 1.0f);
+        mat.emissive_factor = glm::vec3(0.0f); // All materials are non-emissive
+        mat.albedo_texture_index = -1;
+        mat.is_transparent = false;
+        return mat;
+    };
+
+    // --- 4. Create Materials, Primitives, and Lights ---
+    
+    // Clear old data
+    rt_box.materials.clear();
+    rt_box.o_primitives.clear();
+    panel_lights.clear();
+    panel_lights_on.clear();
+
+    std::vector<std::string> panel_names = {"floor", "ceiling", "back_wall", "left_wall", "right_wall"};
+    std::vector<glm::vec4> light_positions = {
+        glm::vec4(pos.x, y_bot + 0.1f, pos.z, 0.0f),     // Floor light
+        glm::vec4(pos.x, y_top - 0.1f, pos.z, 0.0f),     // Ceiling light
+        glm::vec4(pos.x, pos.y + h/2.0f, pos.z - d + 0.1f, 0.0f), // Back light
+        glm::vec4(pos.x - w + 0.1f, pos.y + h/2.0f, pos.z, 0.0f), // Left light
+        glm::vec4(pos.x + w - 0.1f, pos.y + h/2.0f, pos.z, 0.0f)  // Right light
+    };
+
+    for (int i = 0; i < 5; ++i) {
+        const std::string& name = panel_names[i];
+        const json& panel_config = config["panels"][name];
+
+        // Create material
+        rt_box.materials.push_back(createMatFromJson(panel_config["material"]));
+        
+        // Create primitive (indices are 6 per face, starting at 0, 6, 12, etc.)
+        rt_box.o_primitives.push_back({
+            static_cast<uint32_t>(i * 6), // first_index
+            6,                            // index_count
+            i                             // material_index
+        });
+
+        // Create light
+        float intensity = panel_config["light"].value("intensity", 0.0f);
+        glm::vec3 color = {
+            panel_config["material"]["base_color"][0].get<float>(),
+            panel_config["material"]["base_color"][1].get<float>(),
+            panel_config["material"]["base_color"][2].get<float>()
+        };
+
+        Pointlight light;
+        light.position = light_positions[i];
+        light.color = glm::vec4(color, intensity);
+        panel_lights.push_back(light);
+        
+        // Add toggle state
+        panel_lights_on.push_back(true); // Default to ON
+    }
+
+    // --- 5. GPU Resources ---
+    rt_box.textures.emplace_back();
+    rt_box.default_sampler = Image::createTextureSampler(physical_device, &logical_device, 1);
+    rt_box.createDefaultTexture(*this, rt_box.textures[0], glm::vec4(1.0, 1.0, 1.0, 1.0));
+    createModel(rt_box); // Upload to GPU
 }
 
 // Simple barrier helper
@@ -305,6 +540,41 @@ void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action,
         case Action::MAJ_RAD_DOWN: input.maj_rad_down = pressed; break;
         case Action::MIN_RAD_UP: input.min_rad_up = pressed; break;
         case Action::MIN_RAD_DOWN: input.min_rad_down = pressed; break;
+        
+        case Action::DEBUG_LIGHTS: 
+            if (action == GLFW_PRESS)
+                engine->debug_lights = !engine->debug_lights; 
+            break;
+            
+        case Action::TOGGLE_FLOOR_LIGHT:
+            if (action == GLFW_PRESS && !engine->panel_lights_on.empty())
+                engine->panel_lights_on[0] = !engine->panel_lights_on[0];
+            break;
+        case Action::TOGGLE_CEILING_LIGHT:
+            if (action == GLFW_PRESS && engine->panel_lights_on.size() > 1)
+                engine->panel_lights_on[1] = !engine->panel_lights_on[1];
+            break;
+        case Action::TOGGLE_BACK_LIGHT:
+            if (action == GLFW_PRESS && engine->panel_lights_on.size() > 2)
+                engine->panel_lights_on[2] = !engine->panel_lights_on[2];
+            break;
+        case Action::TOGGLE_LEFT_LIGHT:
+            if (action == GLFW_PRESS && engine->panel_lights_on.size() > 3)
+                engine->panel_lights_on[3] = !engine->panel_lights_on[3];
+            break;
+        case Action::TOGGLE_RIGHT_LIGHT:
+            if (action == GLFW_PRESS && engine->panel_lights_on.size() > 4)
+                engine->panel_lights_on[4] = !engine->panel_lights_on[4];
+            break;
+        
+        case Action::TOGGLE_EMISSIVE:
+            if (action == GLFW_PRESS)
+                engine->use_emissive_lights = !engine->use_emissive_lights;
+            break;
+        case Action::TOGGLE_MANUAL:
+            if (action == GLFW_PRESS)
+                engine->use_manual_lights = !engine->use_manual_lights;
+            break;
     }
 
     input.consumed  = (input.speed_up || input.speed_down || 
@@ -383,6 +653,7 @@ bool Engine::initVulkan(){
     // Get device and queues
     physical_device = Device::pickPhysicalDevice(*this);
     mssa_samples = getMaxUsableSampleCount();
+    // mssa_samples = vk::SampleCountFlagBits::e4; // HARD-CODED FOR FULLSCREEN
     logical_device = Device::createLogicalDevice(*this, queue_indices); 
     graphics_queue = Device::getQueue(*this, queue_indices.graphics_family.value());
     present_queue = Device::getQueue(*this, queue_indices.present_family.value());
@@ -403,11 +674,15 @@ bool Engine::initVulkan(){
     allocator_info.device = *logical_device;
     allocator_info.instance = *instance;              
     allocator_info.vulkanApiVersion = VK_API_VERSION_1_4;
-    allocator_info.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    allocator_info.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT |
+                           VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
     VkResult res = vmaCreateAllocator(&allocator_info, &vma_allocator);
     if (res != VK_SUCCESS) {
         throw std::runtime_error("vmaCreateAllocator failed");
     }
+    
+    std::cout << "Memory status after creation" << std::endl;
+    printGpuMemoryUsage();
 
     // Command creation
     createCommandPool();
@@ -418,14 +693,33 @@ bool Engine::initVulkan(){
                     vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment, 
                 vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
     color_image.image_view = Image::createImageView(color_image, *this);
+    std::cout << "Memory usage color image creation" << std::endl;
+    printGpuMemoryUsage();
     Image::createDepthResources(physical_device, depth_image, swapchain.extent.width, swapchain.extent.height, *this);
+    std::cout << "Memory usage after depth image creation" << std::endl;
+    printGpuMemoryUsage();
     createOITResources();
+    std::cout << "Memory usage after OIT resources creation" << std::endl;
+    printGpuMemoryUsage();
 
     // PIPELINE CREATION
     createPipelines();
 
     loadObjects("resources/scene.json");
+    std::cout << "Memory status loading objects in scene" << std::endl;
+    printGpuMemoryUsage();
+
     debug_cube = createDebugCube();
+    
+    // Assign the opaque PBR pipeline to the debug cube
+    PipelineKey p_key;
+    p_key.v_shader = v_shader_pbr;
+    p_key.f_shader = f_shader_pbr;
+    p_key.mode = TransparencyMode::OPAQUE;
+    p_key.cull_mode = vk::CullModeFlagBits::eBack;
+    debug_cube.o_pipeline = &p_p_map[p_key];
+
+
     createTorusModel();
 
     createUniformBuffers();
@@ -520,7 +814,6 @@ void Engine::createCommandPool(){
 void Engine::createPipelines()
 {
     // Creating the pipeline of the objects in the scene
-    // Here, we fill the pipeline key -> pipeline obj map to later use it with the objects
 
     // Pipeline of pbr objects
     PipelineKey p_key;
@@ -543,12 +836,15 @@ void Engine::createPipelines()
         // Binding 5: Emissive
         vk::DescriptorSetLayoutBinding(5, vk::DescriptorType::eCombinedImageSampler, 1,
                                        vk::ShaderStageFlagBits::eFragment, nullptr),
-        // Binding 6: Clearcoat Texture <-- REMOVED
-        // vk::DescriptorSetLayoutBinding(6, vk::DescriptorType::eCombinedImageSampler, 1, 
-        //                             vk::ShaderStageFlagBits::eFragment, nullptr),
-        // Binding 7: Clearcoat Roughness Texture <-- REMOVED
-        // vk::DescriptorSetLayoutBinding(7, vk::DescriptorType::eCombinedImageSampler, 1,
-        //                             vk::ShaderStageFlagBits::eFragment, nullptr)
+        // Binding 6: Transmission
+        vk::DescriptorSetLayoutBinding(6, vk::DescriptorType::eCombinedImageSampler, 1,
+                                        vk::ShaderStageFlagBits::eFragment, nullptr),
+        // Binding 7: Clearcoat
+        vk::DescriptorSetLayoutBinding(7, vk::DescriptorType::eCombinedImageSampler, 1,
+                                        vk::ShaderStageFlagBits::eFragment, nullptr),
+        // Binding 8: Clearcoat Roughness
+        vk::DescriptorSetLayoutBinding(8, vk::DescriptorType::eCombinedImageSampler, 1,
+                                        vk::ShaderStageFlagBits::eFragment, nullptr),
     };
     
     // Key definition
@@ -620,17 +916,43 @@ void Engine::loadObjects(const std::string &scene_path)
     // Parse the JSON data
     json scene_data = json::parse(scene_file);
 
+    // --- 1. Parse Settings ---
+    float emissive_multiplier = 1.0f;
+    std::string lights_path = "";
+    std::string rtbox_path = "";
+
+    if (scene_data.contains("settings")) {
+        const auto& settings = scene_data["settings"];
+        this->use_manual_lights = settings.value("use_manual_lights", false);
+        this->use_emissive_lights = settings.value("use_emissive_lights", false);
+        emissive_multiplier = settings.value("emissive_intensity_multiplier", 1.0f);
+        lights_path = settings.value("lights_file", "");
+        this->use_rt_box = settings.value("use_rt_box", false);
+        rtbox_path = settings.value("rt_box_file", "");
+    }
+
+    // --- 2. Load Manual Lights ---
+    if (use_manual_lights && !lights_path.empty()) {
+        loadManualLights(lights_path);
+    } else if (use_manual_lights && lights_path.empty()) {
+        std::cerr << "Warning: 'use_manual_lights' is true but no 'lights_file' was specified." << std::endl;
+    }
+
+    // --- 3. Load Objects ---
+    if (!scene_data.contains("objects")) {
+        std::cout << "Warning: Scene file contains no 'objects' array." << std::endl;
+        return;
+    }
+
     // Iterate over each object definition in the JSON
-    for (const auto& obj_def : scene_data) {
+    emissive_lights.clear();
+    for (const auto& obj_def : scene_data["objects"]) {
         P_object new_object;
 
         std::string model_path = obj_def["model"];
         new_object.loadModel(model_path, *this);
         
-        // Create the GPU buffer for the model
         createModel(new_object);
-
-       //  new_object.createMaterialDescriptorSets(*this);
 
         // Set the object's transform from the JSON data
         if (obj_def.contains("position")) {
@@ -655,27 +977,97 @@ void Engine::loadObjects(const std::string &scene_path)
             });
         }
 
-        // Pipeline creation
+        // --- (Pipeline assignment logic - unchanged) ---
         PipelineKey p_key;
         p_key.v_shader = "shaders/basic/vertex.spv";
         p_key.f_shader = "shaders/basic/fragment.spv";
         p_key.mode = TransparencyMode::OPAQUE;
         p_key.cull_mode = vk::CullModeFlagBits::eBack;
-
-        if(!p_p_map.contains(p_key)){
-            std::cout << "Error! Pipeline not present\nPipeline info: v_shader->" << p_key.v_shader << " f_shader->" <<
-            p_key.f_shader << std::endl;
-        }
+        if(!p_p_map.contains(p_key)){ /* ... error ... */ }
         new_object.o_pipeline = &p_p_map[p_key];
         p_key.mode = TransparencyMode::OIT_WRITE;
         p_key.f_shader = f_shader_oit_write;
         new_object.t_pipeline = &p_p_map[p_key];
+        // --- (End pipeline logic) ---
+
+        // --- 4. Load Emissive Lights (if enabled) ---
+        if (use_emissive_lights) {
+            auto new_lights = new_object.createEmissiveLights(emissive_multiplier);
+            // Append new lights to our master list
+            emissive_lights.insert(emissive_lights.end(), new_lights.begin(), new_lights.end());
+        }
+
+        if (this->use_rt_box && !rtbox_path.empty()) {
+            createRTBox(rtbox_path); // Create the box
+            
+            // --- We must assign its pipelines here! ---
+            PipelineKey p_key;
+            p_key.v_shader = v_shader_pbr;
+            p_key.f_shader = f_shader_pbr;
+            p_key.mode = TransparencyMode::OPAQUE;
+            p_key.cull_mode = vk::CullModeFlagBits::eBack;
+            rt_box.o_pipeline = &p_p_map[p_key];
+
+            PipelineKey p_key_trans = p_key;
+            p_key_trans.f_shader = f_shader_oit_write;
+            p_key_trans.mode = TransparencyMode::OIT_WRITE;
+            rt_box.t_pipeline = &p_p_map[p_key_trans];
+            // --- End pipeline assignment ---
+            
+        } else if (this->use_rt_box && rtbox_path.empty()) {
+            std::cerr << "Warning: 'use_rt_box' is true but no 'rt_box_file' was specified." << std::endl;
+        }
 
         scene_objs.emplace_back(std::move(new_object));
+    }
+}
 
-        // TO REMOVE
-        /* std::vector<Gameobject>& arr = p_o_map[p_key];
-        arr.emplace_back(std::move(new_object)); */
+
+void Engine::loadManualLights(const std::string& lights_path)
+{
+    std::ifstream lights_file(lights_path);
+    if (!lights_file.is_open()) {
+        std::cerr << "Warning: Failed to open lights file: " << lights_path << std::endl;
+        return;
+    }
+    
+    json lights_data = json::parse(lights_file);
+
+    manual_lights.clear();
+
+    for (const auto& light_def : lights_data) {
+        // Stop if we've filled the UBO
+        if (ubo.curr_num_pointlights >= MAX_POINTLIGHTS) {
+            std::cerr << "Warning: Reached maximum point lights (" << MAX_POINTLIGHTS 
+                      << "). Skipping remaining lights in file." << std::endl;
+            break;
+        }
+
+        std::string type = light_def.value("type", "pointlight");
+
+        if (type == "pointlight") {
+            int light_index = ubo.curr_num_pointlights;
+
+            // Get position
+            glm::vec3 pos(0.0f);
+            if (light_def.contains("position")) {
+                pos = {light_def["position"][0], light_def["position"][1], light_def["position"][2]};
+            }
+            
+            // Get color
+            glm::vec3 color(1.0f);
+            if (light_def.contains("color")) {
+                color = {light_def["color"][0], light_def["color"][1], light_def["color"][2]};
+            }
+
+            // Get intensity
+            float intensity = light_def.value("intensity", 1.0f);
+
+            Pointlight new_light;
+            new_light.position = glm::vec4(pos, 0.0f);
+            new_light.color = glm::vec4(color, intensity);
+            manual_lights.push_back(new_light);
+        }
     }
 }
 
@@ -735,6 +1127,10 @@ void Engine::createDescriptorPool()
         total_materials += obj.materials.size();
     }
     // total_materials += torus.materials.size(); // Add torus materials
+    total_materials += debug_cube.materials.size();
+    if (use_rt_box) {
+        total_materials += rt_box.materials.size();
+    }
 
     // We now allocate per-material, not per-object
     uint32_t total_sets = total_materials * MAX_FRAMES_IN_FLIGHT;
@@ -742,8 +1138,8 @@ void Engine::createDescriptorPool()
     // This MUST match your descriptor set layout
     std::vector<vk::DescriptorPoolSize> pool_sizes = {
         vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, total_sets),
-        // 5 samplers (Albedo, Normal, Met/Rough, AO, Emissive) per set
-        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_sets * 5),
+        // 8 samplers (Albedo, Normal, Met/Rough, AO, Emissive, Transmission, Clearcoat, Clearcoat Roughness) per set
+        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_sets * 8),
         // We need 1 set per frame for the PPLL buffers
         // 1 storage image, 2 storage buffers per set
         vk::DescriptorPoolSize(vk::DescriptorType::eStorageImage, MAX_FRAMES_IN_FLIGHT),
@@ -763,6 +1159,11 @@ void Engine::createDescriptorSets()
 {
     for(auto& obj : scene_objs){
         obj.createMaterialDescriptorSets(*this);
+    }
+
+    debug_cube.createMaterialDescriptorSets(*this);
+    if (use_rt_box) {
+        rt_box.createMaterialDescriptorSets(*this);
     }
 
     // torus.createMaterialDescriptorSets(*this);
@@ -801,7 +1202,10 @@ void Engine::createSyncObjects(){
 
 
 void Engine::createOITResources(){
-    oit_max_fragments = swapchain.extent.width * swapchain.extent.height * 50;
+    int avg_fragments_per_sample = 8;
+
+    oit_max_fragments = swapchain.extent.width * swapchain.extent.height * static_cast<int>(mssa_samples) *
+                        avg_fragments_per_sample;
 
     // 2. Atomic Counter Buffer
     // Initialized to 0 before OIT pass
@@ -826,7 +1230,7 @@ void Engine::createOITResources(){
     // 4. Start Offset Image (Head Pointer)
     // Initialized to 0xFFFFFFFF before OIT pass
     oit_start_offset_image = Image::createImage(
-        swapchain.extent.width, swapchain.extent.height, 1, vk::SampleCountFlagBits::e1,
+        swapchain.extent.width, swapchain.extent.height, 1, mssa_samples,
         vk::Format::eR32Uint, // 32-bit unsigned int per pixel
         vk::ImageTiling::eOptimal,
         vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferDst, // Storage image + clear
@@ -946,8 +1350,6 @@ void Engine::recordCommandBuffer(uint32_t image_index){
 
     // --- 1. GATHER TRANSPARENTS ---
     transparent_draws.clear();
-    // We still gather all transparent primitives, but sorting is no longer needed
-    // as the PPLL composite shader will handle sorting on the GPU.
     for(auto& obj : scene_objs){
         if (!obj.t_primitives.empty()) {
             for(const auto& primitive : obj.t_primitives) {
@@ -956,11 +1358,8 @@ void Engine::recordCommandBuffer(uint32_t image_index){
             }
         }
     }
-    // std::sort(transparent_draws.begin(), transparent_draws.end()); // <-- NO LONGER NEEDED
 
     // --- 2. OPAQUE PASS ---
-    // Renders to msaa color_image and msaa depth_image
-    // This pass is identical to your original implementation.
     {
         // Transition swapchain image (for final resolve)
         transition_image_layout(
@@ -1046,6 +1445,10 @@ void Engine::recordCommandBuffer(uint32_t image_index){
                 p_const.occlusion_strength = material.occlusion_strength;
                 p_const.specular_factor = material.specular_factor;
                 p_const.specular_color_factor = material.specular_color_factor;
+                p_const.transmission_factor = material.transmission_factor;
+                p_const.alpha_cutoff = material.alpha_cutoff;
+                p_const.clearcoat_factor = material.clearcoat_factor;
+                p_const.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
 
                 cmd.pushConstants<MaterialPushConstant>(*obj.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
 
@@ -1056,6 +1459,97 @@ void Engine::recordCommandBuffer(uint32_t image_index){
                 cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
             }
         }
+
+        if (use_rt_box && rt_box.o_pipeline && !rt_box.o_primitives.empty())
+        {
+            // Bind pipeline ONCE
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *rt_box.o_pipeline->pipeline);
+            
+            // Bind geometry ONCE
+            cmd.bindVertexBuffers(0, {rt_box.geometry_buffer.buffer}, {0});
+            cmd.bindIndexBuffer(rt_box.geometry_buffer.buffer, rt_box.index_buffer_offset, vk::IndexType::eUint32);
+            
+            // Push vertex constant (model matrix) ONCE
+            cmd.pushConstants<glm::mat4>(*rt_box.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, rt_box.model_matrix);
+            
+            // The RT box is not double-sided, so we set cull mode to back-face
+            // This is correct because our vertices are wound for inward-facing normals
+            cmd.setCullMode(vk::CullModeFlagBits::eBack);
+
+            // Loop through the 5 primitives (floor, ceil, back, left, right)
+            for(auto& primitive : rt_box.o_primitives)
+            {
+                const Material& material = rt_box.materials[primitive.material_index];
+
+                // Bind material descriptor set
+                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *rt_box.o_pipeline->layout, 0, {*material.descriptor_sets[current_frame]}, {});
+
+                // Setup material push constant
+                MaterialPushConstant p_const;
+                p_const.base_color_factor = material.base_color_factor;
+                p_const.metallic_factor = material.metallic_factor;
+                p_const.roughness_factor = material.roughness_factor;
+                p_const.occlusion_strength = material.occlusion_strength;
+                p_const.specular_factor = material.specular_factor;
+                p_const.specular_color_factor = material.specular_color_factor;
+                p_const.transmission_factor = material.transmission_factor;
+                p_const.alpha_cutoff = material.alpha_cutoff;
+                p_const.clearcoat_factor = material.clearcoat_factor;
+                p_const.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
+                p_const.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 0.f);
+
+                cmd.pushConstants<MaterialPushConstant>(*rt_box.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
+                
+                // Draw
+                cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
+            }
+        }
+
+        if (debug_lights && debug_cube.o_pipeline && !debug_cube.o_primitives.empty())
+        {
+            // Bind pipeline ONCE
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *debug_cube.o_pipeline->pipeline);
+            
+            // Bind geometry ONCE
+            cmd.bindVertexBuffers(0, {debug_cube.geometry_buffer.buffer}, {0});
+            cmd.bindIndexBuffer(debug_cube.geometry_buffer.buffer, debug_cube.index_buffer_offset, vk::IndexType::eUint32);
+
+            // Get material and bind descriptor set ONCE
+            const Material& material = debug_cube.materials[0];
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *debug_cube.o_pipeline->layout, 0, {*material.descriptor_sets[current_frame]}, {});
+
+            // Setup and push fragment push constant ONCE
+            MaterialPushConstant p_const;
+            p_const.base_color_factor = material.base_color_factor;
+            p_const.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 0.0f);
+            p_const.metallic_factor = material.metallic_factor;
+            p_const.roughness_factor = material.roughness_factor;
+            p_const.occlusion_strength = 1.0f; // Use default
+            p_const.specular_factor = 0.5f; // Use default
+            p_const.specular_color_factor = glm::vec3(1.f); // Use default
+            p_const.transmission_factor = 0.0f;
+            p_const.alpha_cutoff = 0.0f;
+            p_const.clearcoat_factor = 0.0f;
+            p_const.clearcoat_roughness_factor = 0.0f;
+            
+            cmd.pushConstants<MaterialPushConstant>(*debug_cube.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
+
+            // Loop through lights
+            for(int i = 0; i < ubo.curr_num_pointlights; i++)
+            {
+                // Create model matrix for this light
+                // Translate to its position and scale it down
+                glm::mat4 model_matrix = glm::translate(glm::mat4(1.0f), glm::vec3(ubo.pointlights[i].position));
+                model_matrix = glm::scale(model_matrix, glm::vec3(0.5f)); // 0.5m cubes
+
+                // Push vertex constant (model matrix)
+                cmd.pushConstants<glm::mat4>(*debug_cube.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, model_matrix);
+
+                // Draw
+                cmd.drawIndexed(debug_cube.o_primitives[0].index_count, 1, debug_cube.o_primitives[0].first_index, 0, 0);
+            }
+        }
+
         cmd.endRendering();
     }
 
@@ -1150,6 +1644,10 @@ void Engine::recordCommandBuffer(uint32_t image_index){
                 p_const.occlusion_strength = material.occlusion_strength;
                 p_const.specular_factor = material.specular_factor;
                 p_const.specular_color_factor = material.specular_color_factor;
+                p_const.transmission_factor = material.transmission_factor;
+                p_const.alpha_cutoff = material.alpha_cutoff;
+                p_const.clearcoat_factor = material.clearcoat_factor;
+                p_const.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
 
 
                 cmd.pushConstants<MaterialPushConstant>(*pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
@@ -1173,7 +1671,6 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     }
 
     // --- 4. RESOLVE PASS ---
-    // This pass is no longer needed with PPLL.
     // We add a barrier to ensure all SSBO writes from the OIT Write pass
     // are finished before the Composite pass reads from them.
     {
@@ -1335,15 +1832,41 @@ void Engine::drawFrame(){
 
 void Engine::updateUniformBuffer(uint32_t current_image)
 {
-    UniformBufferObject ubo{};
-    // ubo.model = glm::scale(glm::mat4(1.0f), glm::vec3(1.f));
-    // ubo.model = glm::rotate(ubo.model, glm::radians(-90.f), glm::vec3(1.f, 0.f, 0.f));
-
     ubo.view = camera.getViewMatrix();
 
     ubo.proj = camera.getProjectionMatrix();
 
     ubo.camera_pos = camera.getCurrentState().f_camera.position;
+
+    ubo.curr_num_pointlights = 0;
+    auto& lights = ubo.pointlights; // Get a reference to the array
+
+    // 1. Add Manual Lights (if enabled)
+    if (use_manual_lights) {
+        for (const auto& light : manual_lights) {
+            if (ubo.curr_num_pointlights >= MAX_POINTLIGHTS) break;
+            lights[ubo.curr_num_pointlights++] = light;
+        }
+    }
+
+    // 2. Add Emissive Lights (if enabled)
+    if (use_emissive_lights) {
+        for (const auto& light : emissive_lights) {
+            if (ubo.curr_num_pointlights >= MAX_POINTLIGHTS) break;
+            lights[ubo.curr_num_pointlights++] = light;
+        }
+    }
+
+    // 3. Add Panel Lights (if enabled)
+    for (int i = 0; i < panel_lights.size(); ++i) {
+        if (panel_lights_on[i]) {
+            if (ubo.curr_num_pointlights < MAX_POINTLIGHTS) {
+                lights[ubo.curr_num_pointlights++] = panel_lights[i];
+            } else {
+                break;
+            }
+        }
+    }
 
     memcpy(uniform_buffers_mapped[current_image], &ubo, sizeof(ubo));
 }
@@ -1367,6 +1890,25 @@ void Engine::recreateSwapChain(){
     // vkDestroyImageView(*logical_device, depth_image.image_view, nullptr);
     vmaDestroyImage(vma_allocator, depth_image.image, depth_image.allocation);
     Image::createDepthResources(physical_device, depth_image, swapchain.extent.width, swapchain.extent.height, *this);
+
+    vmaDestroyImage(vma_allocator, color_image.image, color_image.allocation);
+    color_image = Image::createImage(swapchain.extent.width, swapchain.extent.height,
+                        1, mssa_samples, swapchain.format, vk::ImageTiling::eOptimal, 
+                    vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment, 
+                vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
+    color_image.image_view = Image::createImageView(color_image, *this);
+
+
+    vmaDestroyBuffer(vma_allocator, oit_atomic_counter_buffer.buffer, oit_atomic_counter_buffer.allocation);
+    vmaDestroyBuffer(vma_allocator, oit_fragment_list_buffer.buffer, oit_fragment_list_buffer.allocation);
+    vmaDestroyImage(vma_allocator, oit_start_offset_image.image, oit_start_offset_image.allocation);
+    createOITResources();
+    createOITDescriptorSets();
+
+    camera.modAspectRatio(swapchain.extent.width * 1.0 / swapchain.extent.height);
+
+    std::cout << "Memory After Swapchain Recreation" << std::endl;
+    printGpuMemoryUsage();
 
 }
 

@@ -66,7 +66,14 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
 
     vk::PipelineMultisampleStateCreateInfo multisampling;
     multisampling.rasterizationSamples = engine.mssa_samples;
-    multisampling.sampleShadingEnable = vk::False;
+    if (mode == TransparencyMode::OIT_WRITE || mode == TransparencyMode::OIT_COMPOSITE) {
+        // OIT Write AND Composite passes MUST run per-sample.
+        multisampling.sampleShadingEnable = vk::True;
+        multisampling.minSampleShading = 1.0f; // Force per-sample
+    } else {
+        // OPAQUE pass
+        multisampling.sampleShadingEnable = vk::False;
+    }
 
     vk::PipelineDepthStencilStateCreateInfo depth_stencil = {};
     if(mode == TransparencyMode::OIT_COMPOSITE){

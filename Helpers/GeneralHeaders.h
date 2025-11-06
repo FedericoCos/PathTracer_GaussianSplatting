@@ -199,6 +199,7 @@ struct Material {
     int metallic_roughness_texture_index = 0;
     int occlusion_texture_index = 0;
     int emissive_texture_index = 0;  
+    int transmission_texture_index = 0;
     int clearcoat_texture_index = 0;
     int clearcoat_roughness_texture_index = 0;
 
@@ -210,6 +211,8 @@ struct Material {
     float occlusion_strength = 1.0f;
     glm::vec3 specular_color_factor = glm::vec3(1.f);
     float specular_factor = 0.5f;
+    float transmission_factor = 0.0f;
+    float alpha_cutoff = 0.0f;
     float clearcoat_factor = 0.0f;
     float clearcoat_roughness_factor = 0.0f;
 
@@ -220,20 +223,22 @@ struct Material {
     std::vector<vk::raii::DescriptorSet> descriptor_sets;
 };
 
-// Create a new struct for Fragment Push Constants
-// This is the small packet of data we'll send to the fragment shader per-draw
 struct MaterialPushConstant {
     glm::vec4 base_color_factor;          // 16
+
     glm::vec4 emissive_factor_and_pad;    // 16
+
     float   metallic_factor;              // 4
     float   roughness_factor;             // 4
     float   occlusion_strength;           // 4  
     float specular_factor;                // 4
+
     glm::vec3 specular_color_factor;      // 12
-    float pad;                            // 4
+    float alpha_cutoff;                   // 4
+
+    float transmission_factor;            // 4
     float clearcoat_factor;               // 4
     float clearcoat_roughness_factor;     // 4
-    // Add other flags as needed
 };
 
 struct Primitive {
@@ -244,12 +249,25 @@ struct Primitive {
     glm::vec3 center;
 };
 
+const size_t MAX_POINTLIGHTS = 100;
+
+struct Pointlight{
+    glm::vec4 position; // fourth value is for padding
+    glm::vec4 color;
+};
+
 
 struct UniformBufferObject {
     // glm::mat4 model;
     glm::mat4 view;
+
     glm::mat4 proj;
+
     glm::vec3 camera_pos;
+    float padding;
+    
+    std::array<Pointlight, MAX_POINTLIGHTS> pointlights;
+    int curr_num_pointlights = 0;
 };
 
 struct QueueFamilyIndices {
@@ -282,6 +300,15 @@ enum class Action{
     MAJ_RAD_UP, MAJ_RAD_DOWN,
     MIN_RAD_UP, MIN_RAD_DOWN,
     HEIGHT_UP, HEIGHT_DOWN,
+
+    DEBUG_LIGHTS,
+    TOGGLE_FLOOR_LIGHT,
+    TOGGLE_CEILING_LIGHT,
+    TOGGLE_BACK_LIGHT,
+    TOGGLE_LEFT_LIGHT,
+    TOGGLE_RIGHT_LIGHT,
+    TOGGLE_EMISSIVE,
+    TOGGLE_MANUAL
 };
 
 struct InputState{
@@ -395,7 +422,6 @@ struct PipelineInfo {
     PipelineInfo(const PipelineInfo&) = delete;
     PipelineInfo& operator=(const PipelineInfo&) = delete;
 };
-
 
 // ------ Helper Functions
 

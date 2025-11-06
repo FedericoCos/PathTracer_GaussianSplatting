@@ -1,3 +1,19 @@
-[
-  { "model": "resources/subway/scene.gltf", "position": [0.0, 0.0, 0.0], "scale": [1, 1, 1], "rotation": [0.0, 0.0, 0.0] }
-]
+{
+  "settings": {
+    "lights_file": "resources/lights.json",
+    "use_manual_lights": false,
+    "use_emissive_lights": true,
+    "emissive_intensity_multiplier": 40.0,
+
+    "use_rt_box": true,
+    "rt_box_file": "resources/rtbox.json"
+  },
+  "objects": [
+    {
+      "model": "resources/battle/scene.gltf",
+      "position": [0.0, 0.0, 0.0],
+      "scale": [10, 10, 10],
+      "rotation": [0.0, 0.0, 0.0]
+    }
+  ]
+}

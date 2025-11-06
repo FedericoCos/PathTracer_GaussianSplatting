@@ -17,14 +17,17 @@ public:
 
     glm::mat4& getViewMatrix();
     glm::mat4& getProjectionMatrix();
-
-    
     
 
     void update(float &dtime, InputState &input, float &r, float &h);
     void freeCameraUpdate(float &dtime, InputState &input);
     void toroidalUpdate(float &dtime, InputState &input, float &r, float &h);
     void reset();
+
+    void modAspectRatio(float aspect_ratio){
+        current.aspect_ratio = aspect_ratio;
+        original.aspect_ratio = aspect_ratio;
+    }
 
     void modSpeed(float ds){
         std::cout << "Modifying camera speed" << std::endl;

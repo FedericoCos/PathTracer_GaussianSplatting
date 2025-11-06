@@ -1,10 +1,16 @@
 #version 450
 
+struct PointLight {
+    vec4 position;
+    vec4 color;
+};
 // --- UNIFORMS ---
 layout(binding = 0) uniform UniformBufferObject {
     mat4 view;
     mat4 proj;
     vec3 cameraPos;
+    PointLight[100] pointlights;
+    int cur_num_pointlights;
 } ubo;
 
 layout(binding = 1) uniform sampler2D albedoSampler;
@@ -12,43 +18,38 @@ layout(binding = 2) uniform sampler2D normalSampler;
 layout(binding = 3) uniform sampler2D metallicRoughnessSampler;
 layout(binding = 4) uniform sampler2D occlusionSampler;
 layout(binding = 5) uniform sampler2D emissiveSampler;
-// Bindings 6 and 7 (clearcoat) are now removed
+layout(binding = 6) uniform sampler2D transmissionSampler; // Unused in opaque, but binding must exist
+layout(binding = 7) uniform sampler2D clearcoatSampler;
+layout(binding = 8) uniform sampler2D clearcoatRoughnessSampler;
 
 // --- FRAGMENT PUSH CONSTANT ---
 layout(push_constant) uniform FragPushConstants {
     layout(offset = 64)
     vec4 base_color_factor;
-    vec4 emissive_factor; // .a is unused padding
+    vec4 emissive_factor;
     float metallic_factor;
     float roughness_factor;
     float occlusion_strength;
     float specular_factor;
     vec3 specular_color_factor;
-    // clearcoat_factor and clearcoat_roughness_factor removed
+    float alpha_cutoff;
+    float transmission_factor; // Unused in opaque
+    float clearcoat_factor;
+    float clearcoat_roughness_factor;
 } material;
-
 // --- INPUTS (from vertex shader) ---
 layout(location = 6) in vec3 fragWorldPos;
 layout(location = 7) in vec3 fragWorldNormal;
 layout(location = 8) in vec2 fragTexCoord;
 layout(location = 9) in mat3 fragTBN;
-layout(location = 12) in vec3 fragColor; // Vertex color
+layout(location = 12) in vec3 fragColor;
 layout(location = 13) in vec2 fragTexCoord1;
 layout(location = 14) in float fragInTangentW;
-
 // --- OUTPUT ---
 layout(location = 0) out vec4 outColor;
 
 // --- PBR Constants ---
 const float PI = 3.14159265359;
-
-// --- Light Struct ---
-struct PointLight {
-    vec3 position;
-    vec3 color;
-    float intensity;
-};
-
 // --- PBR Helper Functions (Cook-Torrance BRDF) ---
 float D_GGX(vec3 N, vec3 H, float roughness) {
     float a = roughness * roughness;
@@ -58,7 +59,7 @@ float D_GGX(vec3 N, vec3 H, float roughness) {
     float num = a2;
     float denom = (NdotH2 * (a2 - 1.0) + 1.0);
     denom = PI * denom * denom;
-    return num / (denom + 0.0001); // Epsilon to avoid divide by zero
+    return num / (denom + 0.0001);
 }
 
 float G_SchlickGGX(float NdotV, float roughness) {
@@ -84,112 +85,62 @@ vec3 F_Schlick(float cosTheta, vec3 F0) {
 // --- Main Function ---
 void main() {
     // --- 1. Get Material Properties ---
-    
-    // Albedo uses fragTexCoord (TEXCOORD_1)
-    vec4 albedo_tex = texture(albedoSampler, fragTexCoord); // <-- MODIFIED
+    vec4 albedo_tex = texture(albedoSampler, fragTexCoord);
     vec3 albedo = albedo_tex.rgb * material.base_color_factor.rgb * fragColor; 
     float alpha = albedo_tex.a * material.base_color_factor.a;
+    // Alpha masking
+    if (alpha < material.alpha_cutoff) {
+        discard;
+    }
 
-    // Data maps use fragTexCoord (TEXCOORD_0)
     vec2 mr = texture(metallicRoughnessSampler, fragTexCoord).bg; 
     float metallic = mr.x * material.metallic_factor;
     float roughness = mr.y * material.roughness_factor;
-    
     float ao = texture(occlusionSampler, fragTexCoord).r * material.occlusion_strength;
-
-    // Emissive likely uses fragTexCoord (same as Albedo)
-    vec3 emissive = texture(emissiveSampler, fragTexCoord).rgb * material.emissive_factor.xyz; // <-- MODIFIED
-
-    // Clearcoat maps removed
-    
+    vec3 emissive = texture(emissiveSampler, fragTexCoord).rgb * material.emissive_factor.xyz;
+    // --- NEW: Clearcoat Properties ---
+    // We assume clearcoatFactor texture is in .r channel
+    float cc_factor = texture(clearcoatSampler, fragTexCoord).r * material.clearcoat_factor;
+    // We assume clearcoatRoughness texture is in .r channel
+    float cc_roughness = texture(clearcoatRoughnessSampler, fragTexCoord).r * material.clearcoat_roughness_factor;
     // --- 2. Calculate Base Vectors ---
-    vec3 V = normalize(ubo.cameraPos - fragWorldPos); // View
-    vec3 N;               // Base normal
-    
-    // Normal map uses fragTexCoord (TEXCOORD_0)
+    vec3 V = normalize(ubo.cameraPos - fragWorldPos);
+    vec3 N;
     if(fragInTangentW != 0){
         vec3 normal_from_map = texture(normalSampler, fragTexCoord).xyz * 2.0 - 1.0;
         N = normalize(fragTBN * normal_from_map);
     }
     else{
-        N = normalize(fragWorldNormal); 
+        N = normalize(fragWorldNormal);
     }
     float NdotV = max(dot(N, V), 0.0);
-    
     // --- 3. Calculate Base Layer F0 (Reflectivity) ---
     vec3 F0_dielectric = 0.08 * material.specular_factor * material.specular_color_factor;
     vec3 F0 = mix(F0_dielectric, albedo, metallic);
 
     // --- 4. Define Lights ---
-    // 64 point lights for a smaller, denser area
-    const int NUM_POINT_LIGHTS = 64;
-    PointLight pointLights[NUM_POINT_LIGHTS];
-    
-    vec3 lightColor = vec3(1.0, 0.85, 0.7); // Warmish station overhead light
-    float lightIntensity = 4000.0; 
-    float lightY = 75; // High up ceiling lights
-
-    // 8 long rows of 8 lights each, now closer together
-    float startZ = 280.0;       // Starting Z closer to origin
-    float spacingZ = -70.0;    // Reduced Z spacing
-
-    // Row 1 (X = -200)
-    for (int i = 0; i < 8; i++) {
-        pointLights[i] = PointLight(vec3(-200.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
-    }
-    
-    // Row 2 (X = -150)
-    for (int i = 0; i < 8; i++) {
-        pointLights[i + 8] = PointLight(vec3(-150.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
-    }
-
-    // Row 3 (X = -100)
-    for (int i = 0; i < 8; i++) {
-        pointLights[i + 16] = PointLight(vec3(-100.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
-    }
-
-    // Row 4 (X = -50)
-    for (int i = 0; i < 8; i++) {
-        pointLights[i + 24] = PointLight(vec3(-50.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
-    }
-
-    // Row 5 (X = 50)
-    for (int i = 0; i < 8; i++) {
-        pointLights[i + 32] = PointLight(vec3(50.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
-    }
-
-    // Row 6 (X = 100)
-    for (int i = 0; i < 8; i++) {
-        pointLights[i + 40] = PointLight(vec3(100.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
-    }
-
-    // Row 7 (X = 150)
-    for (int i = 0; i < 8; i++) {
-        pointLights[i + 48] = PointLight(vec3(150.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
-    }
-    
-    // Row 8 (X = 200)
-    for (int i = 0; i < 8; i++) {
-        pointLights[i + 56] = PointLight(vec3(200.0, lightY, startZ + i * spacingZ), lightColor, lightIntensity);
-    }
+    // --- REMOVED ---
+    // const int NUM_POINT_LIGHTS = 64;
+    // PointLight pointLights[NUM_POINT_LIGHTS];
+    // ... all hardcoded light definitions ...
+    // --- REMOVED ---
 
 
     // --- 5. Calculate Lighting ---
-    vec3 Lo = vec3(0.0); // "Radiance Out" (final color)
-
-    // --- Point Lights Loop ---
-    for(int i = 0; i < NUM_POINT_LIGHTS; i++)
+    vec3 Lo = vec3(0.0);
+    // --- MODIFIED ---
+    for(int i = 0; i < ubo.cur_num_pointlights; i++)
     {
-        // Calculate L, H, radiance, and NdotL for each light
-        vec3 L = normalize(pointLights[i].position - fragWorldPos);
+        // --- MODIFIED ---
+        vec3 L = normalize(ubo.pointlights[i].position.xyz - fragWorldPos);
         vec3 H = normalize(V + L);
         float NdotL = max(dot(N, L), 0.0);
         float HdotV = max(dot(H, V), 0.0);
-        
-        // Attenuation
-        float distance = length(pointLights[i].position - fragWorldPos);
+        // --- MODIFIED ---
+        float distance = length(ubo.pointlights[i].position.xyz - fragWorldPos);
         float attenuation = 1.0 / (distance * distance);
-        vec3 radiance = pointLights[i].color * pointLights[i].intensity * attenuation;
+        // --- MODIFIED ---
+        vec3 radiance = ubo.pointlights[i].color.rgb * ubo.pointlights[i].color.a * attenuation;
         
         // --- (A) Base Layer (Metallic/Roughness) ---
         float NDF_base = D_GGX(N, H, roughness);
@@ -204,21 +155,30 @@ void main() {
         vec3 specular_base = numerator_base / denominator_base;
         vec3 diffuse_base = (kD_base * albedo / PI);
         
-        // --- (B) Clearcoat Layer (REMOVED) ---
+        // --- (B) Clearcoat Layer --- // --- NEW ---
+        float NDF_coat = D_GGX(N, H, cc_roughness);
+        float G_coat = G_Smith(N, V, L, cc_roughness);
+        // F0 for clearcoat is always dielectric (non-metallic).
+        // 0.04 is standard for IOR 1.5.
+        vec3 F0_coat = vec3(0.04); 
+        vec3 F_coat = F_Schlick(HdotV, F0_coat);
+        vec3 numerator_coat = NDF_coat * G_coat * F_coat;
+        float denominator_coat = 4.0 * NdotV * NdotL + 0.001;
+        vec3 specular_coat = numerator_coat / denominator_coat;
 
-        // --- (C) Combine Layers (SIMPLIFIED) ---
-        vec3 combined_lighting = (diffuse_base + specular_base);
+        // --- (C) Combine Layers --- // --- MODIFIED ---
+        vec3 base_lighting = (diffuse_base + specular_base);
+        // Attenuate the base layer by the clearcoat's reflection (F_coat)
+        // and add the clearcoat's own specular reflection.
+        // Both are scaled by the clearcoat factor.
+        vec3 combined_lighting = base_lighting * (1.0 - cc_factor * F_coat) + specular_coat * cc_factor;
         Lo += combined_lighting * radiance * NdotL;
     }
     
     // --- 6. Final Color ---
-    // Add ambient and emissive
-    vec3 ambient = vec3(0.01) * albedo * ao; // Reduced ambient for dark scene
+    vec3 ambient = vec3(0.05) * albedo * ao;
     vec3 color = ambient + Lo + emissive;
-    
-    // HDR to LDR (Tone Mapping) + Gamma Correction
-    color = color / (color + vec3(1.0)); // Basic Reinhard tone mapping
-    color = pow(color, vec3(1.0/2.2));   // Linear to sRGB
-    
-    outColor = vec4(color, alpha);
+
+    // REMOVED tonemapping and gamma correction
+    outColor = vec4(color, 1.0); // Output raw linear HDR color
 }

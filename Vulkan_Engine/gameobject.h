@@ -15,15 +15,13 @@ public:
     // --- Descriptor sets data ---
     vk::DescriptorSetLayout *descriptor_layout = nullptr;
 
-
-
-
     // --- Rendering Data ---
     AllocatedBuffer geometry_buffer; 
     vk::DeviceSize index_buffer_offset = 0;
 
     std::vector<Primitive> o_primitives; 
     std::vector<Primitive> t_primitives;
+    std::vector<std::pair<glm::vec3, glm::vec3>> emissive_primitives;
     std::vector<Material> materials;
     std::vector<AllocatedImage> textures;
     vk::raii::Sampler default_sampler = nullptr;
@@ -67,6 +65,10 @@ public:
     virtual void loadModel(std::string m_path, Engine &engine);
     // virtual void createDescriptorSets(Engine& engine);
     virtual void createMaterialDescriptorSets(Engine& engine);
+
+    void createDefaultTexture(Engine& engine, AllocatedImage& texture, glm::vec4 color);
+
+    std::vector<Pointlight> createEmissiveLights(float intensity);
     
 
 protected:

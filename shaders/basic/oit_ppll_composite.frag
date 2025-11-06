@@ -17,7 +17,7 @@ layout(set = 0, binding = 1, std430) buffer FragmentList {
     FragmentNode fragments[]; // Read-only
 } fragmentList;
 
-layout(set = 0, binding = 2, r32ui) uniform uimage2D startOffsetImage; // Read-only
+layout(set = 0, binding = 2, r32ui) uniform uimage2DMS startOffsetImage; // Read-only
 
 
 // --- INPUT (from oit_composite_vert.spv) ---
@@ -41,11 +41,12 @@ void main() {
     
     // Array to hold the fragments for sorting
     SortNode fragment_nodes[MAX_FRAGMENTS_PER_PIXEL];
+
     int count = 0;
 
     // --- 1. Traverse the Linked List ---
     ivec2 pixel_coord = ivec2(gl_FragCoord.xy);
-    uint current_index = imageLoad(startOffsetImage, pixel_coord).r;
+    uint current_index = imageLoad(startOffsetImage, pixel_coord, gl_SampleID).r;
 
     while (current_index != LIST_END && count < MAX_FRAGMENTS_PER_PIXEL) {
         FragmentNode node = fragmentList.fragments[current_index];
@@ -64,7 +65,7 @@ void main() {
         int j = i;
         
         // Sort ascending (farthest first)
-        while (j > 0 && fragment_nodes[j-1].depth < to_insert.depth) { // <-- FLIPPED from < to >
+        while (j > 0 && fragment_nodes[j-1].depth < to_insert.depth) {
             fragment_nodes[j] = fragment_nodes[j-1];
             j--;
         }
@@ -86,8 +87,8 @@ void main() {
         // C_out = C_dst + C_src * (1 - A_dst)
         // A_out = A_dst + A_src * (1 - A_dst)
         
-        final_color.rgb = final_color.rgb + premultiplied_color * (1.0 - final_color.a); // <-- FLIPPED
-        final_color.a = final_color.a + alpha * (1.0 - final_color.a); // <-- FLIPPED
+        final_color.rgb = final_color.rgb + premultiplied_color * (1.0 - final_color.a);
+        final_color.a = final_color.a + alpha * (1.0 - final_color.a);
 
         // Optimization: stop if we're fully opaque
         if (final_color.a > 0.999) {
@@ -98,7 +99,6 @@ void main() {
     // --- 4. Tonemap and Gamma Correct ---
     // The final_color.rgb is premultiplied. We must un-premultiply
     // before tonemapping for the math to be correct.
-    
     vec3 unmultiplied_color = vec3(0.0);
     // Avoid divide by zero
     if (final_color.a > 1e-6) {

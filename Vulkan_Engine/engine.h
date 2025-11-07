@@ -15,6 +15,8 @@
 
 #include "vk_mem_alloc.h"
 
+const int MAX_PANEL_LIGHTS = 5;
+
 
 
 const std::vector validationLayers = {
@@ -124,6 +126,28 @@ public:
     // Uniform Buffer
     UniformBufferObject ubo{};
 
+    std::array<AllocatedImage, MAX_PANEL_LIGHTS> shadow_maps;
+    vk::raii::Sampler shadow_sampler = nullptr;
+    PipelineInfo shadow_pipeline;
+    const uint32_t SHADOW_MAP_DIM = 2048;
+    vk::Format shadow_map_format;
+    bool panel_shadows_enabled = true; // Toggle for all panel shadows
+    float shadow_light_far_plane = 100.f;
+
+    struct ShadowUBO {
+        glm::mat4 proj;
+        std::array<glm::mat4, 6> views;
+        glm::vec4 lightPos;
+        float farPlane;
+    } shadow_ubo_data; // One struct for temp data
+    
+    // We need 5 UBOs per frame
+    std::array<std::vector<AllocatedBuffer>, MAX_FRAMES_IN_FLIGHT> shadow_ubos;
+    std::array<std::vector<void*>, MAX_FRAMES_IN_FLIGHT> shadow_ubos_mapped;
+    
+    // We need 5 descriptor sets per frame
+    std::array<std::vector<vk::raii::DescriptorSet>, MAX_FRAMES_IN_FLIGHT> shadow_descriptor_sets;
+
     void printGpuMemoryUsage();
 
 
@@ -149,6 +173,9 @@ private:
     
     const std::string v_shader_torus = "shaders/basic/vertex_torus.spv";
     const std::string f_shader_torus = "shaders/basic/fragment_torus.spv";
+
+    const std::string v_shader_shadow = "shaders/basic/shadow_vert.spv";
+    const std::string f_shader_shadow = "shaders/basic/shadow_frag.spv";
 
     // Depth variables
     AllocatedImage depth_image;
@@ -263,7 +290,7 @@ private:
     vk::SampleCountFlagBits getMaxUsableSampleCount();
     void createModel(Gameobject &obj);
 
-    void transitionImage(vk::raii::CommandBuffer& cmd, vk::Image image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout);
+    void transitionImage(vk::raii::CommandBuffer& cmd, vk::Image image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageAspectFlags aspectMask);
 
 
     static void key_callback(GLFWwindow *window, int key, int scancode, int action, int mods);
@@ -294,6 +321,9 @@ private:
     // void destroyOITResources(); // to later implement
     void createOITCompositePipeline();
     void createOITDescriptorSets();
+
+    void createShadowResources();
+    void createShadowPipeline();
 
 
 

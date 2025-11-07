@@ -15,12 +15,12 @@
       "light": { "intensity": 500000.0 }
     },
     "left_wall": {
-      "material": { "base_color": [1.0, 1.0, 1.0], "metallic": 0.0, "roughness": 1.0 },
-      "light": { "intensity": 500000.0 }
+      "material": { "base_color": [0.1, 0.1, 1.0], "metallic": 0.0, "roughness": 1.0 },
+      "light": { "intensity": 200000.0 }
     },
     "right_wall": {
       "material": { "base_color": [1.0, 0.1, 0.1], "metallic": 0.0, "roughness": 1.0 },
-      "light": { "intensity": 500000.0 }
+      "light": { "intensity": 200000.0 }
     }
   }
 }

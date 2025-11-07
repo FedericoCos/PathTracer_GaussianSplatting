@@ -10,6 +10,8 @@ namespace Pipeline{
     vk::raii::DescriptorSetLayout createDescriptorSetLayout(Engine &engine, std::vector<vk::DescriptorSetLayoutBinding> &bindings);
 
     std::vector<char> readFile(const std::string& filename);
+
+    vk::raii::Pipeline createShadowPipeline(Engine &engine, PipelineInfo *p_info, std::string v_shader, std::string f_shader);
 };
 
 

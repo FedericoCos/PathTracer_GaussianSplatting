@@ -37,6 +37,8 @@ test: $(TARGET)
 	glslc shaders/basic/oit_composite.vert -o shaders/basic/oit_composite_vert.spv
 	glslc shaders/basic/oit_composite.frag -o shaders/basic/oit_composite_frag.spv
 	glslc shaders/basic/oit_ppll_composite.frag -o shaders/basic/oit_ppll_composite_frag.spv
+	glslc shaders/basic/shadow.vert -o shaders/basic/shadow_vert.spv
+	glslc shaders/basic/shadow.frag -o shaders/basic/shadow_frag.spv
 	./$(TARGET)
 
 # Clean up the build files

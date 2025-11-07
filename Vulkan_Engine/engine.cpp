@@ -276,11 +276,11 @@ void Engine::createRTBox(const std::string& rtbox_path)
 
     std::vector<std::string> panel_names = {"floor", "ceiling", "back_wall", "left_wall", "right_wall"};
     std::vector<glm::vec4> light_positions = {
-        glm::vec4(pos.x, y_bot + 0.1f, pos.z, 0.0f),     // Floor light
-        glm::vec4(pos.x, y_top - 0.1f, pos.z, 0.0f),     // Ceiling light
-        glm::vec4(pos.x, pos.y + h/2.0f, pos.z - d + 0.1f, 0.0f), // Back light
-        glm::vec4(pos.x - w + 0.1f, pos.y + h/2.0f, pos.z, 0.0f), // Left light
-        glm::vec4(pos.x + w - 0.1f, pos.y + h/2.0f, pos.z, 0.0f)  // Right light
+        glm::vec4(pos.x, y_bot + 1.f, pos.z, 0.0f),     // Floor light
+        glm::vec4(pos.x, y_top - 1.f, pos.z, 0.0f),     // Ceiling light
+        glm::vec4(pos.x, pos.y + h/2.0f, pos.z - d + 1.f, 0.0f), // Back light
+        glm::vec4(pos.x - w + 1.f, pos.y + h/2.0f, pos.z, 0.0f), // Left light
+        glm::vec4(pos.x + w - 1.f, pos.y + h/2.0f, pos.z, 0.0f)  // Right light
     };
 
     for (int i = 0; i < 5; ++i) {
@@ -311,7 +311,7 @@ void Engine::createRTBox(const std::string& rtbox_path)
         panel_lights.push_back(light);
         
         // Add toggle state
-        panel_lights_on.push_back(true); // Default to ON
+        panel_lights_on.push_back(false); // Default to OFF
     }
 
     // --- 5. GPU Resources ---
@@ -322,20 +322,27 @@ void Engine::createRTBox(const std::string& rtbox_path)
 }
 
 // Simple barrier helper
-void Engine::transitionImage(vk::raii::CommandBuffer& cmd, vk::Image image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout) {
+void Engine::transitionImage(vk::raii::CommandBuffer& cmd, vk::Image image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageAspectFlags aspectMask) {
     vk::ImageMemoryBarrier2 barrier;
     barrier.oldLayout = oldLayout;
     barrier.newLayout = newLayout;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image;
-    barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+    barrier.subresourceRange.aspectMask = aspectMask;
     barrier.subresourceRange.baseMipLevel = 0;
     barrier.subresourceRange.levelCount = 1;
     barrier.subresourceRange.baseArrayLayer = 0;
     barrier.subresourceRange.layerCount = 1;
 
     // Set masks based on layout
+    if (newLayout == vk::ImageLayout::eDepthStencilAttachmentOptimal || newLayout == vk::ImageLayout::eShaderReadOnlyOptimal) {
+        if (aspectMask == vk::ImageAspectFlagBits::eDepth) {
+            // This is a cube map, so transition all 6 layers
+            barrier.subresourceRange.layerCount = 6;
+        }
+    }
+
     if (oldLayout == vk::ImageLayout::eUndefined && newLayout == vk::ImageLayout::eTransferDstOptimal) {
         barrier.srcAccessMask = {};
         barrier.dstAccessMask = vk::AccessFlagBits2::eTransferWrite;
@@ -346,7 +353,12 @@ void Engine::transitionImage(vk::raii::CommandBuffer& cmd, vk::Image image, vk::
         barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead;
         barrier.srcStageMask = vk::PipelineStageFlagBits2::eTransfer;
         barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
-    } else if (oldLayout == vk::ImageLayout::eColorAttachmentOptimal && newLayout == vk::ImageLayout::eTransferSrcOptimal) {
+    } else if (oldLayout == vk::ImageLayout::eUndefined && newLayout == vk::ImageLayout::eDepthStencilAttachmentOptimal) {
+        barrier.srcAccessMask = {}; // No source access needed
+        barrier.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead | vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+        barrier.srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe;
+        barrier.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests | vk::PipelineStageFlagBits2::eLateFragmentTests;
+    }else if (oldLayout == vk::ImageLayout::eColorAttachmentOptimal && newLayout == vk::ImageLayout::eTransferSrcOptimal) {
         barrier.srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite;
         barrier.dstAccessMask = vk::AccessFlagBits2::eTransferRead;
         barrier.srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
@@ -356,7 +368,21 @@ void Engine::transitionImage(vk::raii::CommandBuffer& cmd, vk::Image image, vk::
         barrier.dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite;
         barrier.srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe;
         barrier.dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
-    } else {
+    }
+    else if (oldLayout == vk::ImageLayout::eShaderReadOnlyOptimal && newLayout == vk::ImageLayout::eDepthStencilAttachmentOptimal) {
+        barrier.srcAccessMask = vk::AccessFlagBits2::eShaderRead;
+        barrier.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+        barrier.srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
+        barrier.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests | vk::PipelineStageFlagBits2::eLateFragmentTests;
+    } 
+    else if (oldLayout == vk::ImageLayout::eDepthStencilAttachmentOptimal && newLayout == vk::ImageLayout::eShaderReadOnlyOptimal) {
+        barrier.srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+        barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead;
+        barrier.srcStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests | vk::PipelineStageFlagBits2::eLateFragmentTests;
+        barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
+
+    }
+    else {
         // Generic (less optimal)
         barrier.srcAccessMask = vk::AccessFlagBits2::eMemoryWrite;
         barrier.dstAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite;
@@ -702,6 +728,8 @@ bool Engine::initVulkan(){
     std::cout << "Memory usage after OIT resources creation" << std::endl;
     printGpuMemoryUsage();
 
+    createShadowResources();
+
     // PIPELINE CREATION
     createPipelines();
 
@@ -721,6 +749,20 @@ bool Engine::initVulkan(){
 
 
     createTorusModel();
+
+    for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
+        // Resize the inner vectors to hold 5 elements
+        shadow_ubos[i].resize(MAX_PANEL_LIGHTS);
+        shadow_ubos_mapped[i].resize(MAX_PANEL_LIGHTS);
+
+        for (int j = 0; j < MAX_PANEL_LIGHTS; ++j) {
+            createBuffer(vma_allocator, sizeof(ShadowUBO), 
+                         vk::BufferUsageFlagBits::eUniformBuffer,
+                         vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                         shadow_ubos[i][j]); // This access is now valid
+            vmaMapMemory(vma_allocator, shadow_ubos[i][j].allocation, &shadow_ubos_mapped[i][j]);
+        }
+    }
 
     createUniformBuffers();
     createDescriptorPool();
@@ -845,7 +887,13 @@ void Engine::createPipelines()
         // Binding 8: Clearcoat Roughness
         vk::DescriptorSetLayoutBinding(8, vk::DescriptorType::eCombinedImageSampler, 1,
                                         vk::ShaderStageFlagBits::eFragment, nullptr),
+        // Binding 9: Shadow Map Array
+        vk::DescriptorSetLayoutBinding(9, vk::DescriptorType::eCombinedImageSampler, 
+                                       MAX_PANEL_LIGHTS, // 5 maps
+                                       vk::ShaderStageFlagBits::eFragment, nullptr)
     };
+
+    createShadowPipeline();
     
     // Key definition
     p_key.v_shader = v_shader_pbr;
@@ -929,6 +977,9 @@ void Engine::loadObjects(const std::string &scene_path)
         lights_path = settings.value("lights_file", "");
         this->use_rt_box = settings.value("use_rt_box", false);
         rtbox_path = settings.value("rt_box_file", "");
+
+        this->panel_shadows_enabled = settings.value("panel_shadows_enabled", true);
+        this->shadow_light_far_plane = settings.value("shadow_far_plane", 100.0f);
     }
 
     // --- 2. Load Manual Lights ---
@@ -1132,14 +1183,16 @@ void Engine::createDescriptorPool()
         total_materials += rt_box.materials.size();
     }
 
+    uint32_t shadow_sets_count = MAX_PANEL_LIGHTS * MAX_FRAMES_IN_FLIGHT;
+
     // We now allocate per-material, not per-object
     uint32_t total_sets = total_materials * MAX_FRAMES_IN_FLIGHT;
     
     // This MUST match your descriptor set layout
     std::vector<vk::DescriptorPoolSize> pool_sizes = {
-        vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, total_sets),
+        vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, total_sets + shadow_sets_count),
         // 8 samplers (Albedo, Normal, Met/Rough, AO, Emissive, Transmission, Clearcoat, Clearcoat Roughness) per set
-        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_sets * 8),
+        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_sets * (8 + MAX_PANEL_LIGHTS)),
         // We need 1 set per frame for the PPLL buffers
         // 1 storage image, 2 storage buffers per set
         vk::DescriptorPoolSize(vk::DescriptorType::eStorageImage, MAX_FRAMES_IN_FLIGHT),
@@ -1148,7 +1201,7 @@ void Engine::createDescriptorPool()
 
     vk::DescriptorPoolCreateInfo pool_info;
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    pool_info.maxSets = total_sets + MAX_FRAMES_IN_FLIGHT; // TO CHECK
+    pool_info.maxSets = total_sets + MAX_FRAMES_IN_FLIGHT+ shadow_sets_count; // TO CHECK
     pool_info.poolSizeCount = static_cast<uint32_t>(pool_sizes.size()); 
     pool_info.pPoolSizes = pool_sizes.data();
 
@@ -1167,6 +1220,29 @@ void Engine::createDescriptorSets()
     }
 
     // torus.createMaterialDescriptorSets(*this);
+
+
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        
+        // Clear any old sets from the previous frame/swapchain
+        shadow_descriptor_sets[i].clear();
+        shadow_descriptor_sets[i].reserve(MAX_PANEL_LIGHTS); // Optional: improves performance
+
+        for (int j = 0; j < MAX_PANEL_LIGHTS; ++j) {
+            // Allocate one set using the shadow pipeline's layout
+            vk::DescriptorSetAllocateInfo alloc_info(*descriptor_pool, 1, &*shadow_pipeline.descriptor_set_layout);
+            
+            // Move the newly allocated set into the vector
+            shadow_descriptor_sets[i].push_back(std::move(logical_device.allocateDescriptorSets(alloc_info).front()));
+            
+            // Bind the corresponding shadow UBO
+            vk::DescriptorBufferInfo buffer_info(shadow_ubos[i][j].buffer, 0, sizeof(ShadowUBO));
+            
+            // Use the set we just added (at index j)
+            vk::WriteDescriptorSet write(*shadow_descriptor_sets[i][j], 0, 0, vk::DescriptorType::eUniformBuffer, {}, buffer_info);
+            logical_device.updateDescriptorSets(write, {});
+        }
+    }
 }
 
 void Engine::createGraphicsCommandBuffers(){
@@ -1243,7 +1319,7 @@ void Engine::createOITResources(){
     // Transition image to eGeneral layout for storage access
     // We do this once here, and it will stay in eGeneral forever.
     vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_transfer, &logical_device);
-    transitionImage(cmd, oit_start_offset_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral);
+    transitionImage(cmd, oit_start_offset_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
     endSingleTimeCommands(cmd, transfer_queue);
 }
 
@@ -1330,10 +1406,109 @@ void Engine::createOITDescriptorSets() {
     }
 }
 
+void Engine::createShadowResources() {
+    shadow_map_format = findDepthFormat(physical_device);
+
+    for (int i = 0; i < MAX_PANEL_LIGHTS; ++i) {
+        // --- 1. Create Shadow Map Image (Manual VMA) ---
+        vk::ImageCreateInfo imageInfo;
+        imageInfo.imageType = vk::ImageType::e2D;
+        imageInfo.extent = vk::Extent3D{SHADOW_MAP_DIM, SHADOW_MAP_DIM, 1};
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 6; // <-- FIX: Must be 6
+        imageInfo.format = shadow_map_format;
+        imageInfo.tiling = vk::ImageTiling::eOptimal;
+        imageInfo.initialLayout = vk::ImageLayout::eUndefined;
+        imageInfo.usage = vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eSampled;
+        imageInfo.samples = vk::SampleCountFlagBits::e1; // <-- FIX: Must be 1
+        imageInfo.sharingMode = vk::SharingMode::eExclusive;
+        imageInfo.flags = vk::ImageCreateFlagBits::eCubeCompatible; // <-- FIX: Must have this flag
+
+        VmaAllocationCreateInfo allocInfo = {};
+        allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+        allocInfo.requiredFlags = (VkMemoryPropertyFlags)vk::MemoryPropertyFlagBits::eDeviceLocal;
+
+        // Manually create the image using VMA
+        VkImage vkImage;
+        VkImageCreateInfo vkImageInfo = (VkImageCreateInfo)imageInfo; // Cast to C-style struct
+        vmaCreateImage(vma_allocator, &vkImageInfo, &allocInfo,
+                       &vkImage, &shadow_maps[i].allocation, nullptr);
+
+        shadow_maps[i].image = vkImage;
+        shadow_maps[i].image_format = static_cast<VkFormat>(shadow_map_format);
+        shadow_maps[i].image_extent = imageInfo.extent;
+        shadow_maps[i].mip_levels = 1;
+
+        // --- 2. Create Image View (as a Cube) ---
+        vk::ImageViewCreateInfo viewInfo;
+        viewInfo.image = shadow_maps[i].image;
+        viewInfo.viewType = vk::ImageViewType::eCube; // This is correct
+        viewInfo.format = shadow_map_format;
+        viewInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eDepth;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 6; // This is correct
+        
+        shadow_maps[i].image_view = vk::raii::ImageView(logical_device, viewInfo);
+    }
+
+    // --- 3. Create Sampler (only one is needed) ---
+    vk::SamplerCreateInfo samplerInfo;
+    samplerInfo.magFilter = vk::Filter::eLinear;
+    samplerInfo.minFilter = vk::Filter::eLinear;
+    samplerInfo.addressModeU = vk::SamplerAddressMode::eClampToBorder;
+    samplerInfo.addressModeV = vk::SamplerAddressMode::eClampToBorder;
+    samplerInfo.addressModeW = vk::SamplerAddressMode::eClampToBorder;
+    samplerInfo.borderColor = vk::BorderColor::eFloatOpaqueWhite; // Depth 1.0 (far)
+    samplerInfo.compareEnable = vk::True;
+    samplerInfo.compareOp = vk::CompareOp::eLess;
+    samplerInfo.maxLod = 1.0f;
+    
+    shadow_sampler = vk::raii::Sampler(logical_device, samplerInfo);
+}
+
+void Engine::createShadowPipeline() {
+    // 1. Descriptor Set Layout (for one ShadowUBO)
+    std::vector<vk::DescriptorSetLayoutBinding> bindings = {
+        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBuffer, 1, 
+                                       vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment)
+    };
+    shadow_pipeline.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings);
+    
+    // 2. Push Constant (Model Matrix)
+    vk::PushConstantRange push_constant_range(vk::ShaderStageFlagBits::eVertex, 0, sizeof(glm::mat4));
+    
+    // 3. Pipeline Layout
+    vk::PipelineLayoutCreateInfo pipeline_layout_info({}, 1, &*shadow_pipeline.descriptor_set_layout, 1, &push_constant_range);
+    shadow_pipeline.layout = vk::raii::PipelineLayout(logical_device, pipeline_layout_info);
+    
+    // 4. Create Pipeline (using the new shadow pipeline function)
+    shadow_pipeline.pipeline = Pipeline::createShadowPipeline(
+        *this,
+        &shadow_pipeline,
+        v_shader_shadow,
+        f_shader_shadow
+    );
+}
+
 
 // ------ Render Loop Functions
 
 void Engine::run(){
+    {
+        vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_transfer, &logical_device);
+
+        for (int i = 0; i < MAX_PANEL_LIGHTS; ++i) {
+            transitionImage(cmd, shadow_maps[i].image,
+                            vk::ImageLayout::eUndefined,
+                            vk::ImageLayout::eShaderReadOnlyOptimal,
+                            vk::ImageAspectFlagBits::eDepth);
+        }
+
+        endSingleTimeCommands(cmd, transfer_queue);
+    }
+
     while(!glfwWindowShouldClose(window)){
         glfwPollEvents();
         drawFrame();
@@ -1347,7 +1522,84 @@ void Engine::run(){
 void Engine::recordCommandBuffer(uint32_t image_index){
     auto& cmd = graphics_command_buffer[current_frame];
     cmd.begin({});
+    if (panel_shadows_enabled) {
+        
+        int panel_index = 0;
+        // IMPORTANT: This loop MUST match the logic in updateUniformBuffer()
+        for (int i = 0; i < panel_lights.size(); ++i) {
+            // Skip if this light is off
+            if (!panel_lights_on[i]) {
+                continue; // Don't increment shadow_map_slot here!
+            }
 
+            // Transition shadow map to be a depth attachment
+            transitionImage(cmd, shadow_maps[panel_index].image, 
+                            vk::ImageLayout::eShaderReadOnlyOptimal, 
+                            vk::ImageLayout::eDepthStencilAttachmentOptimal, 
+                            vk::ImageAspectFlagBits::eDepth);
+
+            vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
+            vk::RenderingAttachmentInfo depth_attachment_info;
+            depth_attachment_info.imageView = *shadow_maps[panel_index].image_view;
+            depth_attachment_info.imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+            depth_attachment_info.loadOp = vk::AttachmentLoadOp::eClear;
+            depth_attachment_info.storeOp = vk::AttachmentStoreOp::eStore;
+            depth_attachment_info.clearValue = clear_depth;
+
+            vk::RenderingInfo shadow_rendering_info;
+            shadow_rendering_info.renderArea.offset = vk::Offset2D{0, 0};
+            shadow_rendering_info.renderArea.extent = vk::Extent2D{SHADOW_MAP_DIM, SHADOW_MAP_DIM};
+            shadow_rendering_info.layerCount = 6;
+            shadow_rendering_info.viewMask = 0b00111111;
+            shadow_rendering_info.colorAttachmentCount = 0;
+            shadow_rendering_info.pDepthAttachment = &depth_attachment_info;
+
+            cmd.beginRendering(shadow_rendering_info);
+
+            cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)SHADOW_MAP_DIM, (float)SHADOW_MAP_DIM, 0.f, 1.f));
+            cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), {SHADOW_MAP_DIM, SHADOW_MAP_DIM}));
+            cmd.setCullMode(vk::CullModeFlagBits::eFront);
+
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.pipeline);
+            
+            // Bind the correct Shadow UBO for this pass
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.layout, 0, 
+                     {*shadow_descriptor_sets[current_frame][panel_index]}, {});
+
+            // --- Draw all shadow-casting objects ---
+            for(auto& obj : scene_objs) {
+                if (obj.o_primitives.empty()) continue; 
+                
+                cmd.bindVertexBuffers(0, {obj.geometry_buffer.buffer}, {0});
+                cmd.bindIndexBuffer(obj.geometry_buffer.buffer, obj.index_buffer_offset, vk::IndexType::eUint32);
+                cmd.pushConstants<glm::mat4>(*shadow_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix);
+                
+                for(auto& primitive : obj.o_primitives) {
+                    cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
+                }
+            }
+            
+            // Draw rt_box
+            if (use_rt_box && rt_box.o_pipeline && !rt_box.o_primitives.empty()) {
+                cmd.bindVertexBuffers(0, {rt_box.geometry_buffer.buffer}, {0});
+                cmd.bindIndexBuffer(rt_box.geometry_buffer.buffer, rt_box.index_buffer_offset, vk::IndexType::eUint32);
+                cmd.pushConstants<glm::mat4>(*shadow_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, rt_box.model_matrix);
+                for(auto& primitive : rt_box.o_primitives) {
+                    cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
+                }
+            }
+
+            cmd.endRendering();
+
+            // Transition shadow map to be readable in PBR shaders
+            transitionImage(cmd, shadow_maps[panel_index].image, 
+                            vk::ImageLayout::eDepthStencilAttachmentOptimal, 
+                            vk::ImageLayout::eShaderReadOnlyOptimal, 
+                            vk::ImageAspectFlagBits::eDepth);
+
+            panel_index++;
+        }
+    }
     // --- 1. GATHER TRANSPARENTS ---
     transparent_draws.clear();
     for(auto& obj : scene_objs){
@@ -1832,39 +2084,73 @@ void Engine::drawFrame(){
 
 void Engine::updateUniformBuffer(uint32_t current_image)
 {
+    // --- 1. Main UBO ---
     ubo.view = camera.getViewMatrix();
-
     ubo.proj = camera.getProjectionMatrix();
-
     ubo.camera_pos = camera.getCurrentState().f_camera.position;
 
+    // --- RESET EVERYTHING ---
     ubo.curr_num_pointlights = 0;
-    auto& lights = ubo.pointlights; // Get a reference to the array
+    ubo.curr_num_shadowlights = 0;
+    ubo.panel_shadows_enabled = this->panel_shadows_enabled;
+    ubo.shadow_far_plane = this->shadow_light_far_plane;
 
-    // 1. Add Manual Lights (if enabled)
+    // --- 1. Add Panel Lights (if enabled) ---
+    for(int i = 0; i < panel_lights.size(); ++i) {
+        if (ubo.curr_num_shadowlights >= MAX_POINTLIGHTS) break;
+        // Only add active lights
+        if (panel_lights_on[i]) {
+            int ubo_index = ubo.curr_num_shadowlights;
+            ubo.shadowlights[ubo_index] = panel_lights[i];
+            
+            ubo.curr_num_shadowlights++;
+        }
+    }
+
+    // --- 2. Add Manual Lights ---
     if (use_manual_lights) {
         for (const auto& light : manual_lights) {
             if (ubo.curr_num_pointlights >= MAX_POINTLIGHTS) break;
-            lights[ubo.curr_num_pointlights++] = light;
+            ubo.pointlights[ubo.curr_num_pointlights++] = light;
+            // These lights have no shadows, so light_to_shadow_map_index stays -1
         }
     }
 
-    // 2. Add Emissive Lights (if enabled)
+    // --- 3. Add Emissive Lights ---
     if (use_emissive_lights) {
         for (const auto& light : emissive_lights) {
             if (ubo.curr_num_pointlights >= MAX_POINTLIGHTS) break;
-            lights[ubo.curr_num_pointlights++] = light;
+            ubo.pointlights[ubo.curr_num_pointlights++] = light;
+            // These lights have no shadows, so light_to_shadow_map_index stays -1
         }
     }
 
-    // 3. Add Panel Lights (if enabled)
-    for (int i = 0; i < panel_lights.size(); ++i) {
-        if (panel_lights_on[i]) {
-            if (ubo.curr_num_pointlights < MAX_POINTLIGHTS) {
-                lights[ubo.curr_num_pointlights++] = panel_lights[i];
-            } else {
-                break;
+    // --- 4. NOW Setup Shadow Maps for Panel Lights ---
+    // We do this AFTER adding all lights so indices are stable
+    int panel_index = 0;
+    if (panel_shadows_enabled) {
+        for(int i = 0; i < panel_lights.size(); ++i) {
+            // Skip if this light is off or if we've run out of shadow maps
+            if (!panel_lights_on[i]) {
+                continue;
             }
+            
+            // --- Update the corresponding Shadow UBO ---
+            Pointlight& light = panel_lights[i];
+            shadow_ubo_data.lightPos = light.position;
+            shadow_ubo_data.farPlane = shadow_light_far_plane;
+            
+            shadow_ubo_data.proj = glm::perspective(glm::radians(90.0f), 1.0f, 0.1f, shadow_light_far_plane);
+            glm::vec3 pos = glm::vec3(light.position);
+            shadow_ubo_data.views[0] = glm::lookAt(pos, pos + glm::vec3( 1.0, 0.0, 0.0), glm::vec3(0.0, -1.0, 0.0));
+            shadow_ubo_data.views[1] = glm::lookAt(pos, pos + glm::vec3(-1.0, 0.0, 0.0), glm::vec3(0.0, -1.0, 0.0));
+            shadow_ubo_data.views[2] = glm::lookAt(pos, pos + glm::vec3( 0.0, 1.0, 0.0), glm::vec3(0.0, 0.0, 1.0));
+            shadow_ubo_data.views[3] = glm::lookAt(pos, pos + glm::vec3( 0.0,-1.0, 0.0), glm::vec3(0.0, 0.0,-1.0));
+            shadow_ubo_data.views[4] = glm::lookAt(pos, pos + glm::vec3( 0.0, 0.0, 1.0), glm::vec3(0.0, -1.0, 0.0));
+            shadow_ubo_data.views[5] = glm::lookAt(pos, pos + glm::vec3( 0.0, 0.0,-1.0), glm::vec3(0.0, -1.0, 0.0));
+            
+            memcpy(shadow_ubos_mapped[current_image][panel_index], &shadow_ubo_data, sizeof(ShadowUBO));
+            panel_index++;
         }
     }
 

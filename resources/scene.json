@@ -1,12 +1,14 @@
 {
   "settings": {
-    "lights_file": "resources/lights.json",
+    "lights_file": "resources/battle/lights.json",
     "use_manual_lights": false,
     "use_emissive_lights": true,
-    "emissive_intensity_multiplier": 40.0,
+    "emissive_intensity_multiplier": 100.0,
 
     "use_rt_box": true,
-    "rt_box_file": "resources/rtbox.json"
+    "rt_box_file": "resources/battle/rtbox.json",
+
+    "panel_shadows_enabled": true
   },
   "objects": [
     {

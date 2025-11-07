@@ -6,12 +6,17 @@ struct PointLight {
     vec4 color;
 };
 // --- UNIFORMS ---
+// --- UNIFORMS ---
 layout(binding = 0) uniform UniformBufferObject {
     mat4 view;
     mat4 proj;
     vec3 cameraPos;
     PointLight[100] pointlights;
+    PointLight[100] shadowLights;
     int cur_num_pointlights;
+    int cur_num_shadowlights;
+    int panelShadowsEnabled;
+    float shadowFarPlane;
 } ubo;
 
 layout(binding = 1) uniform sampler2D albedoSampler;
@@ -22,6 +27,8 @@ layout(binding = 5) uniform sampler2D emissiveSampler;
 layout(binding = 6) uniform sampler2D transmissionSampler;
 layout(binding = 7) uniform sampler2D clearcoatSampler;
 layout(binding = 8) uniform sampler2D clearcoatRoughnessSampler;
+layout(binding = 9) uniform samplerCubeShadow shadowMaps[5];
+
 // --- FRAGMENT PUSH CONSTANT ---
 layout(push_constant) uniform FragPushConstants {
     layout(offset = 64)
@@ -87,6 +94,19 @@ float G_Smith(vec3 N, vec3 V, vec3 L, float roughness) {
 }
 vec3 F_Schlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+float calculateShadow(vec3 fragWorldPos, vec3 lightPos, float farPlane, int shadowIndex, vec3 N, vec3 L) {
+    float shadowBias = max(0.05 * (1.0 - dot(N, L)), 0.005); 
+
+    vec3 lightToFrag = fragWorldPos - lightPos;
+    
+    float currentDepth = length(lightToFrag);
+    float normalizedDepth = currentDepth / farPlane;
+    
+    float shadow = texture(shadowMaps[shadowIndex], vec4(lightToFrag, normalizedDepth - shadowBias));
+    
+    return shadow;
 }
 
 
@@ -176,7 +196,62 @@ void main() {
         // --- (C) Combine Layers --- // --- MODIFIED ---
         vec3 base_lighting = (diffuse_base + specular_base);
         vec3 combined_lighting = base_lighting * (1.0 - cc_factor * F_coat) + specular_coat * cc_factor;
+
         Lo += combined_lighting * radiance * NdotL;
+    }
+
+    int j = 0;
+    for(int i = 0; i < ubo.cur_num_shadowlights; i++){
+        // --- MODIFIED ---
+        vec3 L = normalize(ubo.shadowLights[i].position.xyz - fragWorldPos);
+        vec3 H = normalize(V + L);
+        float NdotL = max(dot(N, L), 0.0);
+        float HdotV = max(dot(H, V), 0.0);
+        // --- MODIFIED ---
+        float distance = length(ubo.shadowLights[i].position.xyz - fragWorldPos);
+        float attenuation = 1.0 / (distance * distance);
+        // --- MODIFIED ---
+        vec3 radiance = ubo.shadowLights[i].color.rgb * ubo.shadowLights[i].color.a * attenuation;
+        
+        // --- (A) Base Layer (Metallic/Roughness) ---
+        float NDF_base = D_GGX(N, H, roughness);
+        float G_base = G_Smith(N, V, L, roughness);
+        vec3 F_base = F_Schlick(HdotV, F0);
+        
+        vec3 kS_base = F_base;
+        vec3 kD_base = (vec3(1.0) - kS_base) * (1.0 - metallic);
+        
+        vec3 numerator_base = NDF_base * G_base * F_base;
+        float denominator_base = 4.0 * NdotV * NdotL + 0.001;
+        vec3 specular_base = numerator_base / denominator_base;
+        vec3 diffuse_base = (kD_base * albedo / PI);
+        
+        // --- (B) Clearcoat Layer --- // --- NEW ---
+        float NDF_coat = D_GGX(N, H, cc_roughness);
+        float G_coat = G_Smith(N, V, L, cc_roughness);
+        // F0 for clearcoat is always dielectric (non-metallic).
+        // 0.04 is standard for IOR 1.5.
+        vec3 F0_coat = vec3(0.04); 
+        vec3 F_coat = F_Schlick(HdotV, F0_coat);
+        vec3 numerator_coat = NDF_coat * G_coat * F_coat;
+        float denominator_coat = 4.0 * NdotV * NdotL + 0.001;
+        vec3 specular_coat = numerator_coat / denominator_coat;
+
+        // --- (C) Combine Layers --- // --- MODIFIED ---
+        vec3 base_lighting = (diffuse_base + specular_base);
+        // Attenuate the base layer by the clearcoat's reflection (F_coat)
+        // and add the clearcoat's own specular reflection.
+        // Both are scaled by the clearcoat factor.
+        vec3 combined_lighting = base_lighting * (1.0 - cc_factor * F_coat) + specular_coat * cc_factor;
+
+
+        float shadow = 1.0;
+        if (ubo.panelShadowsEnabled != 0) {
+            shadow = calculateShadow(fragWorldPos, ubo.shadowLights[i].position.xyz, ubo.shadowFarPlane, i, N, L);
+        }
+
+
+        Lo += combined_lighting * radiance * NdotL * shadow;
     }
     
     // --- 6. Final Color (Linear, Pre-Tonemap) ---

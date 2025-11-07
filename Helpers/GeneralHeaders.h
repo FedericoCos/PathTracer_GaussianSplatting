@@ -267,7 +267,14 @@ struct UniformBufferObject {
     float padding;
     
     std::array<Pointlight, MAX_POINTLIGHTS> pointlights;
+    std::array<Pointlight, MAX_POINTLIGHTS> shadowlights;
     int curr_num_pointlights = 0;
+    int curr_num_shadowlights = 0;
+
+    int panel_shadows_enabled = 0; 
+    float shadow_far_plane = 100.0f;
+    // Maps a light index (0-99) to a shadow map index (0-4)
+    // -1 means no shadow.
 };
 
 struct QueueFamilyIndices {

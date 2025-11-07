@@ -54,6 +54,7 @@ bool Device::isDeviceSuitable(const vk::raii::PhysicalDevice &device, bool descr
     // Check the features availability
     auto features = device.template getFeatures2<
         vk::PhysicalDeviceFeatures2,
+        vk::PhysicalDeviceVulkan11Features,
         vk::PhysicalDeviceVulkan13Features,
         vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT
     >();
@@ -65,7 +66,8 @@ bool Device::isDeviceSuitable(const vk::raii::PhysicalDevice &device, bool descr
         features.template get<vk::PhysicalDeviceVulkan13Features>().synchronization2 &&
         features.template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState &&
         features.template get<vk::PhysicalDeviceFeatures2>().features.shaderStorageImageMultisample &&
-        features.template get<vk::PhysicalDeviceFeatures2>().features.sampleRateShading;
+        features.template get<vk::PhysicalDeviceFeatures2>().features.sampleRateShading &&
+        features.template get<vk::PhysicalDeviceVulkan11Features>().multiview;;
 
 
 
@@ -148,6 +150,8 @@ vk::raii::Device Device::createLogicalDevice(const Engine &engine, QueueFamilyIn
         indices.transfer_family.value()
     };
 
+    vk::PhysicalDeviceVulkan11Features vulkan11features;
+    vulkan11features.multiview = true;
 
     // query for Vulkan 1.3 features
     vk::PhysicalDeviceVulkan13Features vulkan13features;
@@ -164,11 +168,13 @@ vk::raii::Device Device::createLogicalDevice(const Engine &engine, QueueFamilyIn
 
     vk::StructureChain<
     vk::PhysicalDeviceFeatures2,
+    vk::PhysicalDeviceVulkan11Features,
     vk::PhysicalDeviceVulkan13Features,
     vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,
     vk::PhysicalDeviceBufferDeviceAddressFeatures
     > feature_chain{
         deviceFeatures2,
+        vulkan11features,
         vulkan13features,           // dynamicRendering = true
         vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT{ VK_TRUE }, // extendedDynamicState = true
         vk::PhysicalDeviceBufferDeviceAddressFeatures { VK_TRUE }

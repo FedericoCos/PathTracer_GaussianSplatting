@@ -9,6 +9,7 @@ layout(binding = 0) uniform UniformBufferObject {
     mat4 view;
     mat4 proj;
     vec3 cameraPos;
+    vec4 ambientLight;
     PointLight[100] pointlights;
     PointLight[100] shadowLights;
     int cur_num_pointlights;
@@ -25,7 +26,7 @@ layout(binding = 5) uniform sampler2D emissiveSampler;
 layout(binding = 6) uniform sampler2D transmissionSampler; // Unused in opaque, but binding must exist
 layout(binding = 7) uniform sampler2D clearcoatSampler;
 layout(binding = 8) uniform sampler2D clearcoatRoughnessSampler;
-layout(binding = 9) uniform samplerCubeShadow shadowMaps[5];
+layout(binding = 9) uniform samplerCubeShadow shadowMaps[50];
 
 // --- FRAGMENT PUSH CONSTANT ---
 layout(push_constant) uniform FragPushConstants {
@@ -240,17 +241,14 @@ void main() {
 
 
         float shadow = 1.0;
-        if (ubo.panelShadowsEnabled != 0) {
-            // If shadowIndex is 0 or greater, this light casts a shadow
-            shadow = calculateShadow(fragWorldPos, ubo.shadowLights[i].position.xyz, ubo.shadowFarPlane, i, N, L);
-        }
+        shadow = calculateShadow(fragWorldPos, ubo.shadowLights[i].position.xyz, ubo.shadowFarPlane, i, N, L);
 
 
         Lo += combined_lighting * radiance * NdotL * shadow;
     }
     
     // --- 6. Final Color ---
-    vec3 ambient = vec3(0.05) * albedo * ao;
+    vec3 ambient = ubo.ambientLight.xyz * ubo.ambientLight.w * albedo * ao;
     vec3 color = ambient + Lo + emissive;
 
     // REMOVED tonemapping and gamma correction

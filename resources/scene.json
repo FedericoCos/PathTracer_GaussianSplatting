@@ -2,18 +2,21 @@
   "settings": {
     "lights_file": "resources/battle/lights.json",
     "use_manual_lights": false,
+    "use_manual_lights_shadows": false,
     "use_emissive_lights": true,
+    "use_emissive_lights_shadows": true,
     "emissive_intensity_multiplier": 100.0,
 
     "use_rt_box": true,
     "rt_box_file": "resources/battle/rtbox.json",
+    "panel_shadows_enabled": true,
 
-    "panel_shadows_enabled": true
+    "ambient_light": [0.8, 0.8, 0.8, 0.2]
   },
   "objects": [
     {
       "model": "resources/battle/scene.gltf",
-      "position": [0.0, 0.0, 0.0],
+      "position": [0, 0, 0],
       "scale": [10, 10, 10],
       "rotation": [0.0, 0.0, 0.0]
     }

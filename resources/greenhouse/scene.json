@@ -1,0 +1,24 @@
+{
+  "settings": {
+    "lights_file": "resources/greenhouse/lights.json",
+    "use_manual_lights": true,
+    "use_manual_lights_shadows": true,
+    "use_emissive_lights": true,
+    "use_emissive_lights_shadows": true,
+    "emissive_intensity_multiplier": 300.0,
+
+    "use_rt_box": true,
+    "rt_box_file": "resources/greenhouse/rtbox.json",
+    "panel_shadows_enabled": true,
+
+    "ambient_light": [0.8, 0.8, 0.8, 0.1]
+  },
+  "objects": [
+    {
+      "model": "resources/greenhouse/scene.gltf",
+      "position": [0.0, 0.0, 0.0],
+      "scale": [1, 1, 1],
+      "rotation": [0.0, 0.0, 0.0]
+    }
+  ]
+}

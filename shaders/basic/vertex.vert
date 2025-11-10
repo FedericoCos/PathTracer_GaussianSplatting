@@ -11,7 +11,6 @@ layout(push_constant) uniform PushConstants {
 } pushConstants;
 
 // --- INPUTS (Fixed by C++) ---
-// These consume locations 0, 1, 2, 3, 4
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec3 inColor;
@@ -20,7 +19,6 @@ layout(location = 4) in vec2 inTexCoord;
 layout(location = 5) in vec2 inTexCoord1;
 
 // --- OUTPUTS (to fragment shader) ---
-// Must start after 4 and not overlap
 layout(location = 6) out vec3 fragWorldPos;    
 layout(location = 7) out vec3 fragWorldNormal; 
 layout(location = 8) out vec2 fragTexCoord;    

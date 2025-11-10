@@ -11,6 +11,7 @@ layout(binding = 0) uniform UniformBufferObject {
     mat4 view;
     mat4 proj;
     vec3 cameraPos;
+    vec4 ambientLight;
     PointLight[100] pointlights;
     PointLight[100] shadowLights;
     int cur_num_pointlights;
@@ -27,7 +28,7 @@ layout(binding = 5) uniform sampler2D emissiveSampler;
 layout(binding = 6) uniform sampler2D transmissionSampler;
 layout(binding = 7) uniform sampler2D clearcoatSampler;
 layout(binding = 8) uniform sampler2D clearcoatRoughnessSampler;
-layout(binding = 9) uniform samplerCubeShadow shadowMaps[5];
+layout(binding = 9) uniform samplerCubeShadow shadowMaps[50];
 
 // --- FRAGMENT PUSH CONSTANT ---
 layout(push_constant) uniform FragPushConstants {
@@ -246,9 +247,7 @@ void main() {
 
 
         float shadow = 1.0;
-        if (ubo.panelShadowsEnabled != 0) {
-            shadow = calculateShadow(fragWorldPos, ubo.shadowLights[i].position.xyz, ubo.shadowFarPlane, i, N, L);
-        }
+        shadow = calculateShadow(fragWorldPos, ubo.shadowLights[i].position.xyz, ubo.shadowFarPlane, i, N, L);
 
 
         Lo += combined_lighting * radiance * NdotL * shadow;
@@ -257,7 +256,7 @@ void main() {
     // --- 6. Final Color (Linear, Pre-Tonemap) ---
     
     // Scale ambient by (1.0 - transmission)
-    vec3 ambient = (vec3(0.05) * albedo * ao) * (1.0 - transmission);
+    vec3 ambient = ubo.ambientLight.xyz * ubo.ambientLight.w * albedo * ao * (1.0 - transmission);
     vec3 color = ambient + Lo + emissive;
 
     // --- 7. PPLL Insertion ---

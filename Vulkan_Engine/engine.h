@@ -15,7 +15,7 @@
 
 #include "vk_mem_alloc.h"
 
-const int MAX_PANEL_LIGHTS = 5;
+const int MAX_SHADOW_LIGHTS = 10;
 
 
 
@@ -126,12 +126,12 @@ public:
     // Uniform Buffer
     UniformBufferObject ubo{};
 
-    std::array<AllocatedImage, MAX_PANEL_LIGHTS> shadow_maps;
+    std::array<AllocatedImage, MAX_SHADOW_LIGHTS> shadow_maps;
     vk::raii::Sampler shadow_sampler = nullptr;
     PipelineInfo shadow_pipeline;
-    const uint32_t SHADOW_MAP_DIM = 2048;
+    const uint32_t SHADOW_MAP_DIM = 1024;
     vk::Format shadow_map_format;
-    bool panel_shadows_enabled = true; // Toggle for all panel shadows
+    bool panel_shadows_enabled = true; 
     float shadow_light_far_plane = 100.f;
 
     struct ShadowUBO {
@@ -252,17 +252,16 @@ private:
 
     // Light Storage
     std::vector<Pointlight> manual_lights;
+    std::vector<bool> manual_lights_shadow;
     std::vector<Pointlight> emissive_lights;
     std::vector<Pointlight> panel_lights;
     std::vector<bool> panel_lights_on;
-    Pointlight left_panel_light;
-    Pointlight right_panel_light;
 
     // Light Toggles
     bool use_manual_lights = false;
     bool use_emissive_lights = false;
-    bool left_panel_light_on = true;
-    bool right_panel_light_on = true;
+    bool use_manual_lights_shadows = false;
+    bool use_emissive_lights_shadows = false;
 
 
     // ----- Helper functions
@@ -310,7 +309,7 @@ private:
     void createSyncObjects();
 
     void createPipelines();
-    void loadObjects(const std::string& scene_path);
+    void loadScene(const std::string& scene_path);
     void loadManualLights(const std::string& lights_path);
     void createTorusModel();
     void createUniformBuffers();

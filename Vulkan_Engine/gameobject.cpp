@@ -143,7 +143,7 @@ void Gameobject::loadTextures(const tinygltf::Model& model, const std::string& b
 
     // Add default textures
     textures.emplace_back();
-    createDefaultTexture(engine, textures[0], glm::vec4(1, 1, 1, 1)); 
+    createDefaultTexture(engine, textures[0], glm::vec4(255, 255, 255, 1)); 
 
     int image_index = 0;
     uint32_t max_mips = 1;
@@ -625,8 +625,8 @@ void Gameobject::createMaterialDescriptorSets(Engine& engine) {
             clearcoat_roughness_info.imageView = *getImageView(material.clearcoat_roughness_texture_index);
             clearcoat_roughness_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
-            std::array<vk::DescriptorImageInfo, MAX_PANEL_LIGHTS> shadow_map_infos;
-            for(int j = 0; j < MAX_PANEL_LIGHTS; ++j) {
+            std::array<vk::DescriptorImageInfo, MAX_SHADOW_LIGHTS> shadow_map_infos;
+            for(int j = 0; j < MAX_SHADOW_LIGHTS; ++j) {
                 shadow_map_infos[j].sampler = *engine.shadow_sampler;
                 shadow_map_infos[j].imageView = *engine.shadow_maps[j].image_view;
                 shadow_map_infos[j].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
@@ -700,7 +700,7 @@ void Gameobject::createMaterialDescriptorSets(Engine& engine) {
             descriptor_writes[9].dstSet = material.descriptor_sets[i];
             descriptor_writes[9].dstBinding = 9;
             descriptor_writes[9].descriptorType = vk::DescriptorType::eCombinedImageSampler;
-            descriptor_writes[9].descriptorCount = MAX_PANEL_LIGHTS; // Array of 5
+            descriptor_writes[9].descriptorCount = MAX_SHADOW_LIGHTS;
             descriptor_writes[9].pImageInfo = shadow_map_infos.data();
 
             engine.logical_device.updateDescriptorSets(descriptor_writes, {});

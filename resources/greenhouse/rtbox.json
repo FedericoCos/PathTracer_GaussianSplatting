@@ -1,0 +1,26 @@
+{
+  "position": [0, -3, 0.0],
+  "dimensions": [25, 30, 25],
+  "panels": {
+    "floor": {
+      "material": { "base_color": [0.8, 0.8, 0.8], "metallic": 0.0, "roughness": 1.0 },
+      "light": { "intensity": 300.0 }
+    },
+    "ceiling": {
+      "material": { "base_color": [0.8, 0.8, 0.8], "metallic": 0.0, "roughness": 1.0 },
+      "light": { "intensity": 300.0 }
+    },
+    "back_wall": {
+      "material": { "base_color": [0.8, 0.8, 0.8], "metallic": 0.0, "roughness": 1.0 },
+      "light": { "intensity": 300.0 }
+    },
+    "left_wall": {
+      "material": { "base_color": [0.1, 0.1, 1.0], "metallic": 0.0, "roughness": 1.0 },
+      "light": { "intensity": 300.0 }
+    },
+    "right_wall": {
+      "material": { "base_color": [1.0, 0.1, 0.1], "metallic": 0.0, "roughness": 1.0 },
+      "light": { "intensity": 300.0 }
+    }
+  }
+}

@@ -260,11 +260,12 @@ struct Pointlight{
 struct UniformBufferObject {
     // glm::mat4 model;
     glm::mat4 view;
-
     glm::mat4 proj;
 
     glm::vec3 camera_pos;
     float padding;
+
+    glm::vec4 ambient_light;
     
     std::array<Pointlight, MAX_POINTLIGHTS> pointlights;
     std::array<Pointlight, MAX_POINTLIGHTS> shadowlights;

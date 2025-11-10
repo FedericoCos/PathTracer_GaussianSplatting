@@ -261,6 +261,7 @@ void Engine::createRTBox(const std::string& rtbox_path)
         mat.metallic_factor = mat_config.value("metallic", 0.0f);
         mat.roughness_factor = mat_config.value("roughness", 1.0f);
         mat.emissive_factor = glm::vec3(0.0f); // All materials are non-emissive
+        mat.occlusion_strength = 1.0f;
         mat.albedo_texture_index = -1;
         mat.is_transparent = false;
         return mat;
@@ -317,7 +318,7 @@ void Engine::createRTBox(const std::string& rtbox_path)
     // --- 5. GPU Resources ---
     rt_box.textures.emplace_back();
     rt_box.default_sampler = Image::createTextureSampler(physical_device, &logical_device, 1);
-    rt_box.createDefaultTexture(*this, rt_box.textures[0], glm::vec4(1.0, 1.0, 1.0, 1.0));
+    rt_box.createDefaultTexture(*this, rt_box.textures[0], glm::vec4(125, 125, 125, 1));
     createModel(rt_box); // Upload to GPU
 }
 
@@ -679,7 +680,7 @@ bool Engine::initVulkan(){
     // Get device and queues
     physical_device = Device::pickPhysicalDevice(*this);
     mssa_samples = getMaxUsableSampleCount();
-    // mssa_samples = vk::SampleCountFlagBits::e4; // HARD-CODED FOR FULLSCREEN
+    //  mssa_samples = vk::SampleCountFlagBits::e2; // HARD-CODED FOR FULLSCREEN
     logical_device = Device::createLogicalDevice(*this, queue_indices); 
     graphics_queue = Device::getQueue(*this, queue_indices.graphics_family.value());
     present_queue = Device::getQueue(*this, queue_indices.present_family.value());
@@ -729,11 +730,13 @@ bool Engine::initVulkan(){
     printGpuMemoryUsage();
 
     createShadowResources();
+    std::cout << "Memory usage after Shadow resources creation" << std::endl;
+    printGpuMemoryUsage();
 
     // PIPELINE CREATION
     createPipelines();
 
-    loadObjects("resources/scene.json");
+    loadScene("resources/main_scene.json");
     std::cout << "Memory status loading objects in scene" << std::endl;
     printGpuMemoryUsage();
 
@@ -752,10 +755,10 @@ bool Engine::initVulkan(){
 
     for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
         // Resize the inner vectors to hold 5 elements
-        shadow_ubos[i].resize(MAX_PANEL_LIGHTS);
-        shadow_ubos_mapped[i].resize(MAX_PANEL_LIGHTS);
+        shadow_ubos[i].resize(MAX_SHADOW_LIGHTS);
+        shadow_ubos_mapped[i].resize(MAX_SHADOW_LIGHTS);
 
-        for (int j = 0; j < MAX_PANEL_LIGHTS; ++j) {
+        for (int j = 0; j < MAX_SHADOW_LIGHTS; ++j) {
             createBuffer(vma_allocator, sizeof(ShadowUBO), 
                          vk::BufferUsageFlagBits::eUniformBuffer,
                          vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
@@ -889,7 +892,7 @@ void Engine::createPipelines()
                                         vk::ShaderStageFlagBits::eFragment, nullptr),
         // Binding 9: Shadow Map Array
         vk::DescriptorSetLayoutBinding(9, vk::DescriptorType::eCombinedImageSampler, 
-                                       MAX_PANEL_LIGHTS, // 5 maps
+                                       MAX_SHADOW_LIGHTS, // 5 maps
                                        vk::ShaderStageFlagBits::eFragment, nullptr)
     };
 
@@ -954,7 +957,7 @@ void Engine::createPipelines()
 
 }
 
-void Engine::loadObjects(const std::string &scene_path)
+void Engine::loadScene(const std::string &scene_path)
 {
     // Open the scene file
     std::ifstream scene_file(scene_path);
@@ -963,6 +966,14 @@ void Engine::loadObjects(const std::string &scene_path)
     }
     // Parse the JSON data
     json scene_data = json::parse(scene_file);
+
+    std::ifstream scene_to_load(scene_data.value("scene", ""));
+    if(!scene_to_load.is_open()){
+         throw std::runtime_error("Failed to open scene file: " + scene_data.value("scene", ""));
+    }
+    scene_data = json::parse(scene_to_load);
+
+
 
     // --- 1. Parse Settings ---
     float emissive_multiplier = 1.0f;
@@ -974,12 +985,26 @@ void Engine::loadObjects(const std::string &scene_path)
         this->use_manual_lights = settings.value("use_manual_lights", false);
         this->use_emissive_lights = settings.value("use_emissive_lights", false);
         emissive_multiplier = settings.value("emissive_intensity_multiplier", 1.0f);
+        this->use_manual_lights_shadows = settings.value("use_manual_lights_shadows", false);
+        this->use_emissive_lights_shadows = settings.value("use_emissive_lights_shadows", false);
         lights_path = settings.value("lights_file", "");
         this->use_rt_box = settings.value("use_rt_box", false);
         rtbox_path = settings.value("rt_box_file", "");
 
         this->panel_shadows_enabled = settings.value("panel_shadows_enabled", true);
         this->shadow_light_far_plane = settings.value("shadow_far_plane", 100.0f);
+
+        if(settings.contains("ambient_light")){
+            ubo.ambient_light = glm::vec4{
+                settings["ambient_light"][0],
+                settings["ambient_light"][1],
+                settings["ambient_light"][2],
+                settings["ambient_light"][3],
+            };
+        }
+        else{
+            ubo.ambient_light = glm::vec4(1.f);
+        }
     }
 
     // --- 2. Load Manual Lights ---
@@ -1118,6 +1143,7 @@ void Engine::loadManualLights(const std::string& lights_path)
             new_light.position = glm::vec4(pos, 0.0f);
             new_light.color = glm::vec4(color, intensity);
             manual_lights.push_back(new_light);
+            manual_lights_shadow.push_back(light_def.value("shadow", false));
         }
     }
 }
@@ -1183,7 +1209,7 @@ void Engine::createDescriptorPool()
         total_materials += rt_box.materials.size();
     }
 
-    uint32_t shadow_sets_count = MAX_PANEL_LIGHTS * MAX_FRAMES_IN_FLIGHT;
+    uint32_t shadow_sets_count = MAX_SHADOW_LIGHTS * MAX_FRAMES_IN_FLIGHT;
 
     // We now allocate per-material, not per-object
     uint32_t total_sets = total_materials * MAX_FRAMES_IN_FLIGHT;
@@ -1192,7 +1218,7 @@ void Engine::createDescriptorPool()
     std::vector<vk::DescriptorPoolSize> pool_sizes = {
         vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, total_sets + shadow_sets_count),
         // 8 samplers (Albedo, Normal, Met/Rough, AO, Emissive, Transmission, Clearcoat, Clearcoat Roughness) per set
-        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_sets * (8 + MAX_PANEL_LIGHTS)),
+        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_sets * (8 + MAX_SHADOW_LIGHTS)),
         // We need 1 set per frame for the PPLL buffers
         // 1 storage image, 2 storage buffers per set
         vk::DescriptorPoolSize(vk::DescriptorType::eStorageImage, MAX_FRAMES_IN_FLIGHT),
@@ -1226,9 +1252,9 @@ void Engine::createDescriptorSets()
         
         // Clear any old sets from the previous frame/swapchain
         shadow_descriptor_sets[i].clear();
-        shadow_descriptor_sets[i].reserve(MAX_PANEL_LIGHTS); // Optional: improves performance
+        shadow_descriptor_sets[i].reserve(MAX_SHADOW_LIGHTS); // Optional: improves performance
 
-        for (int j = 0; j < MAX_PANEL_LIGHTS; ++j) {
+        for (int j = 0; j < MAX_SHADOW_LIGHTS; ++j) {
             // Allocate one set using the shadow pipeline's layout
             vk::DescriptorSetAllocateInfo alloc_info(*descriptor_pool, 1, &*shadow_pipeline.descriptor_set_layout);
             
@@ -1409,7 +1435,7 @@ void Engine::createOITDescriptorSets() {
 void Engine::createShadowResources() {
     shadow_map_format = findDepthFormat(physical_device);
 
-    for (int i = 0; i < MAX_PANEL_LIGHTS; ++i) {
+    for (int i = 0; i < MAX_SHADOW_LIGHTS; ++i) {
         // --- 1. Create Shadow Map Image (Manual VMA) ---
         vk::ImageCreateInfo imageInfo;
         imageInfo.imageType = vk::ImageType::e2D;
@@ -1499,7 +1525,7 @@ void Engine::run(){
     {
         vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_transfer, &logical_device);
 
-        for (int i = 0; i < MAX_PANEL_LIGHTS; ++i) {
+        for (int i = 0; i < MAX_SHADOW_LIGHTS; ++i) {
             transitionImage(cmd, shadow_maps[i].image,
                             vk::ImageLayout::eUndefined,
                             vk::ImageLayout::eShaderReadOnlyOptimal,
@@ -1522,83 +1548,72 @@ void Engine::run(){
 void Engine::recordCommandBuffer(uint32_t image_index){
     auto& cmd = graphics_command_buffer[current_frame];
     cmd.begin({});
-    if (panel_shadows_enabled) {
+    for (int i = 0; i < ubo.curr_num_shadowlights; ++i) {
+        // Transition shadow map to be a depth attachment
+        transitionImage(cmd, shadow_maps[i].image, 
+                        vk::ImageLayout::eShaderReadOnlyOptimal, 
+                        vk::ImageLayout::eDepthStencilAttachmentOptimal, 
+                        vk::ImageAspectFlagBits::eDepth);
+
+        vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
+        vk::RenderingAttachmentInfo depth_attachment_info;
+        depth_attachment_info.imageView = *shadow_maps[i].image_view;
+        depth_attachment_info.imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+        depth_attachment_info.loadOp = vk::AttachmentLoadOp::eClear;
+        depth_attachment_info.storeOp = vk::AttachmentStoreOp::eStore;
+        depth_attachment_info.clearValue = clear_depth;
+
+        vk::RenderingInfo shadow_rendering_info;
+        shadow_rendering_info.renderArea.offset = vk::Offset2D{0, 0};
+        shadow_rendering_info.renderArea.extent = vk::Extent2D{SHADOW_MAP_DIM, SHADOW_MAP_DIM};
+        shadow_rendering_info.layerCount = 6;
+        shadow_rendering_info.viewMask = 0b00111111;
+        shadow_rendering_info.colorAttachmentCount = 0;
+        shadow_rendering_info.pDepthAttachment = &depth_attachment_info;
+
+        cmd.beginRendering(shadow_rendering_info);
+
+        cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)SHADOW_MAP_DIM, (float)SHADOW_MAP_DIM, 0.f, 1.f));
+        cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), {SHADOW_MAP_DIM, SHADOW_MAP_DIM}));
+        cmd.setCullMode(vk::CullModeFlagBits::eFront);
+
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.pipeline);
         
-        int panel_index = 0;
-        // IMPORTANT: This loop MUST match the logic in updateUniformBuffer()
-        for (int i = 0; i < panel_lights.size(); ++i) {
-            // Skip if this light is off
-            if (!panel_lights_on[i]) {
-                continue; // Don't increment shadow_map_slot here!
-            }
+        // Bind the correct Shadow UBO for this pass
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.layout, 0, 
+                    {*shadow_descriptor_sets[current_frame][i]}, {});
 
-            // Transition shadow map to be a depth attachment
-            transitionImage(cmd, shadow_maps[panel_index].image, 
-                            vk::ImageLayout::eShaderReadOnlyOptimal, 
-                            vk::ImageLayout::eDepthStencilAttachmentOptimal, 
-                            vk::ImageAspectFlagBits::eDepth);
-
-            vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
-            vk::RenderingAttachmentInfo depth_attachment_info;
-            depth_attachment_info.imageView = *shadow_maps[panel_index].image_view;
-            depth_attachment_info.imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
-            depth_attachment_info.loadOp = vk::AttachmentLoadOp::eClear;
-            depth_attachment_info.storeOp = vk::AttachmentStoreOp::eStore;
-            depth_attachment_info.clearValue = clear_depth;
-
-            vk::RenderingInfo shadow_rendering_info;
-            shadow_rendering_info.renderArea.offset = vk::Offset2D{0, 0};
-            shadow_rendering_info.renderArea.extent = vk::Extent2D{SHADOW_MAP_DIM, SHADOW_MAP_DIM};
-            shadow_rendering_info.layerCount = 6;
-            shadow_rendering_info.viewMask = 0b00111111;
-            shadow_rendering_info.colorAttachmentCount = 0;
-            shadow_rendering_info.pDepthAttachment = &depth_attachment_info;
-
-            cmd.beginRendering(shadow_rendering_info);
-
-            cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)SHADOW_MAP_DIM, (float)SHADOW_MAP_DIM, 0.f, 1.f));
-            cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), {SHADOW_MAP_DIM, SHADOW_MAP_DIM}));
-            cmd.setCullMode(vk::CullModeFlagBits::eFront);
-
-            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.pipeline);
+        // --- Draw all shadow-casting objects ---
+        for(auto& obj : scene_objs) {
+            if (obj.o_primitives.empty()) continue; 
             
-            // Bind the correct Shadow UBO for this pass
-            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.layout, 0, 
-                     {*shadow_descriptor_sets[current_frame][panel_index]}, {});
-
-            // --- Draw all shadow-casting objects ---
-            for(auto& obj : scene_objs) {
-                if (obj.o_primitives.empty()) continue; 
-                
-                cmd.bindVertexBuffers(0, {obj.geometry_buffer.buffer}, {0});
-                cmd.bindIndexBuffer(obj.geometry_buffer.buffer, obj.index_buffer_offset, vk::IndexType::eUint32);
-                cmd.pushConstants<glm::mat4>(*shadow_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix);
-                
-                for(auto& primitive : obj.o_primitives) {
-                    cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
-                }
-            }
+            cmd.bindVertexBuffers(0, {obj.geometry_buffer.buffer}, {0});
+            cmd.bindIndexBuffer(obj.geometry_buffer.buffer, obj.index_buffer_offset, vk::IndexType::eUint32);
+            cmd.pushConstants<glm::mat4>(*shadow_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix);
             
-            // Draw rt_box
-            if (use_rt_box && rt_box.o_pipeline && !rt_box.o_primitives.empty()) {
-                cmd.bindVertexBuffers(0, {rt_box.geometry_buffer.buffer}, {0});
-                cmd.bindIndexBuffer(rt_box.geometry_buffer.buffer, rt_box.index_buffer_offset, vk::IndexType::eUint32);
-                cmd.pushConstants<glm::mat4>(*shadow_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, rt_box.model_matrix);
-                for(auto& primitive : rt_box.o_primitives) {
-                    cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
-                }
+            for(auto& primitive : obj.o_primitives) {
+                cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
             }
-
-            cmd.endRendering();
-
-            // Transition shadow map to be readable in PBR shaders
-            transitionImage(cmd, shadow_maps[panel_index].image, 
-                            vk::ImageLayout::eDepthStencilAttachmentOptimal, 
-                            vk::ImageLayout::eShaderReadOnlyOptimal, 
-                            vk::ImageAspectFlagBits::eDepth);
-
-            panel_index++;
         }
+        
+        // Draw rt_box
+        if (use_rt_box && rt_box.o_pipeline && !rt_box.o_primitives.empty()) {
+            cmd.bindVertexBuffers(0, {rt_box.geometry_buffer.buffer}, {0});
+            cmd.bindIndexBuffer(rt_box.geometry_buffer.buffer, rt_box.index_buffer_offset, vk::IndexType::eUint32);
+            cmd.pushConstants<glm::mat4>(*shadow_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, rt_box.model_matrix);
+            for(auto& primitive : rt_box.o_primitives) {
+                cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
+            }
+        }
+
+        cmd.endRendering();
+
+        // Transition shadow map to be readable in PBR shaders
+        transitionImage(cmd, shadow_maps[i].image, 
+                        vk::ImageLayout::eDepthStencilAttachmentOptimal, 
+                        vk::ImageLayout::eShaderReadOnlyOptimal, 
+                        vk::ImageAspectFlagBits::eDepth);
+
     }
     // --- 1. GATHER TRANSPARENTS ---
     transparent_draws.clear();
@@ -1792,6 +1807,20 @@ void Engine::recordCommandBuffer(uint32_t image_index){
                 // Create model matrix for this light
                 // Translate to its position and scale it down
                 glm::mat4 model_matrix = glm::translate(glm::mat4(1.0f), glm::vec3(ubo.pointlights[i].position));
+                model_matrix = glm::scale(model_matrix, glm::vec3(0.5f)); // 0.5m cubes
+
+                // Push vertex constant (model matrix)
+                cmd.pushConstants<glm::mat4>(*debug_cube.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, model_matrix);
+
+                // Draw
+                cmd.drawIndexed(debug_cube.o_primitives[0].index_count, 1, debug_cube.o_primitives[0].first_index, 0, 0);
+            }
+
+            for(int i = 0; i < ubo.curr_num_shadowlights; i++)
+            {
+                // Create model matrix for this light
+                // Translate to its position and scale it down
+                glm::mat4 model_matrix = glm::translate(glm::mat4(1.0f), glm::vec3(ubo.shadowlights[i].position));
                 model_matrix = glm::scale(model_matrix, glm::vec3(0.5f)); // 0.5m cubes
 
                 // Push vertex constant (model matrix)
@@ -2097,61 +2126,78 @@ void Engine::updateUniformBuffer(uint32_t current_image)
 
     // --- 1. Add Panel Lights (if enabled) ---
     for(int i = 0; i < panel_lights.size(); ++i) {
-        if (ubo.curr_num_shadowlights >= MAX_POINTLIGHTS) break;
-        // Only add active lights
-        if (panel_lights_on[i]) {
-            int ubo_index = ubo.curr_num_shadowlights;
-            ubo.shadowlights[ubo_index] = panel_lights[i];
-            
-            ubo.curr_num_shadowlights++;
+        if(panel_shadows_enabled){
+            if(ubo.curr_num_shadowlights >= MAX_SHADOW_LIGHTS) break;
+            if(panel_lights_on[i]){
+                ubo.shadowlights[ubo.curr_num_shadowlights] = panel_lights[i];
+                ubo.curr_num_shadowlights++;
+            }
+        }
+        else{
+            if(ubo.curr_num_pointlights >= MAX_POINTLIGHTS) break;
+            if(panel_lights_on[i]){
+                ubo.pointlights[ubo.curr_num_pointlights] = panel_lights[i];
+                ubo.curr_num_pointlights++;
+            }
         }
     }
 
     // --- 2. Add Manual Lights ---
     if (use_manual_lights) {
-        for (const auto& light : manual_lights) {
-            if (ubo.curr_num_pointlights >= MAX_POINTLIGHTS) break;
-            ubo.pointlights[ubo.curr_num_pointlights++] = light;
-            // These lights have no shadows, so light_to_shadow_map_index stays -1
+        if(use_manual_lights_shadows){
+            for(int i = 0; i < manual_lights.size(); i++){
+                if(manual_lights_shadow[i]){
+                    if (ubo.curr_num_shadowlights >= MAX_SHADOW_LIGHTS) break;
+                    ubo.shadowlights[ubo.curr_num_shadowlights++] = manual_lights[i];
+                }
+                else{
+                    if (ubo.curr_num_pointlights >= MAX_POINTLIGHTS) break;
+                    ubo.pointlights[ubo.curr_num_pointlights++] = manual_lights[i];
+                }
+            }
+        }
+        else{ 
+            for (const auto& light : manual_lights) {
+                if (ubo.curr_num_pointlights >= MAX_POINTLIGHTS) break;
+                ubo.pointlights[ubo.curr_num_pointlights++] = light;
+            }
         }
     }
 
     // --- 3. Add Emissive Lights ---
     if (use_emissive_lights) {
-        for (const auto& light : emissive_lights) {
-            if (ubo.curr_num_pointlights >= MAX_POINTLIGHTS) break;
-            ubo.pointlights[ubo.curr_num_pointlights++] = light;
-            // These lights have no shadows, so light_to_shadow_map_index stays -1
+        if(use_emissive_lights_shadows){
+            for (const auto& light : emissive_lights) {
+                if (ubo.curr_num_shadowlights >= MAX_SHADOW_LIGHTS) break;
+                ubo.shadowlights[ubo.curr_num_shadowlights++] = light;
+            }
+        }
+        else{
+            for (const auto& light : emissive_lights) {
+                if (ubo.curr_num_pointlights >= MAX_POINTLIGHTS) break;
+                ubo.pointlights[ubo.curr_num_pointlights++] = light;
+            }
         }
     }
 
-    // --- 4. NOW Setup Shadow Maps for Panel Lights ---
-    // We do this AFTER adding all lights so indices are stable
-    int panel_index = 0;
-    if (panel_shadows_enabled) {
-        for(int i = 0; i < panel_lights.size(); ++i) {
-            // Skip if this light is off or if we've run out of shadow maps
-            if (!panel_lights_on[i]) {
-                continue;
-            }
-            
-            // --- Update the corresponding Shadow UBO ---
-            Pointlight& light = panel_lights[i];
-            shadow_ubo_data.lightPos = light.position;
-            shadow_ubo_data.farPlane = shadow_light_far_plane;
-            
-            shadow_ubo_data.proj = glm::perspective(glm::radians(90.0f), 1.0f, 0.1f, shadow_light_far_plane);
-            glm::vec3 pos = glm::vec3(light.position);
-            shadow_ubo_data.views[0] = glm::lookAt(pos, pos + glm::vec3( 1.0, 0.0, 0.0), glm::vec3(0.0, -1.0, 0.0));
-            shadow_ubo_data.views[1] = glm::lookAt(pos, pos + glm::vec3(-1.0, 0.0, 0.0), glm::vec3(0.0, -1.0, 0.0));
-            shadow_ubo_data.views[2] = glm::lookAt(pos, pos + glm::vec3( 0.0, 1.0, 0.0), glm::vec3(0.0, 0.0, 1.0));
-            shadow_ubo_data.views[3] = glm::lookAt(pos, pos + glm::vec3( 0.0,-1.0, 0.0), glm::vec3(0.0, 0.0,-1.0));
-            shadow_ubo_data.views[4] = glm::lookAt(pos, pos + glm::vec3( 0.0, 0.0, 1.0), glm::vec3(0.0, -1.0, 0.0));
-            shadow_ubo_data.views[5] = glm::lookAt(pos, pos + glm::vec3( 0.0, 0.0,-1.0), glm::vec3(0.0, -1.0, 0.0));
-            
-            memcpy(shadow_ubos_mapped[current_image][panel_index], &shadow_ubo_data, sizeof(ShadowUBO));
-            panel_index++;
-        }
+    // --- 4. NOW Setup Shadow Maps ---ì
+    for(int i = 0; i < ubo.curr_num_shadowlights; ++i) {
+        
+        // --- Update the corresponding Shadow UBO ---
+        Pointlight& light = ubo.shadowlights[i];
+        shadow_ubo_data.lightPos = light.position;
+        shadow_ubo_data.farPlane = shadow_light_far_plane;
+        
+        shadow_ubo_data.proj = glm::perspective(glm::radians(90.0f), 1.0f, 0.1f, shadow_light_far_plane);
+        glm::vec3 pos = glm::vec3(light.position);
+        shadow_ubo_data.views[0] = glm::lookAt(pos, pos + glm::vec3( 1.0, 0.0, 0.0), glm::vec3(0.0, -1.0, 0.0));
+        shadow_ubo_data.views[1] = glm::lookAt(pos, pos + glm::vec3(-1.0, 0.0, 0.0), glm::vec3(0.0, -1.0, 0.0));
+        shadow_ubo_data.views[2] = glm::lookAt(pos, pos + glm::vec3( 0.0, 1.0, 0.0), glm::vec3(0.0, 0.0, 1.0));
+        shadow_ubo_data.views[3] = glm::lookAt(pos, pos + glm::vec3( 0.0,-1.0, 0.0), glm::vec3(0.0, 0.0,-1.0));
+        shadow_ubo_data.views[4] = glm::lookAt(pos, pos + glm::vec3( 0.0, 0.0, 1.0), glm::vec3(0.0, -1.0, 0.0));
+        shadow_ubo_data.views[5] = glm::lookAt(pos, pos + glm::vec3( 0.0, 0.0,-1.0), glm::vec3(0.0, -1.0, 0.0));
+        
+        memcpy(shadow_ubos_mapped[current_image][i], &shadow_ubo_data, sizeof(ShadowUBO));
     }
 
     memcpy(uniform_buffers_mapped[current_image], &ubo, sizeof(ubo));

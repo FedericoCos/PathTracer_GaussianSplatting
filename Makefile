@@ -31,7 +31,7 @@ test: $(TARGET)
 	glslc shaders/basic/vertex.vert -o shaders/basic/vertex.spv
 	glslc shaders/basic/fragment.frag -o shaders/basic/fragment.spv
 	glslc shaders/basic/vertex_torus.vert -o shaders/basic/vertex_torus.spv
-	glslc shaders/basic/vertex_torus.vert -o shaders/basic/vertex_torus.spv
+	glslc shaders/basic/fragment_torus.frag -o shaders/basic/fragment_torus.spv
 	glslc shaders/basic/oit_write.frag -o shaders/basic/oit_write.spv
 	glslc shaders/basic/oit_ppll_write.frag -o shaders/basic/oit_ppll_write.spv
 	glslc shaders/basic/oit_composite.vert -o shaders/basic/oit_composite_vert.spv

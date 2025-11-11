@@ -1155,27 +1155,32 @@ void Engine::createTorusModel()
     torusPrim.index_count = torus.indices.size();
     torusPrim.first_index = 0;
     torusPrim.material_index = 0;
-    torus.o_primitives.push_back(torusPrim);
+    
+    torus.t_primitives.push_back(torusPrim);
 
     Material torusMat;
     torusMat.albedo_texture_index = -1; // No texture, shader should use baseColorFactor
     torusMat.base_color_factor = glm::vec4(1.0f, 1.0f, 1.0f, 0.5f); // 50% transparent white
+    
+    torusMat.is_transparent = true; // Explicitly mark material as transparent
+
     torus.materials.push_back(std::move(torusMat));
 
     createModel(torus); 
 
+    // --- UNCOMMENT AND FIX THIS BLOCK ---
     // Setup torus pipeline
-    /* PipelineKey p_key;
+    PipelineKey p_key;
     p_key.v_shader = v_shader_torus;
     p_key.f_shader = f_shader_torus;
-    p_key.is_transparent = true;
+    p_key.mode = TransparencyMode::OIT_WRITE; // Use the OIT write pipeline
     p_key.cull_mode = vk::CullModeFlagBits::eBack;
 
     if(!p_p_map.contains(p_key)){
-        std::cout << "Error! Pipeline not present\nPipeline info: v_shader->" << p_key.v_shader << " f_shader->" <<
-        p_key.f_shader << std::endl;
+        throw std::runtime_error("Torus pipeline (OIT_WRITE) not found in p_p_map!");
     }
-    torus.pipeline = &p_p_map[p_key]; */
+    torus.t_pipeline = &p_p_map[p_key]; // Assign the transparent pipeline
+    // --- END BLOCK ---
 }
 
 void Engine::createUniformBuffers()
@@ -1197,37 +1202,60 @@ void Engine::createUniformBuffers()
 
 void Engine::createDescriptorPool()
 {
-    uint32_t object_count = 0;
-    uint32_t total_materials = 0;
-
+    // --- 1. Count PBR materials (scene + debug + rt_box) ---
+    uint32_t pbr_material_count = 0;
     for(auto& obj : scene_objs){
-        total_materials += obj.materials.size();
+        pbr_material_count += obj.materials.size();
     }
-    // total_materials += torus.materials.size(); // Add torus materials
-    total_materials += debug_cube.materials.size();
+    pbr_material_count += debug_cube.materials.size();
     if (use_rt_box) {
-        total_materials += rt_box.materials.size();
+        pbr_material_count += rt_box.materials.size();
     }
 
-    uint32_t shadow_sets_count = MAX_SHADOW_LIGHTS * MAX_FRAMES_IN_FLIGHT;
+    // --- 2. Count Torus materials ---
+    // We get this *after* createTorusModel() is called, so materials exist
+    uint32_t torus_material_count = torus.materials.size(); 
 
-    // We now allocate per-material, not per-object
-    uint32_t total_sets = total_materials * MAX_FRAMES_IN_FLIGHT;
+    // --- 3. Calculate total sets needed ---
+    uint32_t pbr_sets = pbr_material_count * MAX_FRAMES_IN_FLIGHT;
+    uint32_t torus_sets = torus_material_count * MAX_FRAMES_IN_FLIGHT;
+    uint32_t shadow_sets = MAX_SHADOW_LIGHTS * MAX_FRAMES_IN_FLIGHT;
+    uint32_t oit_sets = MAX_FRAMES_IN_FLIGHT; // For PPLL buffers
+
+    uint32_t total_max_sets = pbr_sets + torus_sets + shadow_sets + oit_sets;
+
+    // --- 4. Calculate total individual descriptors needed ---
     
-    // This MUST match your descriptor set layout
-    std::vector<vk::DescriptorPoolSize> pool_sizes = {
-        vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, total_sets + shadow_sets_count),
-        // 8 samplers (Albedo, Normal, Met/Rough, AO, Emissive, Transmission, Clearcoat, Clearcoat Roughness) per set
-        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_sets * (8 + MAX_SHADOW_LIGHTS)),
-        // We need 1 set per frame for the PPLL buffers
-        // 1 storage image, 2 storage buffers per set
-        vk::DescriptorPoolSize(vk::DescriptorType::eStorageImage, MAX_FRAMES_IN_FLIGHT),
-        vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, MAX_FRAMES_IN_FLIGHT * 2)
-    };
+    // UBOs: 1 per PBR set, 1 per Torus set, 1 per Shadow set
+    uint32_t total_ubos = pbr_sets + torus_sets + shadow_sets;
+
+    // Samplers: (8 PBR + shadows) per PBR set. Torus/OIT/Shadow sets use 0.
+    uint32_t total_samplers = pbr_sets * (8 + MAX_SHADOW_LIGHTS);
+
+    // Storage Images: 1 per OIT set
+    uint32_t total_storage_images = oit_sets;
+
+    // Storage Buffers: 2 per OIT set
+    uint32_t total_storage_buffers = oit_sets * 2;
+
+
+    std::vector<vk::DescriptorPoolSize> pool_sizes;
+    if (total_ubos > 0) {
+        pool_sizes.push_back(vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, total_ubos));
+    }
+    if (total_samplers > 0) {
+        pool_sizes.push_back(vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_samplers));
+    }
+    if (total_storage_images > 0) {
+        pool_sizes.push_back(vk::DescriptorPoolSize(vk::DescriptorType::eStorageImage, total_storage_images));
+    }
+    if (total_storage_buffers > 0) {
+        pool_sizes.push_back(vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, total_storage_buffers));
+    }
 
     vk::DescriptorPoolCreateInfo pool_info;
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    pool_info.maxSets = total_sets + MAX_FRAMES_IN_FLIGHT+ shadow_sets_count; // TO CHECK
+    pool_info.maxSets = total_max_sets; 
     pool_info.poolSizeCount = static_cast<uint32_t>(pool_sizes.size()); 
     pool_info.pPoolSizes = pool_sizes.data();
 
@@ -1245,7 +1273,7 @@ void Engine::createDescriptorSets()
         rt_box.createMaterialDescriptorSets(*this);
     }
 
-    // torus.createMaterialDescriptorSets(*this);
+    torus.createMaterialDescriptorSets(*this);
 
 
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
@@ -1626,6 +1654,13 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         }
     }
 
+    if (torus.isVisible && !torus.t_primitives.empty()) {
+        for (const auto& primitive : torus.t_primitives) {
+            const Material& material = torus.materials[primitive.material_index];
+            transparent_draws.push_back({&torus, &primitive, &material, 0.0f});
+        }
+    }
+
     // --- 2. OPAQUE PASS ---
     {
         // Transition swapchain image (for final resolve)
@@ -1917,21 +1952,24 @@ void Engine::recordCommandBuffer(uint32_t image_index){
                 cmd.pushConstants<glm::mat4>(*pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, obj->model_matrix);
 
                 // Setup material push constant
-                MaterialPushConstant p_const;
-                p_const.base_color_factor = material.base_color_factor;
-                p_const.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 0.0f);
-                p_const.metallic_factor = material.metallic_factor;
-                p_const.roughness_factor = material.roughness_factor;
-                p_const.occlusion_strength = material.occlusion_strength;
-                p_const.specular_factor = material.specular_factor;
-                p_const.specular_color_factor = material.specular_color_factor;
-                p_const.transmission_factor = material.transmission_factor;
-                p_const.alpha_cutoff = material.alpha_cutoff;
-                p_const.clearcoat_factor = material.clearcoat_factor;
-                p_const.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
+                if (obj != &torus)
+                {
+                    // Setup material push constant
+                    MaterialPushConstant p_const;
+                    p_const.base_color_factor = material.base_color_factor;
+                    p_const.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 0.0f);
+                    p_const.metallic_factor = material.metallic_factor;
+                    p_const.roughness_factor = material.roughness_factor;
+                    p_const.occlusion_strength = material.occlusion_strength;
+                    p_const.specular_factor = material.specular_factor;
+                    p_const.specular_color_factor = material.specular_color_factor;
+                    p_const.transmission_factor = material.transmission_factor;
+                    p_const.alpha_cutoff = material.alpha_cutoff;
+                    p_const.clearcoat_factor = material.clearcoat_factor;
+                    p_const.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
 
-
-                cmd.pushConstants<MaterialPushConstant>(*pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
+                    cmd.pushConstants<MaterialPushConstant>(*pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
+                }
 
                 // Bind *both* descriptor sets
                 std::array<vk::DescriptorSet, 2> descriptor_sets_to_bind = {

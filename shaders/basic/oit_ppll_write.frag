@@ -28,7 +28,7 @@ layout(binding = 5) uniform sampler2D emissiveSampler;
 layout(binding = 6) uniform sampler2D transmissionSampler;
 layout(binding = 7) uniform sampler2D clearcoatSampler;
 layout(binding = 8) uniform sampler2D clearcoatRoughnessSampler;
-layout(binding = 9) uniform samplerCubeShadow shadowMaps[50];
+layout(binding = 9) uniform samplerCubeShadow shadowMaps[10];
 
 // --- FRAGMENT PUSH CONSTANT ---
 layout(push_constant) uniform FragPushConstants {

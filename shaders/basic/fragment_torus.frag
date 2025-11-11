@@ -1,5 +1,7 @@
 #version 450
 
+layout(early_fragment_tests) in;
+
 // --- UNIFORMS (from vertex.spv) ---
 layout(binding = 0) uniform UniformBufferObject {
     mat4 view;
@@ -9,14 +11,13 @@ layout(binding = 0) uniform UniformBufferObject {
 
 // --- INPUTS (from vertex_torus.spv) ---
 layout(location = 0) in vec3 fragColor;
-layout(location = 1) in vec3 fragPos;
 
 // --- OIT PPLL BUFFERS (Bound at Set 1) ---
 // (This must match oit_ppll_write.frag)
 
 struct FragmentNode {
     vec4 color; // .a is alpha
-    float depth;
+    uint depth;
     uint next;  // Index of the next node
 };
 
@@ -28,7 +29,7 @@ layout(set = 1, binding = 1, std430) buffer FragmentList {
     FragmentNode fragments[];
 } fragmentList;
 
-layout(set = 1, binding = 2, r32ui) uniform uimage2D startOffsetImage;
+layout(set = 1, binding = 2, r32ui) uniform uimage2DMS startOffsetImage;
 
 // --- OUTPUTS (None) ---
 // We write to buffers, not to a color attachment
@@ -54,10 +55,10 @@ void main() {
 
     // Get the current "head" pointer
     ivec2 pixel_coord = ivec2(gl_FragCoord.xy);
-    uint old_head = imageAtomicExchange(startOffsetImage, pixel_coord, index);
+    uint old_head = imageAtomicExchange(startOffsetImage, pixel_coord, gl_SampleID, index);
 
     // Write our fragment data into the list
     fragmentList.fragments[index].color = vec4(finalColor.rgb, finalColor.a); // Store linear color
-    fragmentList.fragments[index].depth = gl_FragCoord.z;
+    fragmentList.fragments[index].depth = floatBitsToUint(gl_FragCoord.w);
     fragmentList.fragments[index].next = old_head; // Our "next" points to the previous head
 }

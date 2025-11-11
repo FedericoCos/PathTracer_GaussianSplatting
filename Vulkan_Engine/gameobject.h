@@ -63,7 +63,6 @@ public:
     virtual bool inputUpdate(InputState &input, float &dtime);
 
     virtual void loadModel(std::string m_path, Engine &engine);
-    // virtual void createDescriptorSets(Engine& engine);
     virtual void createMaterialDescriptorSets(Engine& engine);
 
     void createDefaultTexture(Engine& engine, AllocatedImage& texture, glm::vec4 color);

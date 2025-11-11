@@ -82,8 +82,7 @@ public:
                 float norm_z = cos(v) * sin(u);
                 vertex.normal = glm::normalize(glm::vec3(norm_x, norm_y, norm_z));
 
-                // Set color based on normalized position for a rainbow effect
-                vertex.color = glm::normalize(vertex.pos);
+                vertex.color = glm::vec3(65, 85, 90);
                 vertex.tex_coord = { (float)i / N, (float)j / n };
 
                 vertices.push_back(vertex);
@@ -109,29 +108,7 @@ public:
         }
     }
 
-    /**
-     * @brief Projects a 3D point from the scene onto the closest point on this torus's surface.
-     * @param scenePoint The 3D point to project.
-     * @return The corresponding 3D point on the surface of the torus.
-     */
-    glm::vec3 projectPoint(const glm::vec3& scenePoint) {
-        // 1. Flatten the scene point onto the XZ plane (ignoring height for now)
-        glm::vec2 p_xz(scenePoint.x, scenePoint.z);
-
-        // 2. Find the closest point 'C' on the major radius circle (the centerline of the torus)
-        glm::vec2 c_xz = glm::normalize(p_xz) * this->major_radius;
-
-        // 3. Convert that 2D point back to a 3D point on the centerline, including height
-        glm::vec3 C(c_xz.x, this->height, c_xz.y);
-
-        // 4. Find the vector from the centerline point C to the original scene point
-        glm::vec3 direction_to_p = scenePoint - C;
-
-        // 5. The final projected point is C plus the direction vector, scaled to the minor radius
-        glm::vec3 projected_point = C + glm::normalize(direction_to_p) * this->minor_radius;
-
-        return projected_point;
-    }
+    void createMaterialDescriptorSets(Engine& engine) override;
 
     float &getHeight(){
         return height;

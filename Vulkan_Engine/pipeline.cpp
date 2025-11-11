@@ -104,8 +104,8 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
         case TransparencyMode::OIT_WRITE:
             // OIT_WRITE pass no longer writes to ANY color attachments.
             // It writes to SSBOs/storage images.
-            color_blending.attachmentCount = 0; // <-- MODIFIED
-            color_blending.pAttachments = nullptr; // <-- MODIFIED
+            color_blending.attachmentCount = 0; 
+            color_blending.pAttachments = nullptr; 
             break;
         
         case TransparencyMode::OIT_COMPOSITE:

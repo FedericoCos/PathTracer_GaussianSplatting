@@ -480,7 +480,8 @@ void Engine::createModel(Gameobject &obj)
     obj.index_buffer_offset = vertex_size;
     
     AllocatedBuffer staging_buffer;
-    createBuffer(vma_allocator, total_size, vk::BufferUsageFlagBits::eTransferSrc,
+    createBuffer(vma_allocator, total_size, 
+        vk::BufferUsageFlagBits::eTransferSrc,
                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
                 staging_buffer);
 
@@ -490,11 +491,150 @@ void Engine::createModel(Gameobject &obj)
     memcpy((char *)data + vertex_size, obj.indices.data(), (size_t)index_size);
     vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
 
-    createBuffer(vma_allocator, total_size, vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer |vk::BufferUsageFlagBits::eIndexBuffer,
+    createBuffer(vma_allocator, total_size, 
+                vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer |vk::BufferUsageFlagBits::eIndexBuffer |
+                vk::BufferUsageFlagBits::eShaderDeviceAddress | vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR,
                 vk::MemoryPropertyFlagBits::eDeviceLocal, obj.geometry_buffer);
     
     copyBuffer(staging_buffer.buffer, obj.geometry_buffer.buffer, total_size,
                 command_pool_transfer, &logical_device, transfer_queue);
+
+    // We need to exclude the torus, since it casts the rays
+    // For the moment, we are excluding transparent objects
+    if (&obj != &torus && !obj.o_primitives.empty()) {
+        buildBlas(obj);
+    }
+}
+
+/**
+ * @brief Helper function to get the 64-bit device address of a buffer.
+ * Requires the eShaderDeviceAddress usage flag to be set on the buffer.
+ */
+uint64_t Engine::getBufferDeviceAddress(vk::Buffer buffer) {
+    vk::BufferDeviceAddressInfo info(buffer);
+    return logical_device.getBufferAddress(info);
+}
+
+/**
+ * @brief Builds a Bottom-Level Acceleration Structure (BLAS) for a single Gameobject.
+ * This function iterates over all OPAQUE primitives in the object.
+ */
+void Engine::buildBlas(Gameobject& obj)
+{
+    // 1. Collect geometry info for all opaque primitives
+    std::vector<vk::AccelerationStructureGeometryKHR> geometries;
+    std::vector<vk::AccelerationStructureBuildRangeInfoKHR> build_ranges;
+    std::vector<uint32_t> primitive_counts; // Number of triangles per geometry
+
+    uint64_t vertex_buffer_addr = getBufferDeviceAddress(obj.geometry_buffer.buffer);
+    uint64_t index_buffer_addr = vertex_buffer_addr + obj.index_buffer_offset;
+
+    for (const auto& prim : obj.o_primitives) {
+        if (prim.index_count < 3) {
+            continue;
+        }
+        uint32_t num_triangles = prim.index_count / 3;
+        
+        vk::AccelerationStructureGeometryTrianglesDataKHR triangles_data;
+        triangles_data.vertexFormat = vk::Format::eR32G32B32Sfloat;
+        triangles_data.vertexData.deviceAddress = vertex_buffer_addr;
+        triangles_data.vertexStride = sizeof(Vertex);
+        triangles_data.maxVertex = obj.vertices.size() - 1;
+        triangles_data.indexType = vk::IndexType::eUint32;
+        // Point to the *start* of this primitive's indices
+        triangles_data.indexData.deviceAddress = index_buffer_addr + (prim.first_index * sizeof(uint32_t));
+
+        vk::AccelerationStructureGeometryKHR geo;
+        geo.geometryType = vk::GeometryTypeKHR::eTriangles;
+        geo.geometry.triangles = triangles_data;
+        geo.flags = vk::GeometryFlagBitsKHR::eOpaque; // Mark as opaque
+
+        geometries.push_back(geo);
+
+        // Define the build range for this primitive
+        vk::AccelerationStructureBuildRangeInfoKHR range_info;
+        range_info.primitiveCount = num_triangles;
+        range_info.primitiveOffset = 0; // Offset *within* the indexData range
+        range_info.firstVertex = 0;
+        range_info.transformOffset = 0;
+        
+        build_ranges.push_back(range_info);
+        primitive_counts.push_back(num_triangles);
+    }
+
+    // 2. Get Build Sizes
+    if (geometries.empty()) {
+        return;
+    }
+    vk::AccelerationStructureBuildGeometryInfoKHR build_info;
+    build_info.type = vk::AccelerationStructureTypeKHR::eBottomLevel;
+    build_info.flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace;
+    build_info.geometryCount = static_cast<uint32_t>(geometries.size());
+    build_info.pGeometries = geometries.data();
+
+    vk::AccelerationStructureBuildSizesInfoKHR size_info;
+    vkGetAccelerationStructureBuildSizesKHR(
+        *logical_device,
+        static_cast<VkAccelerationStructureBuildTypeKHR>(vk::AccelerationStructureBuildTypeKHR::eDevice),
+        reinterpret_cast<const VkAccelerationStructureBuildGeometryInfoKHR*>(&build_info),
+        primitive_counts.data(),
+        reinterpret_cast<VkAccelerationStructureBuildSizesInfoKHR*>(&size_info)
+    );
+
+    // 3. Create AS Buffer
+    createBuffer(vma_allocator, size_info.accelerationStructureSize,
+                 vk::BufferUsageFlagBits::eAccelerationStructureStorageKHR | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+                 vk::MemoryPropertyFlagBits::eDeviceLocal,
+                 obj.blas.buffer);
+
+    // 4. Create AS Object
+    vk::AccelerationStructureCreateInfoKHR as_create_info;
+    as_create_info.buffer = obj.blas.buffer.buffer;
+    as_create_info.size = size_info.accelerationStructureSize;
+    as_create_info.type = vk::AccelerationStructureTypeKHR::eBottomLevel;
+
+    VkAccelerationStructureKHR vk_as;
+    if (vkCreateAccelerationStructureKHR(*logical_device, reinterpret_cast<const VkAccelerationStructureCreateInfoKHR*>(&as_create_info), nullptr, &vk_as) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create acceleration structure!");
+    }
+    obj.blas.as = vk::raii::AccelerationStructureKHR(logical_device, vk_as);
+
+    // 5. Create Scratch Buffer
+    AllocatedBuffer scratch_buffer;
+    createBuffer(vma_allocator, size_info.buildScratchSize,
+                 vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+                 vk::MemoryPropertyFlagBits::eDeviceLocal,
+                 scratch_buffer);
+    uint64_t scratch_addr = getBufferDeviceAddress(scratch_buffer.buffer);
+
+    // 6. Build the BLAS on the GPU
+    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+
+    build_info.mode = vk::BuildAccelerationStructureModeKHR::eBuild;
+    build_info.dstAccelerationStructure = *obj.blas.as;
+    build_info.scratchData.deviceAddress = scratch_addr;
+
+    // We pass an array of pointers to the build range infos
+    const VkAccelerationStructureBuildRangeInfoKHR* p_build_ranges_c = 
+        reinterpret_cast<const VkAccelerationStructureBuildRangeInfoKHR*>(build_ranges.data());
+    
+    const VkAccelerationStructureBuildRangeInfoKHR * const p_build_ranges_const_ptr = p_build_ranges_c;
+    vkCmdBuildAccelerationStructuresKHR(*cmd, 1, reinterpret_cast<const VkAccelerationStructureBuildGeometryInfoKHR*>(&build_info), 
+                &p_build_ranges_const_ptr);
+
+    // 7. Add a barrier to wait for the build to finish
+    vk::MemoryBarrier2 barrier;
+    barrier.srcStageMask = vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR;
+    barrier.srcAccessMask = vk::AccessFlagBits2::eAccelerationStructureWriteKHR;
+    barrier.dstStageMask = vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR;
+    barrier.dstAccessMask = vk::AccessFlagBits2::eAccelerationStructureReadKHR;
+    cmd.pipelineBarrier2(vk::DependencyInfo({}, 1, &barrier, 0, nullptr, 0, nullptr));
+
+    endSingleTimeCommands(cmd, graphics_queue);
+
+    // 8. Get the device address for the TLAS
+    vk::AccelerationStructureDeviceAddressInfoKHR addr_info(*obj.blas.as);
+    obj.blas.device_address = logical_device.getAccelerationStructureAddressKHR(addr_info);
 }
 
 void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
@@ -602,6 +742,11 @@ void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action,
             if (action == GLFW_PRESS)
                 engine->use_manual_lights = !engine->use_manual_lights;
             break;
+
+        case Action::POINTCLOUD:
+            if (action == GLFW_PRESS)
+                engine->render_point_cloud = !engine->render_point_cloud;
+            break;
     }
 
     input.consumed  = (input.speed_up || input.speed_down || 
@@ -686,6 +831,28 @@ bool Engine::initVulkan(){
     present_queue = Device::getQueue(*this, queue_indices.present_family.value());
     transfer_queue = Device::getQueue(*this, queue_indices.transfer_family.value());
 
+    // Load Ray Tracing function pointers
+    vkGetAccelerationStructureBuildSizesKHR = reinterpret_cast<PFN_vkGetAccelerationStructureBuildSizesKHR>(logical_device.getProcAddr("vkGetAccelerationStructureBuildSizesKHR"));
+    vkCreateAccelerationStructureKHR = reinterpret_cast<PFN_vkCreateAccelerationStructureKHR>(logical_device.getProcAddr("vkCreateAccelerationStructureKHR"));
+    vkCmdBuildAccelerationStructuresKHR = reinterpret_cast<PFN_vkCmdBuildAccelerationStructuresKHR>(logical_device.getProcAddr("vkCmdBuildAccelerationStructuresKHR"));
+    vkGetAccelerationStructureDeviceAddressKHR = reinterpret_cast<PFN_vkGetAccelerationStructureDeviceAddressKHR>(logical_device.getProcAddr("vkGetAccelerationStructureDeviceAddressKHR"));
+    vkCreateRayTracingPipelinesKHR = reinterpret_cast<PFN_vkCreateRayTracingPipelinesKHR>(logical_device.getProcAddr("vkCreateRayTracingPipelinesKHR"));
+    vkGetRayTracingShaderGroupHandlesKHR = reinterpret_cast<PFN_vkGetRayTracingShaderGroupHandlesKHR>(logical_device.getProcAddr("vkGetRayTracingShaderGroupHandlesKHR"));
+    vkCmdTraceRaysKHR = reinterpret_cast<PFN_vkCmdTraceRaysKHR>(logical_device.getProcAddr("vkCmdTraceRaysKHR"));
+
+    if (!vkGetAccelerationStructureBuildSizesKHR || !vkCreateAccelerationStructureKHR || 
+        !vkCmdBuildAccelerationStructuresKHR || !vkGetAccelerationStructureDeviceAddressKHR || 
+        !vkCreateRayTracingPipelinesKHR || !vkGetRayTracingShaderGroupHandlesKHR || !vkCmdTraceRaysKHR) {
+        throw std::runtime_error("Failed to load ray tracing pipeline function pointers!");
+    }
+    
+    // Get RT properties
+    auto rt_pipeline_props = physical_device.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceRayTracingPipelinePropertiesKHR>();
+    rt_props.pipeline_props = rt_pipeline_props.get<vk::PhysicalDeviceRayTracingPipelinePropertiesKHR>();
+    
+    auto as_props = physical_device.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceAccelerationStructurePropertiesKHR>();
+    rt_props.as_props = as_props.get<vk::PhysicalDeviceAccelerationStructurePropertiesKHR>();
+
     // Get swapchain and swapchain images
     swapchain = Swapchain::createSwapChain(*this);
     if(swapchain.image_views.empty() || swapchain.image_views.size() <= 0){
@@ -714,6 +881,8 @@ bool Engine::initVulkan(){
     // Command creation
     createCommandPool();
 
+    createTlasResources();
+
     // TO FIX THIS
     color_image = Image::createImage(swapchain.extent.width, swapchain.extent.height,
                         1, mssa_samples, swapchain.format, vk::ImageTiling::eOptimal, 
@@ -735,6 +904,7 @@ bool Engine::initVulkan(){
 
     // PIPELINE CREATION
     createPipelines();
+    createRayTracingPipeline();
 
     loadScene("resources/main_scene.json");
     std::cout << "Memory status loading objects in scene" << std::endl;
@@ -753,6 +923,8 @@ bool Engine::initVulkan(){
 
     createTorusModel();
 
+    createRayTracingDataBuffers();
+
     for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
         // Resize the inner vectors to hold 5 elements
         shadow_ubos[i].resize(MAX_SHADOW_LIGHTS);
@@ -769,9 +941,12 @@ bool Engine::initVulkan(){
 
     createUniformBuffers();
     createDescriptorPool();
+    createRayTracingDescriptorSets();
+    createPointCloudDescriptorSets();
     createDescriptorSets();
-
     createOITDescriptorSets();
+
+    createShaderBindingTable();
 
     createGraphicsCommandBuffers();
     createSyncObjects();
@@ -917,6 +1092,8 @@ void Engine::createPipelines()
     );
 
     createOITCompositePipeline();
+
+    createPointCloudPipeline();
 
     // OIT Write PBR pipeline
     p_key.f_shader = f_shader_oit_write;
@@ -1150,7 +1327,7 @@ void Engine::loadManualLights(const std::string& lights_path)
 
 void Engine::createTorusModel()
 {
-    torus.generateMesh(40.f, 1.f, 0.5f, 200, 80);
+    torus.generateMesh(11.f, 1.f, 2.f, 700, 400);
     Primitive torusPrim;
     torusPrim.index_count = torus.indices.size();
     torusPrim.first_index = 0;
@@ -1221,13 +1398,15 @@ void Engine::createDescriptorPool()
     uint32_t torus_sets = torus_material_count * MAX_FRAMES_IN_FLIGHT;
     uint32_t shadow_sets = MAX_SHADOW_LIGHTS * MAX_FRAMES_IN_FLIGHT;
     uint32_t oit_sets = MAX_FRAMES_IN_FLIGHT; // For PPLL buffers
+    uint32_t rt_sets = MAX_FRAMES_IN_FLIGHT;
+    uint32_t pointcloud_sets = MAX_FRAMES_IN_FLIGHT;
 
-    uint32_t total_max_sets = pbr_sets + torus_sets + shadow_sets + oit_sets;
+    uint32_t total_max_sets = pbr_sets + torus_sets + shadow_sets + oit_sets + rt_sets + pointcloud_sets;
 
     // --- 4. Calculate total individual descriptors needed ---
     
-    // UBOs: 1 per PBR set, 1 per Torus set, 1 per Shadow set
-    uint32_t total_ubos = pbr_sets + torus_sets + shadow_sets;
+    // UBOs: 1 per PBR set, 1 per Torus set, 1 per Shadow set, 1 per PointCloud set
+    uint32_t total_ubos = pbr_sets + torus_sets + shadow_sets + pointcloud_sets;
 
     // Samplers: (8 PBR + shadows) per PBR set. Torus/OIT/Shadow sets use 0.
     uint32_t total_samplers = pbr_sets * (8 + MAX_SHADOW_LIGHTS);
@@ -1235,8 +1414,11 @@ void Engine::createDescriptorPool()
     // Storage Images: 1 per OIT set
     uint32_t total_storage_images = oit_sets;
 
-    // Storage Buffers: 2 per OIT set
-    uint32_t total_storage_buffers = oit_sets * 2;
+    // Storage Buffers: 2 per OIT set, 2 per RT set, 1 per PointCloud set
+    uint32_t total_storage_buffers = (oit_sets * 2) + (rt_sets * 2) + pointcloud_sets;
+
+    // Acceleration Structures: 1 per RT set
+    uint32_t total_accel_structs = rt_sets;
 
 
     std::vector<vk::DescriptorPoolSize> pool_sizes;
@@ -1251,6 +1433,9 @@ void Engine::createDescriptorPool()
     }
     if (total_storage_buffers > 0) {
         pool_sizes.push_back(vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, total_storage_buffers));
+    }
+    if (total_accel_structs > 0) {
+        pool_sizes.push_back(vk::DescriptorPoolSize(vk::DescriptorType::eAccelerationStructureKHR, total_accel_structs));
     }
 
     vk::DescriptorPoolCreateInfo pool_info;
@@ -1546,6 +1731,74 @@ void Engine::createShadowPipeline() {
     );
 }
 
+void Engine::createPointCloudPipeline()
+{
+    // 1. Create Descriptor Set Layout
+    std::vector<vk::DescriptorSetLayoutBinding> bindings = {
+        // Binding 0: Main UBO (view, proj)
+        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBuffer, 1,
+                                       vk::ShaderStageFlagBits::eVertex, nullptr),
+        // Binding 1: Hit Data Buffer
+        vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eStorageBuffer, 1,
+                                       vk::ShaderStageFlagBits::eVertex, nullptr)
+    };
+    point_cloud_pipeline.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings);
+    
+    // 2. Create Pipeline
+    point_cloud_pipeline.pipeline = Pipeline::createGraphicsPipeline(
+        *this,
+        &point_cloud_pipeline,
+        v_shader_pointcloud,
+        f_shader_pointcloud,
+        TransparencyMode::POINTCLOUD,
+        vk::CullModeFlagBits::eNone // No culling for points
+    );
+}
+
+void Engine::createPointCloudDescriptorSets()
+{
+    point_cloud_descriptor_sets.clear();
+
+    std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *point_cloud_pipeline.descriptor_set_layout);
+    vk::DescriptorSetAllocateInfo alloc_info(
+        *descriptor_pool,
+        static_cast<uint32_t>(layouts.size()),
+        layouts.data()
+    );
+    point_cloud_descriptor_sets = logical_device.allocateDescriptorSets(alloc_info);
+
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        // Binding 0: Main UBO
+        vk::DescriptorBufferInfo ubo_info;
+        ubo_info.buffer = uniform_buffers[i].buffer;
+        ubo_info.offset = 0;
+        ubo_info.range = sizeof(UniformBufferObject);
+
+        vk::WriteDescriptorSet ubo_write;
+        ubo_write.dstSet = *point_cloud_descriptor_sets[i];
+        ubo_write.dstBinding = 0;
+        ubo_write.descriptorType = vk::DescriptorType::eUniformBuffer;
+        ubo_write.descriptorCount = 1;
+        ubo_write.pBufferInfo = &ubo_info;
+
+        // Binding 1: Hit Data Buffer
+        vk::DescriptorBufferInfo hit_buffer_info;
+        hit_buffer_info.buffer = hit_data_buffer.buffer;
+        hit_buffer_info.offset = 0;
+        hit_buffer_info.range = VK_WHOLE_SIZE;
+
+        vk::WriteDescriptorSet hit_write;
+        hit_write.dstSet = *point_cloud_descriptor_sets[i];
+        hit_write.dstBinding = 1;
+        hit_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+        hit_write.descriptorCount = 1;
+        hit_write.pBufferInfo = &hit_buffer_info;
+
+        std::array<vk::WriteDescriptorSet, 2> writes = {ubo_write, hit_write};
+        logical_device.updateDescriptorSets(writes, {});
+    }
+}
+
 
 // ------ Render Loop Functions
 
@@ -1643,6 +1896,81 @@ void Engine::recordCommandBuffer(uint32_t image_index){
                         vk::ImageAspectFlagBits::eDepth);
 
     }
+
+
+    buildTlas(cmd);
+
+    // --- 5. RAY TRACING DATA COLLECTION PASS ---
+    {
+        // Helper lambda to align sizes
+        auto align_up = [&](uint32_t size, uint32_t alignment) {
+            return (size + alignment - 1) & ~(alignment - 1);
+        };
+
+        // Bind the ray tracing pipeline
+        cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline);
+
+        // Bind the descriptor set (TLAS, Input, Output buffers)
+        cmd.bindDescriptorSets(
+            vk::PipelineBindPoint::eRayTracingKHR,
+            *rt_pipeline.layout, 0,
+            {*rt_descriptor_sets[current_frame]},
+            {});
+        
+        // Push the torus's model matrix for the raygen shader
+        cmd.pushConstants<glm::mat4>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, torus.model_matrix);
+
+        // --- Setup Shader Binding Table (SBT) ---
+        uint32_t handle_size = rt_props.pipeline_props.shaderGroupHandleSize;
+        uint32_t sbt_entry_alignment = rt_props.pipeline_props.shaderGroupBaseAlignment;
+        uint32_t sbt_entry_size = align_up(handle_size, sbt_entry_alignment);
+        uint64_t sbt_address = getBufferDeviceAddress(sbt_buffer.buffer);
+        
+        vk::StridedDeviceAddressRegionKHR rgen_sbt_region;
+        rgen_sbt_region.deviceAddress = sbt_address + 0 * sbt_entry_size;
+        rgen_sbt_region.stride = sbt_entry_size;
+        rgen_sbt_region.size = sbt_entry_size;
+
+        vk::StridedDeviceAddressRegionKHR rmiss_sbt_region;
+        rmiss_sbt_region.deviceAddress = sbt_address + 1 * sbt_entry_size; // Offset by 1 group
+        rmiss_sbt_region.stride = sbt_entry_size;
+        rmiss_sbt_region.size = sbt_entry_size; // Only 1 miss shader
+
+        vk::StridedDeviceAddressRegionKHR rchit_sbt_region;
+        rchit_sbt_region.deviceAddress = sbt_address + 2 * sbt_entry_size; // Offset by 2 groups
+        rchit_sbt_region.stride = sbt_entry_size;
+        rchit_sbt_region.size = sbt_entry_size; // Only 1 hit group
+
+        vk::StridedDeviceAddressRegionKHR callable_sbt_region; // Empty
+
+        // --- Launch Rays ---
+        // We launch one ray for every vertex in the torus
+        vkCmdTraceRaysKHR(
+            *cmd,
+            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rgen_sbt_region),
+            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rmiss_sbt_region),
+            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rchit_sbt_region),
+            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&callable_sbt_region),
+            static_cast<uint32_t>(torus.vertices.size()), // width = number of vertices
+            1,                                           // height
+            1);                                         // depth
+        
+        // --- Add Barrier ---
+        // Wait for the ray tracing to finish writing to the hit_data_buffer
+        // before any future pass (like a compute shader or CPU readback) tries to read it.
+        vk::MemoryBarrier2 mem_barrier;
+        mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
+        mem_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
+        mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eVertexShader;
+        mem_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead;
+        
+        vk::DependencyInfo dep_info;
+        dep_info.memoryBarrierCount = 1;
+        dep_info.pMemoryBarriers = &mem_barrier;
+        cmd.pipelineBarrier2(dep_info);
+    }
+
+
     // --- 1. GATHER TRANSPARENTS ---
     transparent_draws.clear();
     for(auto& obj : scene_objs){
@@ -1705,165 +2033,188 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         cmd.setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain.extent.width), static_cast<float>(swapchain.extent.height), 0.f, 1.f));
         cmd.setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain.extent));
 
-        // --- OPAQUE DRAW LOOP ---
-        PipelineInfo* last_bound_pipeline = nullptr;
-        Gameobject* last_bound_object = nullptr;
+        if(!render_point_cloud){
+            // --- OPAQUE DRAW LOOP ---
+            PipelineInfo* last_bound_pipeline = nullptr;
+            Gameobject* last_bound_object = nullptr;
 
-        for(auto& obj : scene_objs){
-            if (obj.o_primitives.empty()) continue; // Skip if no opaque parts
+            for(auto& obj : scene_objs){
+                if (obj.o_primitives.empty()) continue; // Skip if no opaque parts
 
-            // Bind pipeline if different
-            if (obj.o_pipeline != last_bound_pipeline) {
-                cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *obj.o_pipeline->pipeline);
-                last_bound_pipeline = obj.o_pipeline;
-            }
-
-            // Bind geometry if different
-            if (&obj != last_bound_object) {
-                cmd.bindVertexBuffers(0, {obj.geometry_buffer.buffer}, {0});
-                cmd.bindIndexBuffer(obj.geometry_buffer.buffer, obj.index_buffer_offset, vk::IndexType::eUint32);
-                last_bound_object = &obj;
-            }
-            
-            // Push vertex constant (model matrix)
-            cmd.pushConstants<glm::mat4>(*obj.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix);
-
-            // Loop and draw all opaque primitives for this object
-            for(auto& primitive : obj.o_primitives) {
-                const Material& material = obj.materials[primitive.material_index];
-
-                if(material.is_doublesided){
-                    cmd.setCullMode(vk::CullModeFlagBits::eNone);
-                }else{
-                    cmd.setCullMode(vk::CullModeFlagBits::eBack);
+                // Bind pipeline if different
+                if (obj.o_pipeline != last_bound_pipeline) {
+                    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *obj.o_pipeline->pipeline);
+                    last_bound_pipeline = obj.o_pipeline;
                 }
 
-                // Setup material push constant
+                // Bind geometry if different
+                if (&obj != last_bound_object) {
+                    cmd.bindVertexBuffers(0, {obj.geometry_buffer.buffer}, {0});
+                    cmd.bindIndexBuffer(obj.geometry_buffer.buffer, obj.index_buffer_offset, vk::IndexType::eUint32);
+                    last_bound_object = &obj;
+                }
+                
+                // Push vertex constant (model matrix)
+                cmd.pushConstants<glm::mat4>(*obj.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix);
+
+                // Loop and draw all opaque primitives for this object
+                for(auto& primitive : obj.o_primitives) {
+                    const Material& material = obj.materials[primitive.material_index];
+
+                    if(material.is_doublesided){
+                        cmd.setCullMode(vk::CullModeFlagBits::eNone);
+                    }else{
+                        cmd.setCullMode(vk::CullModeFlagBits::eBack);
+                    }
+
+                    // Setup material push constant
+                    MaterialPushConstant p_const;
+                    p_const.base_color_factor = material.base_color_factor;
+                    p_const.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 0.0f);
+                    p_const.metallic_factor = material.metallic_factor;
+                    p_const.roughness_factor = material.roughness_factor;
+                    p_const.occlusion_strength = material.occlusion_strength;
+                    p_const.specular_factor = material.specular_factor;
+                    p_const.specular_color_factor = material.specular_color_factor;
+                    p_const.transmission_factor = material.transmission_factor;
+                    p_const.alpha_cutoff = material.alpha_cutoff;
+                    p_const.clearcoat_factor = material.clearcoat_factor;
+                    p_const.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
+
+                    cmd.pushConstants<MaterialPushConstant>(*obj.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
+
+                    // Bind material descriptor set
+                    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *obj.o_pipeline->layout, 0, {*material.descriptor_sets[current_frame]}, {});
+                    
+                    // Draw
+                    cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
+                }
+            }
+
+            if (use_rt_box && rt_box.o_pipeline && !rt_box.o_primitives.empty())
+            {
+                // Bind pipeline ONCE
+                cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *rt_box.o_pipeline->pipeline);
+                
+                // Bind geometry ONCE
+                cmd.bindVertexBuffers(0, {rt_box.geometry_buffer.buffer}, {0});
+                cmd.bindIndexBuffer(rt_box.geometry_buffer.buffer, rt_box.index_buffer_offset, vk::IndexType::eUint32);
+                
+                // Push vertex constant (model matrix) ONCE
+                cmd.pushConstants<glm::mat4>(*rt_box.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, rt_box.model_matrix);
+                
+                // The RT box is not double-sided, so we set cull mode to back-face
+                // This is correct because our vertices are wound for inward-facing normals
+                cmd.setCullMode(vk::CullModeFlagBits::eBack);
+
+                // Loop through the 5 primitives (floor, ceil, back, left, right)
+                for(auto& primitive : rt_box.o_primitives)
+                {
+                    const Material& material = rt_box.materials[primitive.material_index];
+
+                    // Bind material descriptor set
+                    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *rt_box.o_pipeline->layout, 0, {*material.descriptor_sets[current_frame]}, {});
+
+                    // Setup material push constant
+                    MaterialPushConstant p_const;
+                    p_const.base_color_factor = material.base_color_factor;
+                    p_const.metallic_factor = material.metallic_factor;
+                    p_const.roughness_factor = material.roughness_factor;
+                    p_const.occlusion_strength = material.occlusion_strength;
+                    p_const.specular_factor = material.specular_factor;
+                    p_const.specular_color_factor = material.specular_color_factor;
+                    p_const.transmission_factor = material.transmission_factor;
+                    p_const.alpha_cutoff = material.alpha_cutoff;
+                    p_const.clearcoat_factor = material.clearcoat_factor;
+                    p_const.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
+                    p_const.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 0.f);
+
+                    cmd.pushConstants<MaterialPushConstant>(*rt_box.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
+                    
+                    // Draw
+                    cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
+                }
+            }
+
+            if (debug_lights && debug_cube.o_pipeline && !debug_cube.o_primitives.empty())
+            {
+                // Bind pipeline ONCE
+                cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *debug_cube.o_pipeline->pipeline);
+                
+                // Bind geometry ONCE
+                cmd.bindVertexBuffers(0, {debug_cube.geometry_buffer.buffer}, {0});
+                cmd.bindIndexBuffer(debug_cube.geometry_buffer.buffer, debug_cube.index_buffer_offset, vk::IndexType::eUint32);
+
+                // Get material and bind descriptor set ONCE
+                const Material& material = debug_cube.materials[0];
+                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *debug_cube.o_pipeline->layout, 0, {*material.descriptor_sets[current_frame]}, {});
+
+                // Setup and push fragment push constant ONCE
                 MaterialPushConstant p_const;
                 p_const.base_color_factor = material.base_color_factor;
                 p_const.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 0.0f);
                 p_const.metallic_factor = material.metallic_factor;
                 p_const.roughness_factor = material.roughness_factor;
-                p_const.occlusion_strength = material.occlusion_strength;
-                p_const.specular_factor = material.specular_factor;
-                p_const.specular_color_factor = material.specular_color_factor;
-                p_const.transmission_factor = material.transmission_factor;
-                p_const.alpha_cutoff = material.alpha_cutoff;
-                p_const.clearcoat_factor = material.clearcoat_factor;
-                p_const.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
-
-                cmd.pushConstants<MaterialPushConstant>(*obj.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
-
-                // Bind material descriptor set
-                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *obj.o_pipeline->layout, 0, {*material.descriptor_sets[current_frame]}, {});
+                p_const.occlusion_strength = 1.0f; // Use default
+                p_const.specular_factor = 0.5f; // Use default
+                p_const.specular_color_factor = glm::vec3(1.f); // Use default
+                p_const.transmission_factor = 0.0f;
+                p_const.alpha_cutoff = 0.0f;
+                p_const.clearcoat_factor = 0.0f;
+                p_const.clearcoat_roughness_factor = 0.0f;
                 
-                // Draw
-                cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
+                cmd.pushConstants<MaterialPushConstant>(*debug_cube.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
+
+                // Loop through lights
+                for(int i = 0; i < ubo.curr_num_pointlights; i++)
+                {
+                    // Create model matrix for this light
+                    // Translate to its position and scale it down
+                    glm::mat4 model_matrix = glm::translate(glm::mat4(1.0f), glm::vec3(ubo.pointlights[i].position));
+                    model_matrix = glm::scale(model_matrix, glm::vec3(0.5f)); // 0.5m cubes
+
+                    // Push vertex constant (model matrix)
+                    cmd.pushConstants<glm::mat4>(*debug_cube.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, model_matrix);
+
+                    // Draw
+                    cmd.drawIndexed(debug_cube.o_primitives[0].index_count, 1, debug_cube.o_primitives[0].first_index, 0, 0);
+                }
+
+                for(int i = 0; i < ubo.curr_num_shadowlights; i++)
+                {
+                    // Create model matrix for this light
+                    // Translate to its position and scale it down
+                    glm::mat4 model_matrix = glm::translate(glm::mat4(1.0f), glm::vec3(ubo.shadowlights[i].position));
+                    model_matrix = glm::scale(model_matrix, glm::vec3(0.5f)); // 0.5m cubes
+
+                    // Push vertex constant (model matrix)
+                    cmd.pushConstants<glm::mat4>(*debug_cube.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, model_matrix);
+
+                    // Draw
+                    cmd.drawIndexed(debug_cube.o_primitives[0].index_count, 1, debug_cube.o_primitives[0].first_index, 0, 0);
+                }
             }
         }
-
-        if (use_rt_box && rt_box.o_pipeline && !rt_box.o_primitives.empty())
-        {
-            // Bind pipeline ONCE
-            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *rt_box.o_pipeline->pipeline);
+        else{
+        // --- POINT CLOUD DRAW LOOP (New) ---
             
-            // Bind geometry ONCE
-            cmd.bindVertexBuffers(0, {rt_box.geometry_buffer.buffer}, {0});
-            cmd.bindIndexBuffer(rt_box.geometry_buffer.buffer, rt_box.index_buffer_offset, vk::IndexType::eUint32);
+            // Bind the point cloud pipeline
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.pipeline);
             
-            // Push vertex constant (model matrix) ONCE
-            cmd.pushConstants<glm::mat4>(*rt_box.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, rt_box.model_matrix);
+            // Set cull mode to none (though it doesn't really matter for points)
+            cmd.setCullMode(vk::CullModeFlagBits::eNone);
             
-            // The RT box is not double-sided, so we set cull mode to back-face
-            // This is correct because our vertices are wound for inward-facing normals
-            cmd.setCullMode(vk::CullModeFlagBits::eBack);
-
-            // Loop through the 5 primitives (floor, ceil, back, left, right)
-            for(auto& primitive : rt_box.o_primitives)
-            {
-                const Material& material = rt_box.materials[primitive.material_index];
-
-                // Bind material descriptor set
-                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *rt_box.o_pipeline->layout, 0, {*material.descriptor_sets[current_frame]}, {});
-
-                // Setup material push constant
-                MaterialPushConstant p_const;
-                p_const.base_color_factor = material.base_color_factor;
-                p_const.metallic_factor = material.metallic_factor;
-                p_const.roughness_factor = material.roughness_factor;
-                p_const.occlusion_strength = material.occlusion_strength;
-                p_const.specular_factor = material.specular_factor;
-                p_const.specular_color_factor = material.specular_color_factor;
-                p_const.transmission_factor = material.transmission_factor;
-                p_const.alpha_cutoff = material.alpha_cutoff;
-                p_const.clearcoat_factor = material.clearcoat_factor;
-                p_const.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
-                p_const.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 0.f);
-
-                cmd.pushConstants<MaterialPushConstant>(*rt_box.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
-                
-                // Draw
-                cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
-            }
-        }
-
-        if (debug_lights && debug_cube.o_pipeline && !debug_cube.o_primitives.empty())
-        {
-            // Bind pipeline ONCE
-            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *debug_cube.o_pipeline->pipeline);
+            // Bind the descriptor set (UBO + Hit Data)
+            cmd.bindDescriptorSets(
+                vk::PipelineBindPoint::eGraphics,
+                *point_cloud_pipeline.layout, 0,
+                {*point_cloud_descriptor_sets[current_frame]},
+                {});
             
-            // Bind geometry ONCE
-            cmd.bindVertexBuffers(0, {debug_cube.geometry_buffer.buffer}, {0});
-            cmd.bindIndexBuffer(debug_cube.geometry_buffer.buffer, debug_cube.index_buffer_offset, vk::IndexType::eUint32);
-
-            // Get material and bind descriptor set ONCE
-            const Material& material = debug_cube.materials[0];
-            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *debug_cube.o_pipeline->layout, 0, {*material.descriptor_sets[current_frame]}, {});
-
-            // Setup and push fragment push constant ONCE
-            MaterialPushConstant p_const;
-            p_const.base_color_factor = material.base_color_factor;
-            p_const.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 0.0f);
-            p_const.metallic_factor = material.metallic_factor;
-            p_const.roughness_factor = material.roughness_factor;
-            p_const.occlusion_strength = 1.0f; // Use default
-            p_const.specular_factor = 0.5f; // Use default
-            p_const.specular_color_factor = glm::vec3(1.f); // Use default
-            p_const.transmission_factor = 0.0f;
-            p_const.alpha_cutoff = 0.0f;
-            p_const.clearcoat_factor = 0.0f;
-            p_const.clearcoat_roughness_factor = 0.0f;
+            // No vertex/index buffers needed
             
-            cmd.pushConstants<MaterialPushConstant>(*debug_cube.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
-
-            // Loop through lights
-            for(int i = 0; i < ubo.curr_num_pointlights; i++)
-            {
-                // Create model matrix for this light
-                // Translate to its position and scale it down
-                glm::mat4 model_matrix = glm::translate(glm::mat4(1.0f), glm::vec3(ubo.pointlights[i].position));
-                model_matrix = glm::scale(model_matrix, glm::vec3(0.5f)); // 0.5m cubes
-
-                // Push vertex constant (model matrix)
-                cmd.pushConstants<glm::mat4>(*debug_cube.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, model_matrix);
-
-                // Draw
-                cmd.drawIndexed(debug_cube.o_primitives[0].index_count, 1, debug_cube.o_primitives[0].first_index, 0, 0);
-            }
-
-            for(int i = 0; i < ubo.curr_num_shadowlights; i++)
-            {
-                // Create model matrix for this light
-                // Translate to its position and scale it down
-                glm::mat4 model_matrix = glm::translate(glm::mat4(1.0f), glm::vec3(ubo.shadowlights[i].position));
-                model_matrix = glm::scale(model_matrix, glm::vec3(0.5f)); // 0.5m cubes
-
-                // Push vertex constant (model matrix)
-                cmd.pushConstants<glm::mat4>(*debug_cube.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, model_matrix);
-
-                // Draw
-                cmd.drawIndexed(debug_cube.o_primitives[0].index_count, 1, debug_cube.o_primitives[0].first_index, 0, 0);
-            }
+            // Draw one point for every torus vertex
+            cmd.draw(static_cast<uint32_t>(torus.vertices.size()), 1, 0, 0);
         }
 
         cmd.endRendering();
@@ -2239,6 +2590,377 @@ void Engine::updateUniformBuffer(uint32_t current_image)
     }
 
     memcpy(uniform_buffers_mapped[current_image], &ubo, sizeof(ubo));
+}
+
+/**
+ * @brief Creates persistent buffers for building the TLAS each frame.
+ * This includes the instance buffer, the scratch buffer, and the TLAS object itself.
+ */
+void Engine::createTlasResources()
+{
+    // 1. Create the Instance Buffer (Host Visible)
+    vk::DeviceSize instance_buffer_size = sizeof(vk::AccelerationStructureInstanceKHR) * MAX_TLAS_INSTANCES;
+    
+    createBuffer(vma_allocator, instance_buffer_size,
+                 vk::BufferUsageFlagBits::eShaderDeviceAddress | vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR,
+                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                 tlas_instance_buffer);
+    
+    // Map it permanently
+    vmaMapMemory(vma_allocator, tlas_instance_buffer.allocation, &tlas_instance_buffer_mapped);
+
+    // Get its device address
+    uint64_t instance_buffer_addr = getBufferDeviceAddress(tlas_instance_buffer.buffer);
+
+    // 2. Get Build Sizes for the TLAS
+    // We do a dummy setup to get the required buffer sizes
+    
+    vk::AccelerationStructureGeometryInstancesDataKHR instances_data;
+    instances_data.arrayOfPointers = vk::False;
+    instances_data.data.deviceAddress = instance_buffer_addr;
+
+    vk::AccelerationStructureGeometryKHR tlas_geometry;
+    tlas_geometry.geometryType = vk::GeometryTypeKHR::eInstances;
+    tlas_geometry.geometry.instances = instances_data;
+    tlas_geometry.flags = vk::GeometryFlagBitsKHR::eOpaque; // Instances are considered opaque
+
+    vk::AccelerationStructureBuildGeometryInfoKHR build_info;
+    build_info.type = vk::AccelerationStructureTypeKHR::eTopLevel;
+    build_info.flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace | vk::BuildAccelerationStructureFlagBitsKHR::eAllowUpdate; // <-- Allow updates
+    build_info.geometryCount = 1;
+    build_info.pGeometries = &tlas_geometry;
+
+    uint32_t primitive_count = MAX_TLAS_INSTANCES;
+    vk::AccelerationStructureBuildSizesInfoKHR size_info;
+    vkGetAccelerationStructureBuildSizesKHR(
+        *logical_device,
+        static_cast<VkAccelerationStructureBuildTypeKHR>(vk::AccelerationStructureBuildTypeKHR::eDevice),
+        reinterpret_cast<const VkAccelerationStructureBuildGeometryInfoKHR*>(&build_info),
+        &primitive_count,
+        reinterpret_cast<VkAccelerationStructureBuildSizesInfoKHR*>(&size_info)
+    );
+
+    // 3. Create TLAS Buffer
+    createBuffer(vma_allocator, size_info.accelerationStructureSize,
+                 vk::BufferUsageFlagBits::eAccelerationStructureStorageKHR | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+                 vk::MemoryPropertyFlagBits::eDeviceLocal,
+                 tlas.buffer);
+
+    // 4. Create TLAS Object
+    vk::AccelerationStructureCreateInfoKHR as_create_info;
+    as_create_info.buffer = tlas.buffer.buffer;
+    as_create_info.size = size_info.accelerationStructureSize;
+    as_create_info.type = vk::AccelerationStructureTypeKHR::eTopLevel;
+
+    VkAccelerationStructureKHR vk_as;
+    if (vkCreateAccelerationStructureKHR(*logical_device, reinterpret_cast<const VkAccelerationStructureCreateInfoKHR*>(&as_create_info), nullptr, &vk_as) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create TLAS object!");
+    }
+    tlas.as = vk::raii::AccelerationStructureKHR(logical_device, vk_as);
+
+    // 5. Create persistent Scratch Buffer
+    createBuffer(vma_allocator, size_info.buildScratchSize,
+                 vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+                 vk::MemoryPropertyFlagBits::eDeviceLocal,
+                 tlas_scratch_buffer);
+    tlas_scratch_addr = getBufferDeviceAddress(tlas_scratch_buffer.buffer);
+
+    // 6. Get the TLAS device address
+    vk::AccelerationStructureDeviceAddressInfoKHR addr_info(*tlas.as);
+    tlas.device_address = logical_device.getAccelerationStructureAddressKHR(addr_info);
+}
+
+/**
+ * @brief Builds the Top-Level Acceleration Structure (TLAS) for the current frame.
+ * This collects all valid BLASs, updates their transforms, and rebuilds the TLAS.
+ */
+void Engine::buildTlas(vk::raii::CommandBuffer& cmd)
+{
+    // 1. Gather all object instances
+    std::vector<vk::AccelerationStructureInstanceKHR> instances;
+
+    auto gather_instances = [&](Gameobject& obj) {
+        if (obj.blas.as == nullptr) return; // Skip objects without a BLAS (like the torus)
+        
+        vk::AccelerationStructureInstanceKHR instance;
+        
+        // The transform matrix is row-major. GLM is column-major. So we transpose.
+        glm::mat4 transp_model = glm::transpose(obj.model_matrix);
+        memcpy(&instance.transform, &transp_model, sizeof(vk::TransformMatrixKHR));
+        
+        instance.instanceCustomIndex = 0; // We'll set this later if needed
+        instance.mask = 0xFF; // All rays hit
+        instance.instanceShaderBindingTableRecordOffset = 0; // Only one hit group
+        instance.flags = static_cast<VkGeometryInstanceFlagBitsKHR>(vk::GeometryInstanceFlagBitsKHR::eTriangleFacingCullDisable);
+        instance.accelerationStructureReference = obj.blas.device_address;
+        
+        instances.push_back(instance);
+    };
+
+    for (auto& obj : scene_objs) {
+        gather_instances(obj);
+    }
+    gather_instances(debug_cube);
+    if (use_rt_box) {
+        gather_instances(rt_box);
+    }
+
+    if (instances.empty()) {
+        return; // Nothing to build
+    }
+
+    // 2. Copy instance data to the host-visible buffer
+    memcpy(tlas_instance_buffer_mapped, instances.data(), instances.size() * sizeof(vk::AccelerationStructureInstanceKHR));
+
+    // 3. Add barrier: Wait for CPU buffer write to be visible to the GPU
+    vk::MemoryBarrier2 mem_barrier;
+    mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eHost;
+    mem_barrier.srcAccessMask = vk::AccessFlagBits2::eHostWrite;
+    mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR;
+    mem_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead;
+    cmd.pipelineBarrier2(vk::DependencyInfo({}, 1, &mem_barrier, 0, nullptr, 0, nullptr));
+
+    // 4. Set up the build info
+    vk::AccelerationStructureGeometryInstancesDataKHR instances_data;
+    instances_data.arrayOfPointers = vk::False;
+    instances_data.data.deviceAddress = getBufferDeviceAddress(tlas_instance_buffer.buffer);
+
+    vk::AccelerationStructureGeometryKHR tlas_geometry;
+    tlas_geometry.geometryType = vk::GeometryTypeKHR::eInstances;
+    tlas_geometry.geometry.instances = instances_data;
+    tlas_geometry.flags = vk::GeometryFlagBitsKHR::eOpaque;
+
+    vk::AccelerationStructureBuildGeometryInfoKHR build_info;
+    build_info.type = vk::AccelerationStructureTypeKHR::eTopLevel;
+    build_info.flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace | vk::BuildAccelerationStructureFlagBitsKHR::eAllowUpdate;
+    build_info.mode = vk::BuildAccelerationStructureModeKHR::eBuild; // Re-build every frame
+    build_info.dstAccelerationStructure = *tlas.as;
+    build_info.geometryCount = 1;
+    build_info.pGeometries = &tlas_geometry;
+    build_info.scratchData.deviceAddress = tlas_scratch_addr;
+
+    vk::AccelerationStructureBuildRangeInfoKHR range_info;
+    range_info.primitiveCount = static_cast<uint32_t>(instances.size());
+    range_info.primitiveOffset = 0;
+    range_info.firstVertex = 0;
+    range_info.transformOffset = 0;
+    
+    const VkAccelerationStructureBuildRangeInfoKHR* p_build_range = 
+        reinterpret_cast<const VkAccelerationStructureBuildRangeInfoKHR*>(&range_info);
+    const VkAccelerationStructureBuildRangeInfoKHR* const p_build_range_const_ptr = p_build_range;
+
+    // 5. Record the build command
+    vkCmdBuildAccelerationStructuresKHR(
+        *cmd, 
+        1, 
+        reinterpret_cast<const VkAccelerationStructureBuildGeometryInfoKHR*>(&build_info), 
+        &p_build_range_const_ptr
+    );
+
+    // 6. Add barrier: Wait for TLAS build to finish before any ray tracing
+    vk::MemoryBarrier2 build_barrier;
+    build_barrier.srcStageMask = vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR;
+    build_barrier.srcAccessMask = vk::AccessFlagBits2::eAccelerationStructureWriteKHR;
+    build_barrier.dstStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR; // For the *next* step
+    build_barrier.dstAccessMask = vk::AccessFlagBits2::eAccelerationStructureReadKHR;
+    cmd.pipelineBarrier2(vk::DependencyInfo({}, 1, &build_barrier, 0, nullptr, 0, nullptr));
+}
+
+/**
+ * @brief Creates the SSBOs for ray tracing data collection.
+ * This includes the input buffer (torus vertices) and output buffer (hit data).
+ * Must be called *after* createTorusModel().
+ */
+void Engine::createRayTracingDataBuffers()
+{
+    // --- 1. Create Input Buffer (Torus Vertices) ---
+    vk::DeviceSize vertex_data_size = sizeof(Vertex) * torus.vertices.size();
+    
+    // Create a staging buffer
+    AllocatedBuffer staging_buffer;
+    createBuffer(vma_allocator, vertex_data_size,
+                 vk::BufferUsageFlagBits::eTransferSrc,
+                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                 staging_buffer);
+    
+    // Copy torus vertex data into the staging buffer
+    void* data;
+    vmaMapMemory(vma_allocator, staging_buffer.allocation, &data);
+    memcpy(data, torus.vertices.data(), (size_t)vertex_data_size);
+    vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
+
+    // Create the final device-local buffer
+    createBuffer(vma_allocator, vertex_data_size,
+                 vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+                 vk::MemoryPropertyFlagBits::eDeviceLocal,
+                 torus_vertex_data_buffer);
+                 
+    // Copy from staging to device-local
+    copyBuffer(staging_buffer.buffer, torus_vertex_data_buffer.buffer, vertex_data_size,
+               command_pool_graphics, &logical_device, graphics_queue);
+    
+    // Staging buffer is no longer needed and will be auto-destroyed by its destructor
+
+
+    // --- 2. Create Output Buffer (Hit Data) ---
+    // We'll store two vec4s per vertex:
+    // vec4(vec3 hitPos, float hitFlag)
+    // vec4(color.rgb, 1.0)
+    vk::DeviceSize hit_data_size = sizeof(glm::vec4) * 2 * torus.vertices.size();
+
+    createBuffer(vma_allocator, hit_data_size,
+                 vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress |
+                 vk::BufferUsageFlagBits::eTransferSrc, // <-- Add eTransferSrc to allow copying to CPU
+                 vk::MemoryPropertyFlagBits::eDeviceLocal,
+                 hit_data_buffer);
+}
+
+void Engine::createRayTracingPipeline()
+{
+    // 1. Create Descriptor Set Layout
+    std::vector<vk::DescriptorSetLayoutBinding> bindings = {
+        // Binding 0: Top-Level Acceleration Structure
+        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eAccelerationStructureKHR, 1,
+                                       vk::ShaderStageFlagBits::eRaygenKHR, nullptr),
+        // Binding 1: Input Vertex Buffer
+        vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eStorageBuffer, 1,
+                                       vk::ShaderStageFlagBits::eRaygenKHR, nullptr),
+        // Binding 2: Output Hit Buffer
+        vk::DescriptorSetLayoutBinding(2, vk::DescriptorType::eStorageBuffer, 1,
+                                       vk::ShaderStageFlagBits::eRaygenKHR | vk::ShaderStageFlagBits::eClosestHitKHR | vk::ShaderStageFlagBits::eMissKHR, nullptr)
+    };
+    
+    // This layout is shared, so store it on the engine
+    rt_pipeline.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings);
+
+    // 2. Create Pipeline
+    // This is a complex function, so we delegate it to the Pipeline namespace
+    rt_pipeline.pipeline = Pipeline::createRayTracingPipeline(
+        *this,
+        &rt_pipeline,
+        rt_rgen_shader,
+        rt_rmiss_shader,
+        rt_rchit_shader
+    );
+}
+
+void Engine::createRayTracingDescriptorSets()
+{
+    rt_descriptor_sets.clear();
+
+    std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *rt_pipeline.descriptor_set_layout);
+    vk::DescriptorSetAllocateInfo alloc_info(
+        *descriptor_pool,
+        static_cast<uint32_t>(layouts.size()),
+        layouts.data()
+    );
+    rt_descriptor_sets = logical_device.allocateDescriptorSets(alloc_info);
+
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        // Binding 0: TLAS
+        vk::WriteDescriptorSetAccelerationStructureKHR as_info;
+        as_info.accelerationStructureCount = 1;
+        as_info.pAccelerationStructures = &(*tlas.as); // Pointer to the TLAS handle
+
+        vk::WriteDescriptorSet as_write;
+        as_write.dstSet = *rt_descriptor_sets[i];
+        as_write.dstBinding = 0;
+        as_write.descriptorType = vk::DescriptorType::eAccelerationStructureKHR;
+        as_write.descriptorCount = 1;
+        as_write.pNext = &as_info; // Chain the AS info
+
+        // Binding 1: Input Buffer (Torus Vertices)
+        vk::DescriptorBufferInfo vertex_buffer_info;
+        vertex_buffer_info.buffer = torus_vertex_data_buffer.buffer;
+        vertex_buffer_info.offset = 0;
+        vertex_buffer_info.range = VK_WHOLE_SIZE;
+
+        vk::WriteDescriptorSet vertex_write;
+        vertex_write.dstSet = *rt_descriptor_sets[i];
+        vertex_write.dstBinding = 1;
+        vertex_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+        vertex_write.descriptorCount = 1;
+        vertex_write.pBufferInfo = &vertex_buffer_info;
+
+        // Binding 2: Output Buffer (Hit Data)
+        vk::DescriptorBufferInfo hit_buffer_info;
+        hit_buffer_info.buffer = hit_data_buffer.buffer;
+        hit_buffer_info.offset = 0;
+        hit_buffer_info.range = VK_WHOLE_SIZE;
+
+        vk::WriteDescriptorSet hit_write;
+        hit_write.dstSet = *rt_descriptor_sets[i];
+        hit_write.dstBinding = 2;
+        hit_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+        hit_write.descriptorCount = 1;
+        hit_write.pBufferInfo = &hit_buffer_info;
+
+        std::array<vk::WriteDescriptorSet, 3> writes = {as_write, vertex_write, hit_write};
+        logical_device.updateDescriptorSets(writes, {});
+    }
+}
+
+void Engine::createShaderBindingTable()
+{
+    // 1. Get properties
+    uint32_t handle_size = rt_props.pipeline_props.shaderGroupHandleSize;
+    uint32_t sbt_entry_alignment = rt_props.pipeline_props.shaderGroupBaseAlignment;
+    
+    // Helper lambda to align a size
+    auto align_up = [&](uint32_t size, uint32_t alignment) {
+        return (size + alignment - 1) & ~(alignment - 1);
+    };
+    
+    // The size of each entry in the SBT must be the handle size, aligned up to the BASE alignment
+    uint32_t sbt_entry_size = align_up(handle_size, sbt_entry_alignment);
+    
+    // We need 3 groups: RayGen, Miss, ClosestHit
+    // Calculate offsets based on the new, larger entry size
+    uint32_t rgen_offset = 0 * sbt_entry_size;
+    uint32_t miss_offset = 1 * sbt_entry_size;
+    uint32_t chit_offset = 2 * sbt_entry_size;
+
+    // Total SBT size is 3 entries
+    uint32_t sbt_size = chit_offset + sbt_entry_size;
+
+    // 2. Get the 3 shader group handles from the pipeline
+    uint32_t handle_count = 3;
+    std::vector<uint8_t> shader_handles(handle_count * handle_size);
+    
+    VkResult res = vkGetRayTracingShaderGroupHandlesKHR(
+        *logical_device,
+        *rt_pipeline.pipeline,
+        0, // firstGroup
+        handle_count, // groupCount
+        shader_handles.size(), // dataSize
+        shader_handles.data() // pData
+    );
+    if (res != VK_SUCCESS) {
+        throw std::runtime_error("Failed to get ray tracing shader group handles!");
+    }
+
+    // 3. Create SBT Buffer (Host Visible)
+    createBuffer(vma_allocator, sbt_size,
+                 vk::BufferUsageFlagBits::eShaderDeviceAddress | vk::BufferUsageFlagBits::eShaderBindingTableKHR,
+                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                 sbt_buffer);
+
+    // 4. Map and copy handles into the SBT
+    void* sbt_mapped;
+    vmaMapMemory(vma_allocator, sbt_buffer.allocation, &sbt_mapped);
+    
+    uint8_t* p_data = static_cast<uint8_t*>(sbt_mapped);
+    
+    // Copy RayGen handle (Group 0)
+    memcpy(p_data + rgen_offset, shader_handles.data() + 0 * handle_size, handle_size);
+    
+    // Copy Miss handle (Group 1)
+    memcpy(p_data + miss_offset, shader_handles.data() + 1 * handle_size, handle_size);
+    
+    // Copy Hit handle (Group 2)
+    memcpy(p_data + chit_offset, shader_handles.data() + 2 * handle_size, handle_size);
+    
+    vmaUnmapMemory(vma_allocator, sbt_buffer.allocation);
 }
 
 void Engine::recreateSwapChain(){

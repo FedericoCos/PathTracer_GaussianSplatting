@@ -39,6 +39,11 @@ test: $(TARGET)
 	glslc shaders/basic/oit_ppll_composite.frag -o shaders/basic/oit_ppll_composite_frag.spv
 	glslc shaders/basic/shadow.vert -o shaders/basic/shadow_vert.spv
 	glslc shaders/basic/shadow.frag -o shaders/basic/shadow_frag.spv
+	glslc -fshader-stage=rgen --target-env=vulkan1.4 shaders/rt_datacollect/raygen.rgen -o shaders/rt_datacollect/raygen.rgen.spv
+	glslc -fshader-stage=rchit --target-env=vulkan1.4 shaders/rt_datacollect/closesthit.rchit -o shaders/rt_datacollect/closesthit.rchit.spv
+	glslc -fshader-stage=rmiss --target-env=vulkan1.4 shaders/rt_datacollect/miss.rmiss -o shaders/rt_datacollect/miss.rmiss.spv
+	glslc shaders/pointcloud/pointcloud.frag -o shaders/pointcloud/pointcloud.frag.spv
+	glslc shaders/pointcloud/pointcloud.vert --target-env=vulkan1.4 -o shaders/pointcloud/pointcloud.vert.spv
 	./$(TARGET)
 
 # Clean up the build files

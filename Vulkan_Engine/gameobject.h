@@ -25,6 +25,7 @@ public:
     std::vector<Material> materials;
     std::vector<AllocatedImage> textures;
     vk::raii::Sampler default_sampler = nullptr;
+    AccelerationStructure blas;
 
 
     // CPU side geometry. NOTE this could be cleaned after uploading to GPU to save RAM

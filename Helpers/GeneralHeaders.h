@@ -57,7 +57,8 @@ using json = nlohmann::json;
 enum class TransparencyMode{
     OPAQUE,
     OIT_WRITE,
-    OIT_COMPOSITE
+    OIT_COMPOSITE,
+    POINTCLOUD
 };
 
 
@@ -316,7 +317,9 @@ enum class Action{
     TOGGLE_LEFT_LIGHT,
     TOGGLE_RIGHT_LIGHT,
     TOGGLE_EMISSIVE,
-    TOGGLE_MANUAL
+    TOGGLE_MANUAL,
+
+    POINTCLOUD
 };
 
 struct InputState{
@@ -429,6 +432,17 @@ struct PipelineInfo {
     // --- Disable Copying ---
     PipelineInfo(const PipelineInfo&) = delete;
     PipelineInfo& operator=(const PipelineInfo&) = delete;
+};
+
+struct AccelerationStructure {
+    vk::raii::AccelerationStructureKHR as = nullptr;
+    AllocatedBuffer buffer;
+    uint64_t device_address = 0;
+};
+
+struct RayTracingProperties {
+    vk::PhysicalDeviceRayTracingPipelinePropertiesKHR pipeline_props;
+    vk::PhysicalDeviceAccelerationStructurePropertiesKHR as_props;
 };
 
 // ------ Helper Functions

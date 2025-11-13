@@ -1,0 +1,62 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+
+#include "raytracing.glsl"
+
+// Binding 0: Top-Level Acceleration Structure
+layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
+
+// Binding 1: Input Vertex Buffer (read-only)
+layout(set = 0, binding = 1, scalar) buffer readonly InputVertexBuffer {
+    InputVertex vertices[];
+} input_buffer;
+
+// Binding 2: Output Hit Buffer (write-only)
+layout(set = 0, binding = 2, scalar) buffer writeonly OutputHitBuffer {
+    HitData hits[];
+} output_buffer;
+
+// Push constant for the torus's model matrix
+layout(push_constant) uniform PushConstants {
+    mat4 model;
+} push_const;
+
+// The payload to send to the hit/miss shaders
+layout(location = 0) rayPayloadEXT RayPayload payload;
+
+void main()
+{
+    // Get the index for this shader invocation
+    uint index = gl_LaunchIDEXT.x;
+    
+    // Get the vertex for this ray
+    InputVertex v = input_buffer.vertices[index];
+    
+    // Transform pos and normal by the torus's model matrix
+    vec3 ray_origin = (push_const.model * vec4(v.pos, 1.0)).xyz;
+    vec3 ray_dir = normalize((push_const.model * vec4(v.normal, 0.0)).xyz);
+
+    // Initialize the payload
+    payload.vertex_index = index;
+    payload.color = v.color;
+    
+    // Initialize the output buffer for this index as a "miss"
+    // The miss shader will confirm this if no hit is found.
+    output_buffer.hits[index].hit_pos = vec3(0.0);
+    output_buffer.hits[index].hit_flag = -1.0;
+
+    // Cast the ray
+    traceRayEXT(tlas,               // tlas
+                gl_RayFlagsOpaqueEXT, // rayFlags (only hit opaque objects)
+                0xFF,                 // cullMask
+                0,                    // sbtRecordOffset
+                0,                    // sbtRecordStride
+                0,                    // missIndex (we only have one miss shader at group index 1)
+                ray_origin,           // origin
+                0.001,                // tMin (start ray slightly in front of surface)
+                ray_dir,              // direction
+                10000.0,              // tMax
+                0);                   // payload location
+}

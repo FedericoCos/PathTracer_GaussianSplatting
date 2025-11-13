@@ -32,7 +32,7 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
     auto attribute_descriptions = Vertex::getAttributeDescriptions();
     
     vk::PipelineVertexInputStateCreateInfo vertex_input_info;
-    if (mode == TransparencyMode::OIT_COMPOSITE) {
+    if (mode == TransparencyMode::OIT_COMPOSITE || mode == TransparencyMode::POINTCLOUD) {
         // Fullscreen quad has no vertex inputs
         vertex_input_info.vertexBindingDescriptionCount = 0;
         vertex_input_info.pVertexBindingDescriptions = nullptr; // Be explicit
@@ -49,7 +49,11 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
     }
     
     vk::PipelineInputAssemblyStateCreateInfo input_assembly;
-    input_assembly.topology = vk::PrimitiveTopology::eTriangleList;
+    if (mode == TransparencyMode::POINTCLOUD) {
+        input_assembly.topology = vk::PrimitiveTopology::ePointList;
+    } else {
+        input_assembly.topology = vk::PrimitiveTopology::eTriangleList;
+    }
     
     vk::PipelineViewportStateCreateInfo viewport_state;
     viewport_state.viewportCount = 1;
@@ -81,7 +85,7 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
         depth_stencil.depthWriteEnable = vk::False;
     } else{
         depth_stencil.depthTestEnable = vk::True;
-        depth_stencil.depthWriteEnable = (mode == TransparencyMode::OPAQUE) ? vk::True : vk::False;
+        depth_stencil.depthWriteEnable = (mode == TransparencyMode::OPAQUE || mode == TransparencyMode::POINTCLOUD) ? vk::True : vk::False;
         depth_stencil.depthBoundsTestEnable = vk::False;
         depth_stencil.stencilTestEnable = vk::False;
         depth_stencil.depthCompareOp = vk::CompareOp::eLess;
@@ -94,6 +98,7 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
 
     switch(mode){
         case TransparencyMode::OPAQUE:
+        case TransparencyMode::POINTCLOUD:
             color_blend_attachment.blendEnable = vk::False;
             color_blend_attachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
                                                     vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
@@ -137,7 +142,7 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
 
     // --- PUSH CONSTANT SETUP ---
     std::vector<vk::PushConstantRange> push_constant_ranges;
-    if(mode != TransparencyMode::OIT_COMPOSITE){
+    if(mode == TransparencyMode::OPAQUE || mode == TransparencyMode::OIT_WRITE){
         // Vertex Push Constant (Model Matrix)
         vk::PushConstantRange vert_push_constant_range;
         vert_push_constant_range.stageFlags = vk::ShaderStageFlagBits::eVertex;
@@ -190,10 +195,11 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
             break;
         case TransparencyMode::OPAQUE:
         case TransparencyMode::OIT_COMPOSITE:
+        case TransparencyMode::POINTCLOUD:
             pipeline_rendering_create_info.colorAttachmentCount = 1;
             pipeline_rendering_create_info.pColorAttachmentFormats = &engine.swapchain.format;
             // OPAQUE has depth, COMPOSITE does not
-            pipeline_rendering_create_info.depthAttachmentFormat = (mode == TransparencyMode::OPAQUE) ? depth_format : vk::Format::eUndefined;
+            pipeline_rendering_create_info.depthAttachmentFormat = (mode == TransparencyMode::OPAQUE || mode == TransparencyMode::POINTCLOUD) ? depth_format : vk::Format::eUndefined;
             break;
     }
 
@@ -300,6 +306,101 @@ vk::raii::Pipeline Pipeline::createShadowPipeline(
     pipeline_info.pDepthStencilState = &depth_stencil;
 
     return vk::raii::Pipeline(engine.logical_device, nullptr, pipeline_info);
+}
+
+vk::raii::Pipeline Pipeline::createRayTracingPipeline(Engine& engine, PipelineInfo* p_info, const std::string &rt_rgen_shader, const std::string &rt_rmiss_shader, const std::string &rt_rchit_shader)
+{
+    // 1. Load Shaders
+    vk::raii::ShaderModule rgen_module = createShaderModule(readFile(rt_rgen_shader), &engine.logical_device);
+    vk::raii::ShaderModule rmiss_module = createShaderModule(readFile(rt_rmiss_shader), &engine.logical_device);
+    vk::raii::ShaderModule rchit_module = createShaderModule(readFile(rt_rchit_shader), &engine.logical_device);
+
+    std::vector<vk::PipelineShaderStageCreateInfo> shader_stages;
+
+    // Shader Stage 0: RayGen
+    shader_stages.push_back(vk::PipelineShaderStageCreateInfo(
+        {}, vk::ShaderStageFlagBits::eRaygenKHR, *rgen_module, "main"
+    ));
+    // Shader Stage 1: Miss
+    shader_stages.push_back(vk::PipelineShaderStageCreateInfo(
+        {}, vk::ShaderStageFlagBits::eMissKHR, *rmiss_module, "main"
+    ));
+    // Shader Stage 2: Closest Hit
+    shader_stages.push_back(vk::PipelineShaderStageCreateInfo(
+        {}, vk::ShaderStageFlagBits::eClosestHitKHR, *rchit_module, "main"
+    ));
+
+    // 2. Define Shader Groups
+    std::vector<vk::RayTracingShaderGroupCreateInfoKHR> shader_groups;
+    
+    // Group 0: RayGen Group
+    vk::RayTracingShaderGroupCreateInfoKHR rgen_group;
+    rgen_group.type = vk::RayTracingShaderGroupTypeKHR::eGeneral;
+    rgen_group.generalShader = 0; // Index into shader_stages
+    rgen_group.closestHitShader = VK_SHADER_UNUSED_KHR;
+    rgen_group.anyHitShader = VK_SHADER_UNUSED_KHR;
+    rgen_group.intersectionShader = VK_SHADER_UNUSED_KHR;
+    shader_groups.push_back(rgen_group);
+
+    // Group 1: Miss Group
+    vk::RayTracingShaderGroupCreateInfoKHR miss_group;
+    miss_group.type = vk::RayTracingShaderGroupTypeKHR::eGeneral;
+    miss_group.generalShader = 1; // Index into shader_stages
+    miss_group.closestHitShader = VK_SHADER_UNUSED_KHR;
+    miss_group.anyHitShader = VK_SHADER_UNUSED_KHR;
+    miss_group.intersectionShader = VK_SHADER_UNUSED_KHR;
+    shader_groups.push_back(miss_group);
+
+    // Group 2: Hit Group (Triangles)
+    vk::RayTracingShaderGroupCreateInfoKHR chit_group;
+    chit_group.type = vk::RayTracingShaderGroupTypeKHR::eTrianglesHitGroup;
+    chit_group.generalShader = VK_SHADER_UNUSED_KHR;
+    chit_group.closestHitShader = 2; // Index into shader_stages
+    chit_group.anyHitShader = VK_SHADER_UNUSED_KHR;
+    chit_group.intersectionShader = VK_SHADER_UNUSED_KHR;
+    shader_groups.push_back(chit_group);
+
+    // 3. Create Pipeline Layout
+    // We only have one push constant: the torus model matrix
+    vk::PushConstantRange push_constant_range;
+    push_constant_range.stageFlags = vk::ShaderStageFlagBits::eRaygenKHR;
+    push_constant_range.offset = 0;
+    push_constant_range.size = sizeof(glm::mat4);
+
+    vk::PipelineLayoutCreateInfo pipeline_layout_info;
+    pipeline_layout_info.setLayoutCount = 1;
+    pipeline_layout_info.pSetLayouts = &*(p_info->descriptor_set_layout); // Use the layout we stored
+    pipeline_layout_info.pushConstantRangeCount = 1;
+    pipeline_layout_info.pPushConstantRanges = &push_constant_range;
+
+    p_info->layout = vk::raii::PipelineLayout(engine.logical_device, pipeline_layout_info);
+
+    // 4. Create the Pipeline
+    vk::RayTracingPipelineCreateInfoKHR pipeline_info;
+    pipeline_info.stageCount = static_cast<uint32_t>(shader_stages.size());
+    pipeline_info.pStages = shader_stages.data();
+    pipeline_info.groupCount = static_cast<uint32_t>(shader_groups.size());
+    pipeline_info.pGroups = shader_groups.data();
+    pipeline_info.maxPipelineRayRecursionDepth = 1; // No recursion needed
+    pipeline_info.layout = *(p_info->layout);
+
+    // Call the C function pointer
+    VkPipeline vk_pipeline;
+    VkResult res = engine.vkCreateRayTracingPipelinesKHR(
+        *engine.logical_device,
+        VK_NULL_HANDLE, // deferredOperation
+        VK_NULL_HANDLE, // pipelineCache
+        1, // createInfoCount
+        reinterpret_cast<const VkRayTracingPipelineCreateInfoKHR*>(&pipeline_info),
+        nullptr, // pAllocator
+        &vk_pipeline
+    );
+
+    if (res != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create ray tracing pipeline!");
+    }
+
+    return vk::raii::Pipeline(engine.logical_device, vk_pipeline);
 }
 
 vk::raii::DescriptorSetLayout Pipeline::createDescriptorSetLayout(Engine &engine, std::vector<vk::DescriptorSetLayoutBinding> &bindings)

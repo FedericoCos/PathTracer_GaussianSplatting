@@ -148,7 +148,38 @@ public:
     // We need 5 descriptor sets per frame
     std::array<std::vector<vk::raii::DescriptorSet>, MAX_FRAMES_IN_FLIGHT> shadow_descriptor_sets;
 
+
+    // Ray Tracing TLAS members
+    AccelerationStructure tlas;
+    AllocatedBuffer tlas_instance_buffer;
+    void * tlas_instance_buffer_mapped = nullptr;
+    AllocatedBuffer tlas_scratch_buffer;
+    uint64_t tlas_scratch_addr = 0;
+    const uint32_t MAX_TLAS_INSTANCES = 1024;
+
+    // Ray tracing data buffers
+    AllocatedBuffer torus_vertex_data_buffer;
+    AllocatedBuffer hit_data_buffer;
+
+    // Ray Tracing Pipeline members
+    PipelineInfo rt_pipeline;
+    vk::raii::DescriptorSetLayout rt_descriptor_set_layout = nullptr;
+    std::vector<vk::raii::DescriptorSet> rt_descriptor_sets; // One per frame
+    AllocatedBuffer sbt_buffer; // Shader Binding Table
+    RayTracingProperties rt_props;
+
+    // RayTarcing function pointers
+    PFN_vkCreateRayTracingPipelinesKHR vkCreateRayTracingPipelinesKHR = nullptr;
+
+    // Pointcloud Pipeline
+    PipelineInfo point_cloud_pipeline;
+    std::vector<vk::raii::DescriptorSet> point_cloud_descriptor_sets;
+
+    // Used to track GPU resources usage
     void printGpuMemoryUsage();
+
+    // --- Public Helper functions
+    uint64_t getBufferDeviceAddress(vk::Buffer buffer);
 
 
 private:
@@ -176,6 +207,13 @@ private:
 
     const std::string v_shader_shadow = "shaders/basic/shadow_vert.spv";
     const std::string f_shader_shadow = "shaders/basic/shadow_frag.spv";
+
+    const std::string rt_rgen_shader = "shaders/rt_datacollect/raygen.rgen.spv";
+    const std::string rt_rmiss_shader = "shaders/rt_datacollect/miss.rmiss.spv";
+    const std::string rt_rchit_shader = "shaders/rt_datacollect/closesthit.rchit.spv";
+
+    const std::string v_shader_pointcloud = "shaders/pointcloud/pointcloud.vert.spv";
+    const std::string f_shader_pointcloud = "shaders/pointcloud/pointcloud.frag.spv";
 
     // Depth variables
     AllocatedImage depth_image;
@@ -240,7 +278,9 @@ private:
         {GLFW_KEY_8, Action::TOGGLE_LEFT_LIGHT},
         {GLFW_KEY_9, Action::TOGGLE_RIGHT_LIGHT},
         {GLFW_KEY_E, Action::TOGGLE_EMISSIVE},
-        {GLFW_KEY_Q, Action::TOGGLE_MANUAL}
+        {GLFW_KEY_Q, Action::TOGGLE_MANUAL},
+
+        {GLFW_KEY_P, Action::POINTCLOUD},
 
     };
     std::unordered_set<int> pressed_keys;
@@ -262,6 +302,16 @@ private:
     bool use_emissive_lights = false;
     bool use_manual_lights_shadows = false;
     bool use_emissive_lights_shadows = false;
+
+    bool render_point_cloud = false;
+
+    // --- Ray Tracing Function Pointers ---
+    PFN_vkGetAccelerationStructureBuildSizesKHR vkGetAccelerationStructureBuildSizesKHR = nullptr;
+    PFN_vkCreateAccelerationStructureKHR vkCreateAccelerationStructureKHR = nullptr;
+    PFN_vkCmdBuildAccelerationStructuresKHR vkCmdBuildAccelerationStructuresKHR = nullptr;
+    PFN_vkGetAccelerationStructureDeviceAddressKHR vkGetAccelerationStructureDeviceAddressKHR = nullptr;
+    PFN_vkGetRayTracingShaderGroupHandlesKHR vkGetRayTracingShaderGroupHandlesKHR = nullptr;
+    PFN_vkCmdTraceRaysKHR vkCmdTraceRaysKHR = nullptr;
 
 
     // ----- Helper functions
@@ -312,6 +362,15 @@ private:
     void loadScene(const std::string& scene_path);
     void loadManualLights(const std::string& lights_path);
     void createTorusModel();
+    void buildBlas(Gameobject& obj);
+    void createTlasResources();
+    void buildTlas(vk::raii::CommandBuffer& cmd);
+    void createRayTracingDataBuffers();
+
+    void createPointCloudPipeline();
+    void createPointCloudDescriptorSets();
+
+
     void createUniformBuffers();
     void createDescriptorPool();
     void createDescriptorSets();
@@ -324,6 +383,11 @@ private:
     void createShadowResources();
     void createShadowPipeline();
 
+    // RT Pipeline Functions
+    void createRayTracingPipeline();
+    void createRayTracingDescriptorSets();
+    void createShaderBindingTable();
+
 
 
     // Drawing functions
@@ -332,7 +396,6 @@ private:
     void updateUniformBuffer(uint32_t current_image);
 
     void recreateSwapChain();
-
 
     // ---- Closing functions
     void cleanup();

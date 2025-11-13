@@ -5,7 +5,16 @@ std::vector<const char*> device_extensions = {
     vk::KHRSwapchainExtensionName, // extension required for presenting rendered images to the window
     vk::KHRSpirv14ExtensionName,
     vk::KHRSynchronization2ExtensionName,
-    vk::KHRCreateRenderpass2ExtensionName
+    vk::KHRCreateRenderpass2ExtensionName,
+
+    // Core RT extensions
+    vk::KHRAccelerationStructureExtensionName,
+    vk::KHRRayTracingPipelineExtensionName,
+    
+    // Dependencies
+    vk::KHRBufferDeviceAddressExtensionName,
+    vk::KHRDeferredHostOperationsExtensionName,
+    vk::EXTDescriptorIndexingExtensionName
 };
 
 bool Device::isDeviceSuitable(const vk::raii::PhysicalDevice &device, bool descrete)
@@ -55,23 +64,38 @@ bool Device::isDeviceSuitable(const vk::raii::PhysicalDevice &device, bool descr
     auto features = device.template getFeatures2<
         vk::PhysicalDeviceFeatures2,
         vk::PhysicalDeviceVulkan11Features,
+        vk::PhysicalDeviceVulkan12Features,
         vk::PhysicalDeviceVulkan13Features,
-        vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT
+        vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,
+        vk::PhysicalDeviceAccelerationStructureFeaturesKHR,
+        vk::PhysicalDeviceRayTracingPipelineFeaturesKHR
     >();
 
     bool supportsRequiredFeatures =
         features.template get<vk::PhysicalDeviceFeatures2>().features.samplerAnisotropy &&
         features.template get<vk::PhysicalDeviceFeatures2>().features.independentBlend &&
         features.template get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering &&
+        features.template get<vk::PhysicalDeviceFeatures2>().features.shaderTessellationAndGeometryPointSize &&
         features.template get<vk::PhysicalDeviceVulkan13Features>().synchronization2 &&
         features.template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState &&
         features.template get<vk::PhysicalDeviceFeatures2>().features.shaderStorageImageMultisample &&
         features.template get<vk::PhysicalDeviceFeatures2>().features.sampleRateShading &&
         features.template get<vk::PhysicalDeviceVulkan11Features>().multiview;;
 
+    bool supportsRtFeatures = 
+        features.template get<vk::PhysicalDeviceAccelerationStructureFeaturesKHR>().accelerationStructure &&
+        features.template get<vk::PhysicalDeviceRayTracingPipelineFeaturesKHR>().rayTracingPipeline;
+
+    bool supportsVulkan12Features =
+        features.template get<vk::PhysicalDeviceVulkan12Features>().bufferDeviceAddress &&
+        features.template get<vk::PhysicalDeviceVulkan12Features>().runtimeDescriptorArray &&
+        features.template get<vk::PhysicalDeviceVulkan12Features>().descriptorBindingPartiallyBound &&
+        features.template get<vk::PhysicalDeviceVulkan12Features>().shaderSampledImageArrayNonUniformIndexing &&
+        features.template get<vk::PhysicalDeviceVulkan12Features>().descriptorIndexing &&
+        features.template get<vk::PhysicalDeviceVulkan12Features>().scalarBlockLayout;;
 
 
-    return supportsRequiredFeatures;
+    return supportsRequiredFeatures && supportsRtFeatures && supportsVulkan12Features;
 }
 
 vk::raii::PhysicalDevice Device::pickPhysicalDevice(const Engine& engine){
@@ -164,20 +188,42 @@ vk::raii::Device Device::createLogicalDevice(const Engine &engine, QueueFamilyIn
     deviceFeatures2.features.fragmentStoresAndAtomics = vk::True; 
     deviceFeatures2.features.shaderStorageImageMultisample = vk::True;
     deviceFeatures2.features.sampleRateShading = vk::True;
+    deviceFeatures2.features.shaderTessellationAndGeometryPointSize = vk::True;
     
+
+    // Define Vulkan 1.2 features (for BDA and Indexing)
+    vk::PhysicalDeviceVulkan12Features vulkan12features;
+    vulkan12features.bufferDeviceAddress = true;
+    vulkan12features.runtimeDescriptorArray = true;
+    vulkan12features.descriptorBindingPartiallyBound = true;
+    vulkan12features.shaderSampledImageArrayNonUniformIndexing = true;
+    vulkan12features.descriptorIndexing = true;
+    vulkan12features.scalarBlockLayout = true;
+
+    // Define RT features
+    vk::PhysicalDeviceAccelerationStructureFeaturesKHR accelFeatures;
+    accelFeatures.accelerationStructure = true;
+
+    vk::PhysicalDeviceRayTracingPipelineFeaturesKHR rtPipelineFeatures;
+    rtPipelineFeatures.rayTracingPipeline = true;
+
 
     vk::StructureChain<
     vk::PhysicalDeviceFeatures2,
     vk::PhysicalDeviceVulkan11Features,
+    vk::PhysicalDeviceVulkan12Features, 
     vk::PhysicalDeviceVulkan13Features,
     vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,
-    vk::PhysicalDeviceBufferDeviceAddressFeatures
+    vk::PhysicalDeviceAccelerationStructureFeaturesKHR,
+    vk::PhysicalDeviceRayTracingPipelineFeaturesKHR    
     > feature_chain{
         deviceFeatures2,
         vulkan11features,
-        vulkan13features,           // dynamicRendering = true
-        vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT{ VK_TRUE }, // extendedDynamicState = true
-        vk::PhysicalDeviceBufferDeviceAddressFeatures { VK_TRUE }
+        vulkan12features,
+        vulkan13features,
+        vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT{ VK_TRUE },
+        accelFeatures,   
+        rtPipelineFeatures
     };
 
     // create a Device

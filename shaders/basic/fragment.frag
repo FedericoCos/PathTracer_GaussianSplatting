@@ -53,6 +53,7 @@ layout(location = 13) in vec2 fragTexCoord1;
 layout(location = 14) in float fragInTangentW;
 // --- OUTPUT ---
 layout(location = 0) out vec4 outColor;
+layout(location = 1) out vec4 outAlbedo;
 
 // --- PBR Constants ---
 const float PI = 3.14159265359;
@@ -250,6 +251,8 @@ void main() {
     // --- 6. Final Color ---
     vec3 ambient = ubo.ambientLight.xyz * ubo.ambientLight.w * albedo * ao;
     vec3 color = ambient + Lo + emissive;
+
+    outAlbedo = vec4(albedo, 1.0);
 
     // REMOVED tonemapping and gamma correction
     outColor = vec4(color, 1.0); // Output raw linear HDR color

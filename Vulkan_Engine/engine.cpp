@@ -889,8 +889,13 @@ bool Engine::initVulkan(){
                     vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment, 
                 vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
     color_image.image_view = Image::createImageView(color_image, *this);
-    std::cout << "Memory usage color image creation" << std::endl;
+    std::cout << "Memory usage after color image creation" << std::endl;
     printGpuMemoryUsage();
+
+    createAlbedoGBuffer();
+    std::cout << "Memory usage after G-buffer creation" << std::endl;
+    printGpuMemoryUsage();
+
     Image::createDepthResources(physical_device, depth_image, swapchain.extent.width, swapchain.extent.height, *this);
     std::cout << "Memory usage after depth image creation" << std::endl;
     printGpuMemoryUsage();
@@ -905,6 +910,7 @@ bool Engine::initVulkan(){
     // PIPELINE CREATION
     createPipelines();
     createRayTracingPipeline();
+    createComputeLookupPipeline();
 
     loadScene("resources/main_scene.json");
     std::cout << "Memory status loading objects in scene" << std::endl;
@@ -943,6 +949,7 @@ bool Engine::initVulkan(){
     createDescriptorPool();
     createRayTracingDescriptorSets();
     createPointCloudDescriptorSets();
+    createComputeLookupDescriptorSets();
     createDescriptorSets();
     createOITDescriptorSets();
 
@@ -954,6 +961,9 @@ bool Engine::initVulkan(){
     camera = Camera(swapchain.extent.width * 1.0 / swapchain.extent.height);
     
     prev_time = std::chrono::high_resolution_clock::now();
+
+    std::cout << "Memory usage after initialization" << std::endl;
+    printGpuMemoryUsage();
 
     return true;
 }
@@ -1327,7 +1337,7 @@ void Engine::loadManualLights(const std::string& lights_path)
 
 void Engine::createTorusModel()
 {
-    torus.generateMesh(11.f, 1.f, 2.f, 700, 400);
+    torus.generateMesh(11.f, 1.f, 2.f, 1000, 1000);
     Primitive torusPrim;
     torusPrim.index_count = torus.indices.size();
     torusPrim.first_index = 0;
@@ -1400,13 +1410,14 @@ void Engine::createDescriptorPool()
     uint32_t oit_sets = MAX_FRAMES_IN_FLIGHT; // For PPLL buffers
     uint32_t rt_sets = MAX_FRAMES_IN_FLIGHT;
     uint32_t pointcloud_sets = MAX_FRAMES_IN_FLIGHT;
+    uint32_t compute_sets = MAX_FRAMES_IN_FLIGHT;
 
-    uint32_t total_max_sets = pbr_sets + torus_sets + shadow_sets + oit_sets + rt_sets + pointcloud_sets;
+    uint32_t total_max_sets = pbr_sets + torus_sets + shadow_sets + oit_sets + rt_sets + pointcloud_sets + compute_sets;
 
     // --- 4. Calculate total individual descriptors needed ---
     
     // UBOs: 1 per PBR set, 1 per Torus set, 1 per Shadow set, 1 per PointCloud set
-    uint32_t total_ubos = pbr_sets + torus_sets + shadow_sets + pointcloud_sets;
+    uint32_t total_ubos = pbr_sets + torus_sets + shadow_sets + pointcloud_sets + compute_sets;
 
     // Samplers: (8 PBR + shadows) per PBR set. Torus/OIT/Shadow sets use 0.
     uint32_t total_samplers = pbr_sets * (8 + MAX_SHADOW_LIGHTS);
@@ -1415,10 +1426,11 @@ void Engine::createDescriptorPool()
     uint32_t total_storage_images = oit_sets;
 
     // Storage Buffers: 2 per OIT set, 2 per RT set, 1 per PointCloud set
-    uint32_t total_storage_buffers = (oit_sets * 2) + (rt_sets * 2) + pointcloud_sets;
+    uint32_t total_storage_buffers = (oit_sets * 2) + (rt_sets * 2) + pointcloud_sets + compute_sets;
 
     // Acceleration Structures: 1 per RT set
     uint32_t total_accel_structs = rt_sets;
+    uint32_t total_sampled_images = compute_sets;
 
 
     std::vector<vk::DescriptorPoolSize> pool_sizes;
@@ -1436,6 +1448,10 @@ void Engine::createDescriptorPool()
     }
     if (total_accel_structs > 0) {
         pool_sizes.push_back(vk::DescriptorPoolSize(vk::DescriptorType::eAccelerationStructureKHR, total_accel_structs));
+    }
+    if (total_sampled_images > 0) {
+        // NOTE: We use eSampledImage, not eCombinedImageSampler
+        pool_sizes.push_back(vk::DescriptorPoolSize(vk::DescriptorType::eSampledImage, total_sampled_images));
     }
 
     vk::DescriptorPoolCreateInfo pool_info;
@@ -1515,6 +1531,26 @@ void Engine::createSyncObjects(){
     }
 }
 
+void Engine::createAlbedoGBuffer()
+{
+    albedo_g_buffer = Image::createImage(
+        swapchain.extent.width, swapchain.extent.height, 1, mssa_samples,
+        vk::Format::eR8G8B8A8Unorm,
+        vk::ImageTiling::eOptimal,
+        // MUST be ColorAttachment (to render to) and Sampled (to read from in compute)
+        vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
+        vk::MemoryPropertyFlagBits::eDeviceLocal, *this
+    );
+
+    albedo_g_buffer.image_view = Image::createImageView(albedo_g_buffer, *this);
+
+    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device); 
+    transitionImage(cmd, albedo_g_buffer.image, 
+                    vk::ImageLayout::eUndefined, 
+                    vk::ImageLayout::eColorAttachmentOptimal, 
+                    vk::ImageAspectFlagBits::eColor);
+    endSingleTimeCommands(cmd, graphics_queue);
+}
 
 void Engine::createOITResources(){
     int avg_fragments_per_sample = 8;
@@ -1829,6 +1865,8 @@ void Engine::run(){
 void Engine::recordCommandBuffer(uint32_t image_index){
     auto& cmd = graphics_command_buffer[current_frame];
     cmd.begin({});
+    
+    // --- SHADOW PASS ---
     for (int i = 0; i < ubo.curr_num_shadowlights; ++i) {
         // Transition shadow map to be a depth attachment
         transitionImage(cmd, shadow_maps[i].image, 
@@ -1860,11 +1898,9 @@ void Engine::recordCommandBuffer(uint32_t image_index){
 
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.pipeline);
         
-        // Bind the correct Shadow UBO for this pass
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.layout, 0, 
                     {*shadow_descriptor_sets[current_frame][i]}, {});
 
-        // --- Draw all shadow-casting objects ---
         for(auto& obj : scene_objs) {
             if (obj.o_primitives.empty()) continue; 
             
@@ -1877,7 +1913,6 @@ void Engine::recordCommandBuffer(uint32_t image_index){
             }
         }
         
-        // Draw rt_box
         if (use_rt_box && rt_box.o_pipeline && !rt_box.o_primitives.empty()) {
             cmd.bindVertexBuffers(0, {rt_box.geometry_buffer.buffer}, {0});
             cmd.bindIndexBuffer(rt_box.geometry_buffer.buffer, rt_box.index_buffer_offset, vk::IndexType::eUint32);
@@ -1889,38 +1924,32 @@ void Engine::recordCommandBuffer(uint32_t image_index){
 
         cmd.endRendering();
 
-        // Transition shadow map to be readable in PBR shaders
         transitionImage(cmd, shadow_maps[i].image, 
                         vk::ImageLayout::eDepthStencilAttachmentOptimal, 
                         vk::ImageLayout::eShaderReadOnlyOptimal, 
                         vk::ImageAspectFlagBits::eDepth);
-
     }
 
-
+    // --- TLAS BUILD PASS ---
     buildTlas(cmd);
 
     // --- 5. RAY TRACING DATA COLLECTION PASS ---
+    // (Writes to hit_data_buffer)
     {
-        // Helper lambda to align sizes
         auto align_up = [&](uint32_t size, uint32_t alignment) {
             return (size + alignment - 1) & ~(alignment - 1);
         };
 
-        // Bind the ray tracing pipeline
         cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline);
 
-        // Bind the descriptor set (TLAS, Input, Output buffers)
         cmd.bindDescriptorSets(
             vk::PipelineBindPoint::eRayTracingKHR,
             *rt_pipeline.layout, 0,
             {*rt_descriptor_sets[current_frame]},
             {});
         
-        // Push the torus's model matrix for the raygen shader
         cmd.pushConstants<glm::mat4>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, torus.model_matrix);
 
-        // --- Setup Shader Binding Table (SBT) ---
         uint32_t handle_size = rt_props.pipeline_props.shaderGroupHandleSize;
         uint32_t sbt_entry_alignment = rt_props.pipeline_props.shaderGroupBaseAlignment;
         uint32_t sbt_entry_size = align_up(handle_size, sbt_entry_alignment);
@@ -1932,36 +1961,32 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         rgen_sbt_region.size = sbt_entry_size;
 
         vk::StridedDeviceAddressRegionKHR rmiss_sbt_region;
-        rmiss_sbt_region.deviceAddress = sbt_address + 1 * sbt_entry_size; // Offset by 1 group
+        rmiss_sbt_region.deviceAddress = sbt_address + 1 * sbt_entry_size;
         rmiss_sbt_region.stride = sbt_entry_size;
-        rmiss_sbt_region.size = sbt_entry_size; // Only 1 miss shader
+        rmiss_sbt_region.size = sbt_entry_size;
 
         vk::StridedDeviceAddressRegionKHR rchit_sbt_region;
-        rchit_sbt_region.deviceAddress = sbt_address + 2 * sbt_entry_size; // Offset by 2 groups
+        rchit_sbt_region.deviceAddress = sbt_address + 2 * sbt_entry_size;
         rchit_sbt_region.stride = sbt_entry_size;
-        rchit_sbt_region.size = sbt_entry_size; // Only 1 hit group
+        rchit_sbt_region.size = sbt_entry_size;
 
-        vk::StridedDeviceAddressRegionKHR callable_sbt_region; // Empty
+        vk::StridedDeviceAddressRegionKHR callable_sbt_region;
 
-        // --- Launch Rays ---
-        // We launch one ray for every vertex in the torus
         vkCmdTraceRaysKHR(
             *cmd,
             reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rgen_sbt_region),
             reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rmiss_sbt_region),
             reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rchit_sbt_region),
             reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&callable_sbt_region),
-            static_cast<uint32_t>(torus.vertices.size()), // width = number of vertices
-            1,                                           // height
-            1);                                         // depth
+            static_cast<uint32_t>(torus.vertices.size()), 
+            1, 1);
         
-        // --- Add Barrier ---
-        // Wait for the ray tracing to finish writing to the hit_data_buffer
-        // before any future pass (like a compute shader or CPU readback) tries to read it.
+        // --- BARRIER (RT -> Compute) ---
+        // Wait for RT to finish WRITING hit_data_buffer before Compute READS it
         vk::MemoryBarrier2 mem_barrier;
         mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
         mem_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
-        mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eVertexShader;
+        mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
         mem_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead;
         
         vk::DependencyInfo dep_info;
@@ -1970,18 +1995,16 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         cmd.pipelineBarrier2(dep_info);
     }
 
-
-    // --- 1. GATHER TRANSPARENTS ---
+    // --- GATHER TRANSPARENTS ---
     transparent_draws.clear();
     for(auto& obj : scene_objs){
         if (!obj.t_primitives.empty()) {
             for(const auto& primitive : obj.t_primitives) {
                 const Material& material = obj.materials[primitive.material_index];
-                transparent_draws.push_back({&obj, &primitive, &material, 0.0f}); // Distance doesn't matter
+                transparent_draws.push_back({&obj, &primitive, &material, 0.0f});
             }
         }
     }
-
     if (torus.isVisible && !torus.t_primitives.empty()) {
         for (const auto& primitive : torus.t_primitives) {
             const Material& material = torus.materials[primitive.material_index];
@@ -1989,43 +2012,59 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         }
     }
 
-    // --- 2. OPAQUE PASS ---
-    {
-        // Transition swapchain image (for final resolve)
-        transition_image_layout(
-            image_index,
-            vk::ImageLayout::eUndefined,
-            vk::ImageLayout::eColorAttachmentOptimal,
-            {}, vk::AccessFlagBits2::eColorAttachmentWrite,
-            vk::PipelineStageFlagBits2::eTopOfPipe,
-            vk::PipelineStageFlagBits2::eColorAttachmentOutput
-        );
+    // --- Transition Swapchain Image ---
+    transition_image_layout(
+        image_index,
+        vk::ImageLayout::eUndefined,
+        vk::ImageLayout::eColorAttachmentOptimal,
+        {}, vk::AccessFlagBits2::eColorAttachmentWrite,
+        vk::PipelineStageFlagBits2::eTopOfPipe,
+        vk::PipelineStageFlagBits2::eColorAttachmentOutput
+    );
 
+    // --- 2. OPAQUE PASS ---
+    // This pass *always* runs, to generate the G-Buffer
+    {
         vk::ClearValue clear_color = vk::ClearColorValue(0.f, 0.f, 0.f, 1.f);
         vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
 
-        // Main color attachment
-        vk::RenderingAttachmentInfo color_attachment_info{};
-        color_attachment_info.imageView = color_image.image_view;
-        color_attachment_info.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-        color_attachment_info.loadOp = vk::AttachmentLoadOp::eClear;
-        color_attachment_info.storeOp = vk::AttachmentStoreOp::eStore; // MUST store for composite pass
-        color_attachment_info.clearValue = clear_color;
+        // Attachment 0: Lit Scene (for OIT compose)
+        vk::RenderingAttachmentInfo color_attachment_lit{};
+        color_attachment_lit.imageView = color_image.image_view;
+        color_attachment_lit.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+        // --- MODIFICATION ---
+        // If we render point cloud, we'll clear this again later.
+        // If not, we clear it now.
+        color_attachment_lit.loadOp = vk::AttachmentLoadOp::eClear; 
+        color_attachment_lit.storeOp = vk::AttachmentStoreOp::eStore; 
+        color_attachment_lit.clearValue = clear_color;
+
+        // Attachment 1: Albedo G-Buffer (for Compute lookup)
+        vk::RenderingAttachmentInfo color_attachment_albedo{};
+        color_attachment_albedo.imageView = albedo_g_buffer.image_view;
+        color_attachment_albedo.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+        color_attachment_albedo.loadOp = vk::AttachmentLoadOp::eClear;
+        color_attachment_albedo.storeOp = vk::AttachmentStoreOp::eStore;
+        color_attachment_albedo.clearValue = clear_color; 
+        
+        std::array<vk::RenderingAttachmentInfo, 2> color_attachments = {
+            color_attachment_lit, color_attachment_albedo
+        };
 
         // Main depth attachment
         vk::RenderingAttachmentInfo depth_attachment_info = {};
         depth_attachment_info.imageView = depth_image.image_view;
         depth_attachment_info.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
         depth_attachment_info.loadOp = vk::AttachmentLoadOp::eClear;
-        depth_attachment_info.storeOp = vk::AttachmentStoreOp::eStore; // MUST store for OIT pass
+        depth_attachment_info.storeOp = vk::AttachmentStoreOp::eStore; 
         depth_attachment_info.clearValue = clear_depth;
 
         vk::RenderingInfo rendering_info;
         rendering_info.renderArea.offset = vk::Offset2D{0, 0};
         rendering_info.renderArea.extent = swapchain.extent;
         rendering_info.layerCount = 1;
-        rendering_info.colorAttachmentCount = 1;
-        rendering_info.pColorAttachments = &color_attachment_info;
+        rendering_info.colorAttachmentCount = 2;
+        rendering_info.pColorAttachments = color_attachments.data();
         rendering_info.pDepthAttachment = &depth_attachment_info;
 
         cmd.beginRendering(rendering_info);
@@ -2033,209 +2072,246 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         cmd.setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain.extent.width), static_cast<float>(swapchain.extent.height), 0.f, 1.f));
         cmd.setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain.extent));
 
-        if(!render_point_cloud){
-            // --- OPAQUE DRAW LOOP ---
-            PipelineInfo* last_bound_pipeline = nullptr;
-            Gameobject* last_bound_object = nullptr;
+        // --- OPAQUE DRAW LOOP ---
+        // (This is the loop from your old 'if(!render_point_cloud)' block)
+        PipelineInfo* last_bound_pipeline = nullptr;
+        Gameobject* last_bound_object = nullptr;
 
-            for(auto& obj : scene_objs){
-                if (obj.o_primitives.empty()) continue; // Skip if no opaque parts
-
-                // Bind pipeline if different
-                if (obj.o_pipeline != last_bound_pipeline) {
-                    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *obj.o_pipeline->pipeline);
-                    last_bound_pipeline = obj.o_pipeline;
-                }
-
-                // Bind geometry if different
-                if (&obj != last_bound_object) {
-                    cmd.bindVertexBuffers(0, {obj.geometry_buffer.buffer}, {0});
-                    cmd.bindIndexBuffer(obj.geometry_buffer.buffer, obj.index_buffer_offset, vk::IndexType::eUint32);
-                    last_bound_object = &obj;
-                }
-                
-                // Push vertex constant (model matrix)
-                cmd.pushConstants<glm::mat4>(*obj.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix);
-
-                // Loop and draw all opaque primitives for this object
-                for(auto& primitive : obj.o_primitives) {
-                    const Material& material = obj.materials[primitive.material_index];
-
-                    if(material.is_doublesided){
-                        cmd.setCullMode(vk::CullModeFlagBits::eNone);
-                    }else{
-                        cmd.setCullMode(vk::CullModeFlagBits::eBack);
-                    }
-
-                    // Setup material push constant
-                    MaterialPushConstant p_const;
-                    p_const.base_color_factor = material.base_color_factor;
-                    p_const.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 0.0f);
-                    p_const.metallic_factor = material.metallic_factor;
-                    p_const.roughness_factor = material.roughness_factor;
-                    p_const.occlusion_strength = material.occlusion_strength;
-                    p_const.specular_factor = material.specular_factor;
-                    p_const.specular_color_factor = material.specular_color_factor;
-                    p_const.transmission_factor = material.transmission_factor;
-                    p_const.alpha_cutoff = material.alpha_cutoff;
-                    p_const.clearcoat_factor = material.clearcoat_factor;
-                    p_const.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
-
-                    cmd.pushConstants<MaterialPushConstant>(*obj.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
-
-                    // Bind material descriptor set
-                    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *obj.o_pipeline->layout, 0, {*material.descriptor_sets[current_frame]}, {});
-                    
-                    // Draw
-                    cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
-                }
+        for(auto& obj : scene_objs){
+            // ... (Full draw loop for scene_objs) ...
+            if (obj.o_primitives.empty()) continue; 
+            if (obj.o_pipeline != last_bound_pipeline) {
+                cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *obj.o_pipeline->pipeline);
+                last_bound_pipeline = obj.o_pipeline;
             }
-
-            if (use_rt_box && rt_box.o_pipeline && !rt_box.o_primitives.empty())
-            {
-                // Bind pipeline ONCE
-                cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *rt_box.o_pipeline->pipeline);
-                
-                // Bind geometry ONCE
-                cmd.bindVertexBuffers(0, {rt_box.geometry_buffer.buffer}, {0});
-                cmd.bindIndexBuffer(rt_box.geometry_buffer.buffer, rt_box.index_buffer_offset, vk::IndexType::eUint32);
-                
-                // Push vertex constant (model matrix) ONCE
-                cmd.pushConstants<glm::mat4>(*rt_box.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, rt_box.model_matrix);
-                
-                // The RT box is not double-sided, so we set cull mode to back-face
-                // This is correct because our vertices are wound for inward-facing normals
-                cmd.setCullMode(vk::CullModeFlagBits::eBack);
-
-                // Loop through the 5 primitives (floor, ceil, back, left, right)
-                for(auto& primitive : rt_box.o_primitives)
-                {
-                    const Material& material = rt_box.materials[primitive.material_index];
-
-                    // Bind material descriptor set
-                    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *rt_box.o_pipeline->layout, 0, {*material.descriptor_sets[current_frame]}, {});
-
-                    // Setup material push constant
-                    MaterialPushConstant p_const;
-                    p_const.base_color_factor = material.base_color_factor;
-                    p_const.metallic_factor = material.metallic_factor;
-                    p_const.roughness_factor = material.roughness_factor;
-                    p_const.occlusion_strength = material.occlusion_strength;
-                    p_const.specular_factor = material.specular_factor;
-                    p_const.specular_color_factor = material.specular_color_factor;
-                    p_const.transmission_factor = material.transmission_factor;
-                    p_const.alpha_cutoff = material.alpha_cutoff;
-                    p_const.clearcoat_factor = material.clearcoat_factor;
-                    p_const.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
-                    p_const.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 0.f);
-
-                    cmd.pushConstants<MaterialPushConstant>(*rt_box.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
-                    
-                    // Draw
-                    cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
-                }
+            if (&obj != last_bound_object) {
+                cmd.bindVertexBuffers(0, {obj.geometry_buffer.buffer}, {0});
+                cmd.bindIndexBuffer(obj.geometry_buffer.buffer, obj.index_buffer_offset, vk::IndexType::eUint32);
+                last_bound_object = &obj;
             }
-
-            if (debug_lights && debug_cube.o_pipeline && !debug_cube.o_primitives.empty())
-            {
-                // Bind pipeline ONCE
-                cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *debug_cube.o_pipeline->pipeline);
-                
-                // Bind geometry ONCE
-                cmd.bindVertexBuffers(0, {debug_cube.geometry_buffer.buffer}, {0});
-                cmd.bindIndexBuffer(debug_cube.geometry_buffer.buffer, debug_cube.index_buffer_offset, vk::IndexType::eUint32);
-
-                // Get material and bind descriptor set ONCE
-                const Material& material = debug_cube.materials[0];
-                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *debug_cube.o_pipeline->layout, 0, {*material.descriptor_sets[current_frame]}, {});
-
-                // Setup and push fragment push constant ONCE
+            cmd.pushConstants<glm::mat4>(*obj.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix);
+            for(auto& primitive : obj.o_primitives) {
+                const Material& material = obj.materials[primitive.material_index];
+                if(material.is_doublesided){
+                    cmd.setCullMode(vk::CullModeFlagBits::eNone);
+                }else{
+                    cmd.setCullMode(vk::CullModeFlagBits::eBack);
+                }
                 MaterialPushConstant p_const;
                 p_const.base_color_factor = material.base_color_factor;
                 p_const.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 0.0f);
                 p_const.metallic_factor = material.metallic_factor;
                 p_const.roughness_factor = material.roughness_factor;
-                p_const.occlusion_strength = 1.0f; // Use default
-                p_const.specular_factor = 0.5f; // Use default
-                p_const.specular_color_factor = glm::vec3(1.f); // Use default
-                p_const.transmission_factor = 0.0f;
-                p_const.alpha_cutoff = 0.0f;
-                p_const.clearcoat_factor = 0.0f;
-                p_const.clearcoat_roughness_factor = 0.0f;
-                
-                cmd.pushConstants<MaterialPushConstant>(*debug_cube.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
-
-                // Loop through lights
-                for(int i = 0; i < ubo.curr_num_pointlights; i++)
-                {
-                    // Create model matrix for this light
-                    // Translate to its position and scale it down
-                    glm::mat4 model_matrix = glm::translate(glm::mat4(1.0f), glm::vec3(ubo.pointlights[i].position));
-                    model_matrix = glm::scale(model_matrix, glm::vec3(0.5f)); // 0.5m cubes
-
-                    // Push vertex constant (model matrix)
-                    cmd.pushConstants<glm::mat4>(*debug_cube.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, model_matrix);
-
-                    // Draw
-                    cmd.drawIndexed(debug_cube.o_primitives[0].index_count, 1, debug_cube.o_primitives[0].first_index, 0, 0);
-                }
-
-                for(int i = 0; i < ubo.curr_num_shadowlights; i++)
-                {
-                    // Create model matrix for this light
-                    // Translate to its position and scale it down
-                    glm::mat4 model_matrix = glm::translate(glm::mat4(1.0f), glm::vec3(ubo.shadowlights[i].position));
-                    model_matrix = glm::scale(model_matrix, glm::vec3(0.5f)); // 0.5m cubes
-
-                    // Push vertex constant (model matrix)
-                    cmd.pushConstants<glm::mat4>(*debug_cube.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, model_matrix);
-
-                    // Draw
-                    cmd.drawIndexed(debug_cube.o_primitives[0].index_count, 1, debug_cube.o_primitives[0].first_index, 0, 0);
-                }
+                p_const.occlusion_strength = material.occlusion_strength;
+                p_const.specular_factor = material.specular_factor;
+                p_const.specular_color_factor = material.specular_color_factor;
+                p_const.transmission_factor = material.transmission_factor;
+                p_const.alpha_cutoff = material.alpha_cutoff;
+                p_const.clearcoat_factor = material.clearcoat_factor;
+                p_const.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
+                cmd.pushConstants<MaterialPushConstant>(*obj.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
+                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *obj.o_pipeline->layout, 0, {*material.descriptor_sets[current_frame]}, {});
+                cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
             }
         }
-        else{
-        // --- POINT CLOUD DRAW LOOP (New) ---
-            
-            // Bind the point cloud pipeline
-            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.pipeline);
-            
-            // Set cull mode to none (though it doesn't really matter for points)
-            cmd.setCullMode(vk::CullModeFlagBits::eNone);
-            
-            // Bind the descriptor set (UBO + Hit Data)
-            cmd.bindDescriptorSets(
-                vk::PipelineBindPoint::eGraphics,
-                *point_cloud_pipeline.layout, 0,
-                {*point_cloud_descriptor_sets[current_frame]},
-                {});
-            
-            // No vertex/index buffers needed
-            
-            // Draw one point for every torus vertex
-            cmd.draw(static_cast<uint32_t>(torus.vertices.size()), 1, 0, 0);
+        if (use_rt_box && rt_box.o_pipeline && !rt_box.o_primitives.empty())
+        {
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *rt_box.o_pipeline->pipeline);
+            cmd.bindVertexBuffers(0, {rt_box.geometry_buffer.buffer}, {0});
+            cmd.bindIndexBuffer(rt_box.geometry_buffer.buffer, rt_box.index_buffer_offset, vk::IndexType::eUint32);
+            cmd.pushConstants<glm::mat4>(*rt_box.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, rt_box.model_matrix);
+            cmd.setCullMode(vk::CullModeFlagBits::eBack);
+            for(auto& primitive : rt_box.o_primitives)
+            {
+                const Material& material = rt_box.materials[primitive.material_index];
+                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *rt_box.o_pipeline->layout, 0, {*material.descriptor_sets[current_frame]}, {});
+                MaterialPushConstant p_const;
+                p_const.base_color_factor = material.base_color_factor;
+                p_const.metallic_factor = material.metallic_factor;
+                p_const.roughness_factor = material.roughness_factor;
+                p_const.occlusion_strength = material.occlusion_strength;
+                p_const.specular_factor = material.specular_factor;
+                p_const.specular_color_factor = material.specular_color_factor;
+                p_const.transmission_factor = material.transmission_factor;
+                p_const.alpha_cutoff = material.alpha_cutoff;
+                p_const.clearcoat_factor = material.clearcoat_factor;
+                p_const.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
+                p_const.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 0.f);
+                cmd.pushConstants<MaterialPushConstant>(*rt_box.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
+                cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
+            }
         }
+        if (debug_lights && debug_cube.o_pipeline && !debug_cube.o_primitives.empty())
+        {
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *debug_cube.o_pipeline->pipeline);
+            cmd.bindVertexBuffers(0, {debug_cube.geometry_buffer.buffer}, {0});
+            cmd.bindIndexBuffer(debug_cube.geometry_buffer.buffer, debug_cube.index_buffer_offset, vk::IndexType::eUint32);
+            const Material& material = debug_cube.materials[0];
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *debug_cube.o_pipeline->layout, 0, {*material.descriptor_sets[current_frame]}, {});
+            MaterialPushConstant p_const;
+            p_const.base_color_factor = material.base_color_factor;
+            p_const.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 0.0f);
+            p_const.metallic_factor = material.metallic_factor;
+            p_const.roughness_factor = material.roughness_factor;
+            p_const.occlusion_strength = 1.0f;
+            p_const.specular_factor = 0.5f;
+            p_const.specular_color_factor = glm::vec3(1.f);
+            p_const.transmission_factor = 0.0f;
+            p_const.alpha_cutoff = 0.0f;
+            p_const.clearcoat_factor = 0.0f;
+            p_const.clearcoat_roughness_factor = 0.0f;
+            cmd.pushConstants<MaterialPushConstant>(*debug_cube.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
+            for(int i = 0; i < ubo.curr_num_pointlights; i++)
+            {
+                glm::mat4 model_matrix = glm::translate(glm::mat4(1.0f), glm::vec3(ubo.pointlights[i].position));
+                model_matrix = glm::scale(model_matrix, glm::vec3(0.5f));
+                cmd.pushConstants<glm::mat4>(*debug_cube.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, model_matrix);
+                cmd.drawIndexed(debug_cube.o_primitives[0].index_count, 1, debug_cube.o_primitives[0].first_index, 0, 0);
+            }
+            for(int i = 0; i < ubo.curr_num_shadowlights; i++)
+            {
+                glm::mat4 model_matrix = glm::translate(glm::mat4(1.0f), glm::vec3(ubo.shadowlights[i].position));
+                model_matrix = glm::scale(model_matrix, glm::vec3(0.5f));
+                cmd.pushConstants<glm::mat4>(*debug_cube.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, model_matrix);
+                cmd.drawIndexed(debug_cube.o_primitives[0].index_count, 1, debug_cube.o_primitives[0].first_index, 0, 0);
+            }
+        }
+        // --- The if/else for point cloud is REMOVED from here ---
+        
+        cmd.endRendering();
+    }
+
+    // --- BARRIER (Opaque -> Compute) ---
+    {
+        // Transition Albedo G-Buffer from ColorAttachment to ShaderReadOnly
+        vk::ImageMemoryBarrier2 albedo_barrier;
+        albedo_barrier.srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
+        albedo_barrier.srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite;
+        albedo_barrier.dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+        albedo_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead;
+        albedo_barrier.oldLayout = vk::ImageLayout::eColorAttachmentOptimal;
+        albedo_barrier.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        albedo_barrier.image = albedo_g_buffer.image;
+        albedo_barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+        albedo_barrier.subresourceRange.levelCount = 1;
+        albedo_barrier.subresourceRange.layerCount = 1;
+        
+        vk::DependencyInfo dep_info;
+        dep_info.imageMemoryBarrierCount = 1;
+        dep_info.pImageMemoryBarriers = &albedo_barrier;
+        cmd.pipelineBarrier2(dep_info);
+    }
+    
+    // --- 6. G-BUFFER LOOKUP COMPUTE PASS ---
+    // (Reads hit_data_buffer pos, reads albedo_g_buffer, writes hit_data_buffer color)
+    {
+        cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *compute_lookup_pipeline.pipeline);
+        cmd.bindDescriptorSets(
+            vk::PipelineBindPoint::eCompute,
+            *compute_lookup_pipeline.layout, 0,
+            {*compute_lookup_descriptor_sets[current_frame]},
+            {});
+        
+        uint32_t group_count = (static_cast<uint32_t>(torus.vertices.size()) + 63) / 64;
+        cmd.dispatch(group_count, 1, 1);
+    }
+
+    // --- BARRIER (Compute -> Point Cloud) ---
+    {
+        // 1. Wait for Compute to finish WRITING hit_data_buffer before Vertex Shader READS it
+        vk::MemoryBarrier2 compute_to_vertex_barrier;
+        compute_to_vertex_barrier.srcStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+        compute_to_vertex_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
+        compute_to_vertex_barrier.dstStageMask = vk::PipelineStageFlagBits2::eVertexShader;
+        compute_to_vertex_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead;
+        
+        // --- 2. ADD THIS ---
+        // Transition Albedo G-Buffer from ShaderReadOnly back to ColorAttachment for the *next* frame's Opaque Pass
+        vk::ImageMemoryBarrier2 albedo_barrier;
+        albedo_barrier.srcStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+        albedo_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderRead;
+        albedo_barrier.dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
+        albedo_barrier.dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite;
+        albedo_barrier.oldLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        albedo_barrier.newLayout = vk::ImageLayout::eColorAttachmentOptimal;
+        albedo_barrier.image = albedo_g_buffer.image;
+        albedo_barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+        albedo_barrier.subresourceRange.baseMipLevel = 0;
+        albedo_barrier.subresourceRange.levelCount = 1;
+        albedo_barrier.subresourceRange.baseArrayLayer = 0;
+        albedo_barrier.subresourceRange.layerCount = 1;
+        // --- END ADD ---
+
+        vk::DependencyInfo dep_info;
+        dep_info.memoryBarrierCount = 1;
+        dep_info.pMemoryBarriers = &compute_to_vertex_barrier;
+        dep_info.imageMemoryBarrierCount = 1; // <-- SET THIS
+        dep_info.pImageMemoryBarriers = &albedo_barrier; // <-- SET THIS
+        cmd.pipelineBarrier2(dep_info);
+    }
+
+    // --- 7. CONDITIONAL POINT CLOUD PASS ---
+    // (Replaces the Opaque Pass's output if enabled)
+    if (render_point_cloud)
+    {
+        vk::ClearValue clear_color = vk::ClearColorValue(0.f, 0.f, 0.f, 1.f);
+        vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
+
+        // Attachment 0: Lit Scene (Overwrite)
+        vk::RenderingAttachmentInfo color_attachment_lit{};
+        color_attachment_lit.imageView = color_image.image_view;
+        color_attachment_lit.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+        color_attachment_lit.loadOp = vk::AttachmentLoadOp::eClear; // CLEAR the opaque scene
+        color_attachment_lit.storeOp = vk::AttachmentStoreOp::eStore;
+        color_attachment_lit.clearValue = clear_color;
+
+        // Main depth attachment (Overwrite)
+        vk::RenderingAttachmentInfo depth_attachment_info = {};
+        depth_attachment_info.imageView = depth_image.image_view;
+        depth_attachment_info.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+        depth_attachment_info.loadOp = vk::AttachmentLoadOp::eClear; // CLEAR the opaque depth
+        depth_attachment_info.storeOp = vk::AttachmentStoreOp::eStore;
+        depth_attachment_info.clearValue = clear_depth;
+
+        vk::RenderingInfo rendering_info;
+        rendering_info.renderArea.offset = vk::Offset2D{0, 0};
+        rendering_info.renderArea.extent = swapchain.extent;
+        rendering_info.layerCount = 1;
+        rendering_info.colorAttachmentCount = 1;
+        rendering_info.pColorAttachments = &color_attachment_lit;
+        rendering_info.pDepthAttachment = &depth_attachment_info;
+
+        cmd.beginRendering(rendering_info);
+
+        cmd.setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain.extent.width), static_cast<float>(swapchain.extent.height), 0.f, 1.f));
+        cmd.setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain.extent));
+        
+        // --- POINT CLOUD DRAW ---
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.pipeline);
+        cmd.setCullMode(vk::CullModeFlagBits::eNone);
+        cmd.bindDescriptorSets(
+            vk::PipelineBindPoint::eGraphics,
+            *point_cloud_pipeline.layout, 0,
+            {*point_cloud_descriptor_sets[current_frame]},
+            {});
+        
+        cmd.draw(static_cast<uint32_t>(torus.vertices.size()), 1, 0, 0);
 
         cmd.endRendering();
     }
 
+
     // --- 3. OIT WRITE PASS ---
-    // Renders to PPLL buffers (SSBOs)
-    // Reads from msaa depth_image
+    // (This pass now runs AFTER the Opaque Pass and AFTER the optional Point Cloud Pass)
     {
-        // --- CLEAR OIT BUFFERS ---
-        // We must clear the atomic counter to 0
+        // ... (CLEAR OIT BUFFERS) ...
         cmd.fillBuffer(oit_atomic_counter_buffer.buffer, 0, sizeof(uint32_t), 0);
-        
-        // We must clear the head-pointer image to 0xFFFFFFFF (our "null" pointer)
         vk::ClearColorValue clear_uint(std::array<uint32_t, 4>{ 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF });
         vk::ImageSubresourceRange clear_range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
         cmd.clearColorImage(oit_start_offset_image.image, 
-                            vk::ImageLayout::eGeneral, // Image is already in eGeneral
+                            vk::ImageLayout::eGeneral,
                             clear_uint, clear_range);
 
-        // Add a barrier to ensure clears are finished before shader writes
         vk::MemoryBarrier2 mem_barrier;
         mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eTransfer;
         mem_barrier.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
@@ -2245,14 +2321,13 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         dep_info.memoryBarrierCount = 1;
         dep_info.pMemoryBarriers = &mem_barrier;
         cmd.pipelineBarrier2(dep_info);
-        // --- END OIT CLEAR ---
 
         // Depth attachment (LOAD, don't clear, don't write)
         vk::RenderingAttachmentInfo depth_attachment_info = {};
         depth_attachment_info.imageView = depth_image.image_view;
         depth_attachment_info.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
-        depth_attachment_info.loadOp = vk::AttachmentLoadOp::eLoad; // LOAD opaque depth
-        depth_attachment_info.storeOp = vk::AttachmentStoreOp::eDontCare; // Don't need it after this
+        depth_attachment_info.loadOp = vk::AttachmentLoadOp::eLoad; // LOAD depth
+        depth_attachment_info.storeOp = vk::AttachmentStoreOp::eDontCare;
         
         vk::RenderingInfo oit_rendering_info;
         oit_rendering_info.renderArea.offset = vk::Offset2D{0, 0};
@@ -2264,7 +2339,6 @@ void Engine::recordCommandBuffer(uint32_t image_index){
 
         cmd.beginRendering(oit_rendering_info);
         
-        // Set viewport/scissor again
         cmd.setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain.extent.width), static_cast<float>(swapchain.extent.height), 0.f, 1.f));
         cmd.setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain.extent));
 
@@ -2275,65 +2349,51 @@ void Engine::recordCommandBuffer(uint32_t image_index){
             PipelineInfo* last_bound_pipeline = nullptr;
 
             for (const auto& draw : transparent_draws) {
+                // ... (Full draw loop for transparent_draws) ...
                 Gameobject* obj = draw.object;
                 const Primitive& primitive = *draw.primitive;
                 const Material& material = *draw.material;
-                PipelineInfo* pipeline = obj->t_pipeline; // Get OIT_WRITE pipeline
-
+                PipelineInfo* pipeline = obj->t_pipeline;
                 if(material.is_doublesided){
                     cmd.setCullMode(vk::CullModeFlagBits::eNone);
                 }else{
                     cmd.setCullMode(vk::CullModeFlagBits::eBack);
                 }
-
-                // Bind pipeline if different
                 if (pipeline != last_bound_pipeline) {
                     cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline->pipeline);
                     last_bound_pipeline = pipeline;
                 }
-                
-                // Bind geometry if different
                 if (obj != last_bound_object) {
                     cmd.bindVertexBuffers(0, {obj->geometry_buffer.buffer}, {0});
                     cmd.bindIndexBuffer(obj->geometry_buffer.buffer, obj->index_buffer_offset, vk::IndexType::eUint32);
                     last_bound_object = obj;
                 }
-
-                // Push vertex constant (model matrix)
                 cmd.pushConstants<glm::mat4>(*pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, obj->model_matrix);
-
-                // Setup material push constant
                 if (obj != &torus)
                 {
-                    // Setup material push constant
                     MaterialPushConstant p_const;
                     p_const.base_color_factor = material.base_color_factor;
                     p_const.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 0.0f);
                     p_const.metallic_factor = material.metallic_factor;
                     p_const.roughness_factor = material.roughness_factor;
                     p_const.occlusion_strength = material.occlusion_strength;
+    
                     p_const.specular_factor = material.specular_factor;
                     p_const.specular_color_factor = material.specular_color_factor;
                     p_const.transmission_factor = material.transmission_factor;
                     p_const.alpha_cutoff = material.alpha_cutoff;
                     p_const.clearcoat_factor = material.clearcoat_factor;
                     p_const.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
-
                     cmd.pushConstants<MaterialPushConstant>(*pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
                 }
-
-                // Bind *both* descriptor sets
                 std::array<vk::DescriptorSet, 2> descriptor_sets_to_bind = {
-                    *material.descriptor_sets[current_frame], // Set 0: Material
-                    *oit_ppll_descriptor_sets[current_frame]  // Set 1: PPLL Buffers
+                    *material.descriptor_sets[current_frame],
+                    *oit_ppll_descriptor_sets[current_frame]
                 };
-
                 cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
-                                     *pipeline->layout, 0, // Start at set 0
-                                     descriptor_sets_to_bind, // Bind 2 sets
+                                     *pipeline->layout, 0,
+                                     descriptor_sets_to_bind,
                                      {});
-                
-                // Draw
                 cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
             }
         }
@@ -2341,8 +2401,6 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     }
 
     // --- 4. RESOLVE PASS ---
-    // We add a barrier to ensure all SSBO writes from the OIT Write pass
-    // are finished before the Composite pass reads from them.
     {
         vk::MemoryBarrier2 mem_barrier;
         mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
@@ -2356,19 +2414,14 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     }
 
     // --- 5. COMPOSITE PASS ---
-    // Renders fullscreen quad to msaa color_image
-    // Reads from PPLL SSBOs
-    // Blends OVER the existing opaque scene in color_image
-    // Resolves final msaa color_image to swapchain image
     {
         // Main color attachment (LOAD, don't clear)
         vk::RenderingAttachmentInfo color_attachment_info{};
         color_attachment_info.imageView = color_image.image_view;
         color_attachment_info.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-        color_attachment_info.loadOp = vk::AttachmentLoadOp::eLoad; // LOAD opaque scene
-        color_attachment_info.storeOp = vk::AttachmentStoreOp::eDontCare; // Don't care, we resolve
+        color_attachment_info.loadOp = vk::AttachmentLoadOp::eLoad; // LOAD scene
+        color_attachment_info.storeOp = vk::AttachmentStoreOp::eDontCare; 
         
-        // Add the resolve op here
         color_attachment_info.resolveMode = vk::ResolveModeFlagBits::eAverage;
         color_attachment_info.resolveImageView = swapchain.image_views[image_index];
         color_attachment_info.resolveImageLayout = vk::ImageLayout::eColorAttachmentOptimal;
@@ -2379,7 +2432,7 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         composite_rendering_info.layerCount = 1;
         composite_rendering_info.colorAttachmentCount = 1;
         composite_rendering_info.pColorAttachments = &color_attachment_info;
-        composite_rendering_info.pDepthAttachment = nullptr; // No depth test/write
+        composite_rendering_info.pDepthAttachment = nullptr;
 
         cmd.beginRendering(composite_rendering_info);
         
@@ -2387,16 +2440,14 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         cmd.setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain.extent));
         cmd.setCullMode(vk::CullModeFlagBits::eNone);
 
-        // Bind composite pipeline and descriptors
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *oit_composite_pipeline.pipeline);
         cmd.bindDescriptorSets(
             vk::PipelineBindPoint::eGraphics,
-            *oit_composite_pipeline.layout, 0, // Bind to Set 0
-            *oit_ppll_descriptor_sets[current_frame], // The PPLL descriptor set
+            *oit_composite_pipeline.layout, 0,
+            *oit_ppll_descriptor_sets[current_frame],
             nullptr
         );
         
-        // Draw fullscreen triangle (3 vertices)
         cmd.draw(3, 1, 0, 0);
 
         cmd.endRendering();
@@ -2404,7 +2455,6 @@ void Engine::recordCommandBuffer(uint32_t image_index){
 
 
     // --- 6. FINAL TRANSITION ---
-    // Transition the swapchain image for presentation
     transition_image_layout(
         image_index,
         vk::ImageLayout::eColorAttachmentOptimal,
@@ -2700,10 +2750,10 @@ void Engine::buildTlas(vk::raii::CommandBuffer& cmd)
     for (auto& obj : scene_objs) {
         gather_instances(obj);
     }
-    gather_instances(debug_cube);
+    /* gather_instances(debug_cube);
     if (use_rt_box) {
         gather_instances(rt_box);
-    }
+    } */
 
     if (instances.empty()) {
         return; // Nothing to build
@@ -2963,6 +3013,67 @@ void Engine::createShaderBindingTable()
     vmaUnmapMemory(vma_allocator, sbt_buffer.allocation);
 }
 
+void Engine::createComputeLookupPipeline()
+{
+    // 1. Create Descriptor Set Layout
+    std::vector<vk::DescriptorSetLayoutBinding> bindings = {
+        // Binding 0: Main UBO (view, proj)
+        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBuffer, 1,
+                                       vk::ShaderStageFlagBits::eCompute, nullptr),
+        // Binding 1: Hit Data Buffer (Read/Write)
+        vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eStorageBuffer, 1,
+                                       vk::ShaderStageFlagBits::eCompute, nullptr),
+        // Binding 2: Albedo G-Buffer (Read-Only)
+        vk::DescriptorSetLayoutBinding(2, vk::DescriptorType::eSampledImage, 1,
+                                       vk::ShaderStageFlagBits::eCompute, nullptr)
+    };
+    compute_lookup_pipeline.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings);
+    
+    // 2. Create Pipeline
+    compute_lookup_pipeline.pipeline = Pipeline::createComputePipeline(
+        *this,
+        &compute_lookup_pipeline,
+        c_shader_lookup
+    );
+}
+
+void Engine::createComputeLookupDescriptorSets()
+{
+    compute_lookup_descriptor_sets.clear();
+
+    std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *compute_lookup_pipeline.descriptor_set_layout);
+    vk::DescriptorSetAllocateInfo alloc_info(
+        *descriptor_pool,
+        static_cast<uint32_t>(layouts.size()),
+        layouts.data()
+    );
+    compute_lookup_descriptor_sets = logical_device.allocateDescriptorSets(alloc_info);
+
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        // Binding 0: Main UBO
+        vk::DescriptorBufferInfo ubo_info(uniform_buffers[i].buffer, 0, sizeof(UniformBufferObject));
+        vk::WriteDescriptorSet ubo_write(*compute_lookup_descriptor_sets[i], 0, 0,
+            vk::DescriptorType::eUniformBuffer, {}, ubo_info);
+
+        // Binding 1: Hit Data Buffer
+        vk::DescriptorBufferInfo hit_buffer_info(hit_data_buffer.buffer, 0, VK_WHOLE_SIZE);
+        vk::WriteDescriptorSet hit_write(*compute_lookup_descriptor_sets[i], 1, 0,
+            vk::DescriptorType::eStorageBuffer, {}, hit_buffer_info);
+
+        // Binding 2: Albedo G-Buffer
+        vk::DescriptorImageInfo albedo_info;
+        albedo_info.imageView = *albedo_g_buffer.image_view;
+        albedo_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        // No sampler needed, we use texelFetch
+
+        vk::WriteDescriptorSet albedo_write(*compute_lookup_descriptor_sets[i], 2, 0,
+            vk::DescriptorType::eSampledImage, albedo_info);
+
+        std::array<vk::WriteDescriptorSet, 3> writes = {ubo_write, hit_write, albedo_write};
+        logical_device.updateDescriptorSets(writes, {});
+    }
+}
+
 void Engine::recreateSwapChain(){
     int width = 0, height = 0;
     glfwGetFramebufferSize(window, &width, &height);
@@ -2989,6 +3100,10 @@ void Engine::recreateSwapChain(){
                     vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment, 
                 vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
     color_image.image_view = Image::createImageView(color_image, *this);
+
+    vmaDestroyImage(vma_allocator, albedo_g_buffer.image, albedo_g_buffer.allocation);
+    createAlbedoGBuffer();
+    createComputeLookupDescriptorSets();
 
 
     vmaDestroyBuffer(vma_allocator, oit_atomic_counter_buffer.buffer, oit_atomic_counter_buffer.allocation);

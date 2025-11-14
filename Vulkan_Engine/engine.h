@@ -163,7 +163,6 @@ public:
 
     // Ray Tracing Pipeline members
     PipelineInfo rt_pipeline;
-    vk::raii::DescriptorSetLayout rt_descriptor_set_layout = nullptr;
     std::vector<vk::raii::DescriptorSet> rt_descriptor_sets; // One per frame
     AllocatedBuffer sbt_buffer; // Shader Binding Table
     RayTracingProperties rt_props;
@@ -174,6 +173,10 @@ public:
     // Pointcloud Pipeline
     PipelineInfo point_cloud_pipeline;
     std::vector<vk::raii::DescriptorSet> point_cloud_descriptor_sets;
+
+    // G-buffer pipeline
+    PipelineInfo compute_lookup_pipeline;
+    std::vector<vk::raii::DescriptorSet> compute_lookup_descriptor_sets;
 
     // Used to track GPU resources usage
     void printGpuMemoryUsage();
@@ -215,6 +218,8 @@ private:
     const std::string v_shader_pointcloud = "shaders/pointcloud/pointcloud.vert.spv";
     const std::string f_shader_pointcloud = "shaders/pointcloud/pointcloud.frag.spv";
 
+    const std::string c_shader_lookup = "shaders/rt_datacollect/lookup.comp.spv";
+
     // Depth variables
     AllocatedImage depth_image;
 
@@ -240,6 +245,7 @@ private:
 
     // For multisampling
     AllocatedImage color_image;
+    AllocatedImage albedo_g_buffer;
 
     // Camera
     Camera camera;
@@ -358,6 +364,8 @@ private:
 
     void createSyncObjects();
 
+    void createAlbedoGBuffer();
+
     void createPipelines();
     void loadScene(const std::string& scene_path);
     void loadManualLights(const std::string& lights_path);
@@ -387,6 +395,8 @@ private:
     void createRayTracingPipeline();
     void createRayTracingDescriptorSets();
     void createShaderBindingTable();
+    void createComputeLookupPipeline();
+    void createComputeLookupDescriptorSets();
 
 
 

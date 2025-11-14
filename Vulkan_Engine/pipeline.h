@@ -13,6 +13,8 @@ namespace Pipeline{
 
     vk::raii::Pipeline createShadowPipeline(Engine &engine, PipelineInfo *p_info, std::string v_shader, std::string f_shader);
     vk::raii::Pipeline createRayTracingPipeline(Engine& engine, PipelineInfo* p_info, const std::string &rt_rgen_shader, const std::string &rt_rmiss_shader, const std::string &rt_rchit_shader);
+
+    vk::raii::Pipeline createComputePipeline(Engine& engine, PipelineInfo* p_info, const std::string& c_shader);
 };
 
 

@@ -98,7 +98,25 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
 
     switch(mode){
         case TransparencyMode::OPAQUE:
+        { 
+            // OPAQUE has 2 attachments: Lit and Albedo
+            vk::PipelineColorBlendAttachmentState lit_attachment;
+            lit_attachment.blendEnable = vk::False;
+            lit_attachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                                            vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+            
+            vk::PipelineColorBlendAttachmentState albedo_attachment = lit_attachment; // Copy
+            
+            static std::array<vk::PipelineColorBlendAttachmentState, 2> blend_attachments = {
+                lit_attachment, albedo_attachment
+            };
+
+            color_blending.attachmentCount = 2;
+            color_blending.pAttachments = blend_attachments.data();
+            break;
+        }
         case TransparencyMode::POINTCLOUD:
+            // POINTCLOUD only has 1 attachment (the main lit screen)
             color_blend_attachment.blendEnable = vk::False;
             color_blend_attachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
                                                     vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
@@ -194,12 +212,27 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
             pipeline_rendering_create_info.depthAttachmentFormat = depth_format;
             break;
         case TransparencyMode::OPAQUE:
-        case TransparencyMode::OIT_COMPOSITE:
+            {
+                static std::array<vk::Format, 2> color_formats = {
+                    engine.swapchain.format,     // Format for Lit
+                    vk::Format::eR8G8B8A8Unorm   // Format for Albedo G-Buffer
+                };
+                pipeline_rendering_create_info.colorAttachmentCount = 2;
+                pipeline_rendering_create_info.pColorAttachmentFormats = color_formats.data();
+                pipeline_rendering_create_info.depthAttachmentFormat = depth_format;
+            }
+            break;
+
         case TransparencyMode::POINTCLOUD:
             pipeline_rendering_create_info.colorAttachmentCount = 1;
             pipeline_rendering_create_info.pColorAttachmentFormats = &engine.swapchain.format;
-            // OPAQUE has depth, COMPOSITE does not
-            pipeline_rendering_create_info.depthAttachmentFormat = (mode == TransparencyMode::OPAQUE || mode == TransparencyMode::POINTCLOUD) ? depth_format : vk::Format::eUndefined;
+            pipeline_rendering_create_info.depthAttachmentFormat = depth_format;
+            break;
+
+        case TransparencyMode::OIT_COMPOSITE:
+            pipeline_rendering_create_info.colorAttachmentCount = 1;
+            pipeline_rendering_create_info.pColorAttachmentFormats = &engine.swapchain.format;
+            pipeline_rendering_create_info.depthAttachmentFormat = vk::Format::eUndefined; // No depth
             break;
     }
 
@@ -421,5 +454,37 @@ std::vector<char> Pipeline::readFile(const std::string& filename){
     file.read(buffer.data(), file_size);
     file.close();
     return buffer;
+}
+
+vk::raii::Pipeline Pipeline::createComputePipeline(
+    Engine& engine, 
+    PipelineInfo* p_info, 
+    const std::string& c_shader)
+{
+    // 1. Load Shader
+    vk::raii::ShaderModule compute_module = createShaderModule(readFile(c_shader), &engine.logical_device);
+
+    vk::PipelineShaderStageCreateInfo shader_stage_info;
+    shader_stage_info.stage = vk::ShaderStageFlagBits::eCompute;
+    shader_stage_info.module = *compute_module;
+    shader_stage_info.pName = "main";
+
+    // 2. Create Pipeline Layout
+    // (This assumes descriptor_set_layout has already been created and stored in p_info)
+    vk::PipelineLayoutCreateInfo pipeline_layout_info;
+    pipeline_layout_info.setLayoutCount = 1;
+    pipeline_layout_info.pSetLayouts = &*(p_info->descriptor_set_layout);
+    // No push constants for this pipeline
+    pipeline_layout_info.pushConstantRangeCount = 0;
+    pipeline_layout_info.pPushConstantRanges = nullptr;
+
+    p_info->layout = vk::raii::PipelineLayout(engine.logical_device, pipeline_layout_info);
+
+    // 3. Create the Pipeline
+    vk::ComputePipelineCreateInfo pipeline_info;
+    pipeline_info.stage = shader_stage_info;
+    pipeline_info.layout = *(p_info->layout);
+
+    return std::move(vk::raii::Pipeline(engine.logical_device, nullptr, pipeline_info));
 }
 

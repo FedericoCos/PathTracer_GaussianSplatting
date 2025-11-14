@@ -1,0 +1,64 @@
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+
+// This must have the *exact* same layout as your RT shaders
+#include "../rt_datacollect/raytracing.glsl" 
+
+// SET 0, BINDING 0: Main scene UBO
+layout(set = 0, binding = 0) uniform UniformBufferObject {
+    mat4 view;
+    mat4 proj;
+} ubo;
+
+// SET 0, BINDING 1: Our ray tracing results (READ/WRITE)
+layout(set = 0, binding = 1, scalar) buffer HitDataBuffer {
+   HitData hits[]; // HitData is from raytracing.glsl
+} hit_buffer;
+
+// SET 0, BINDING 2: The Albedo G-Buffer (READ-ONLY)
+layout(set = 0, binding = 2) uniform texture2DMS albedo_g_buffer;
+
+// We'll launch in 1D groups
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+void main()
+{
+    uint index = gl_GlobalInvocationID.x;
+    
+    // Stop if we're out of bounds (dispatch size might be larger than vertex count)
+    if (index >= hit_buffer.hits.length()) {
+        return;
+    }
+
+    // Read the current hit data
+    HitData hit = hit_buffer.hits[index];
+
+    // If the ray missed (hit_flag < 0), we don't need to do anything.
+    // The miss shader already set its color to black.
+    if (hit.hit_flag < 0.0) {
+        return;
+    }
+
+    // --- 1. Un-project the World-Space Hit Position ---
+    vec4 clip_space = ubo.proj * ubo.view * vec4(hit.hit_pos, 1.0);
+    
+    // Perform perspective divide
+    vec3 ndc = clip_space.xyz / clip_space.w;
+
+    // --- 2. Convert NDC to Pixel Coordinates ---
+    // Convert NDC [-1, 1] to UV [0, 1]
+    vec2 uv = ndc.xy * 0.5 + 0.5;
+    
+    // Get the size of the albedo buffer
+    ivec2 screen_dims = textureSize(albedo_g_buffer);
+    
+    // Convert UV to pixel coordinates
+    ivec2 pixel_coords = ivec2(uv * screen_dims);
+
+    // --- 3. Sample the Albedo G-Buffer ---
+    // Read from sample 0 of the multisampled texture
+    vec4 albedo_color = texelFetch(albedo_g_buffer, pixel_coords, 0);
+
+    // --- 4. Write the Color Back into the buffer ---
+    hit_buffer.hits[index].color = albedo_color;
+}

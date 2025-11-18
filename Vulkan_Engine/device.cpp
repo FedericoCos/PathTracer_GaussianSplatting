@@ -92,7 +92,8 @@ bool Device::isDeviceSuitable(const vk::raii::PhysicalDevice &device, bool descr
         features.template get<vk::PhysicalDeviceVulkan12Features>().descriptorBindingPartiallyBound &&
         features.template get<vk::PhysicalDeviceVulkan12Features>().shaderSampledImageArrayNonUniformIndexing &&
         features.template get<vk::PhysicalDeviceVulkan12Features>().descriptorIndexing &&
-        features.template get<vk::PhysicalDeviceVulkan12Features>().scalarBlockLayout;;
+        features.template get<vk::PhysicalDeviceVulkan12Features>().scalarBlockLayout &&
+        features.template get<vk::PhysicalDeviceVulkan12Features>().descriptorBindingVariableDescriptorCount;
 
 
     return supportsRequiredFeatures && supportsRtFeatures && supportsVulkan12Features;
@@ -199,6 +200,7 @@ vk::raii::Device Device::createLogicalDevice(const Engine &engine, QueueFamilyIn
     vulkan12features.shaderSampledImageArrayNonUniformIndexing = true;
     vulkan12features.descriptorIndexing = true;
     vulkan12features.scalarBlockLayout = true;
+    vulkan12features.descriptorBindingVariableDescriptorCount = true;
 
     // Define RT features
     vk::PhysicalDeviceAccelerationStructureFeaturesKHR accelFeatures;

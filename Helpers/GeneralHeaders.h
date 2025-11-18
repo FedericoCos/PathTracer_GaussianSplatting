@@ -240,6 +240,13 @@ struct MaterialPushConstant {
     float transmission_factor;            // 4
     float clearcoat_factor;               // 4
     float clearcoat_roughness_factor;     // 4
+    float pad;                            // 4
+
+
+    int albedo_texture_index;
+    int normal_texture_index;
+    int metallic_roughness_texture_index;
+    int emissive_texture_index;
 };
 
 struct Primitive {
@@ -443,6 +450,13 @@ struct AccelerationStructure {
 struct RayTracingProperties {
     vk::PhysicalDeviceRayTracingPipelinePropertiesKHR pipeline_props;
     vk::PhysicalDeviceAccelerationStructurePropertiesKHR as_props;
+};
+
+struct MeshInfo {
+    uint32_t material_index; // Index into all_materials_buffer
+    uint32_t vertex_offset;  // Offset into all_vertices_buffer
+    uint32_t index_offset;   // Offset into all_indices_buffer
+    uint32_t _pad1;          // for 16-byte alignment
 };
 
 // ------ Helper Functions

@@ -892,10 +892,6 @@ bool Engine::initVulkan(){
     std::cout << "Memory usage after color image creation" << std::endl;
     printGpuMemoryUsage();
 
-    createAlbedoGBuffer();
-    std::cout << "Memory usage after G-buffer creation" << std::endl;
-    printGpuMemoryUsage();
-
     Image::createDepthResources(physical_device, depth_image, swapchain.extent.width, swapchain.extent.height, *this);
     std::cout << "Memory usage after depth image creation" << std::endl;
     printGpuMemoryUsage();
@@ -910,7 +906,6 @@ bool Engine::initVulkan(){
     // PIPELINE CREATION
     createPipelines();
     createRayTracingPipeline();
-    createComputeLookupPipeline();
 
     loadScene("resources/main_scene.json");
     std::cout << "Memory status loading objects in scene" << std::endl;
@@ -931,6 +926,8 @@ bool Engine::initVulkan(){
 
     createRayTracingDataBuffers();
 
+    createGlobalBindlessBuffers();
+
     for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
         // Resize the inner vectors to hold 5 elements
         shadow_ubos[i].resize(MAX_SHADOW_LIGHTS);
@@ -949,7 +946,6 @@ bool Engine::initVulkan(){
     createDescriptorPool();
     createRayTracingDescriptorSets();
     createPointCloudDescriptorSets();
-    createComputeLookupDescriptorSets();
     createDescriptorSets();
     createOITDescriptorSets();
 
@@ -1337,7 +1333,7 @@ void Engine::loadManualLights(const std::string& lights_path)
 
 void Engine::createTorusModel()
 {
-    torus.generateMesh(11.f, 1.f, 2.f, 1000, 1000);
+    torus.generateMesh(16.f, 1.f, 8.f, 2000, 2000);
     Primitive torusPrim;
     torusPrim.index_count = torus.indices.size();
     torusPrim.first_index = 0;
@@ -1410,27 +1406,25 @@ void Engine::createDescriptorPool()
     uint32_t oit_sets = MAX_FRAMES_IN_FLIGHT; // For PPLL buffers
     uint32_t rt_sets = MAX_FRAMES_IN_FLIGHT;
     uint32_t pointcloud_sets = MAX_FRAMES_IN_FLIGHT;
-    uint32_t compute_sets = MAX_FRAMES_IN_FLIGHT;
 
-    uint32_t total_max_sets = pbr_sets + torus_sets + shadow_sets + oit_sets + rt_sets + pointcloud_sets + compute_sets;
+    uint32_t total_max_sets = pbr_sets + torus_sets + shadow_sets + oit_sets + rt_sets + pointcloud_sets;
 
     // --- 4. Calculate total individual descriptors needed ---
     
     // UBOs: 1 per PBR set, 1 per Torus set, 1 per Shadow set, 1 per PointCloud set
-    uint32_t total_ubos = pbr_sets + torus_sets + shadow_sets + pointcloud_sets + compute_sets;
+    uint32_t total_ubos = pbr_sets + torus_sets + shadow_sets + pointcloud_sets + rt_sets;
 
     // Samplers: (8 PBR + shadows) per PBR set. Torus/OIT/Shadow sets use 0.
-    uint32_t total_samplers = pbr_sets * (8 + MAX_SHADOW_LIGHTS);
+    uint32_t total_samplers = pbr_sets * (8 + MAX_SHADOW_LIGHTS) + (MAX_BINDLESS_TEXTURES * MAX_FRAMES_IN_FLIGHT);
 
     // Storage Images: 1 per OIT set
     uint32_t total_storage_images = oit_sets;
 
     // Storage Buffers: 2 per OIT set, 2 per RT set, 1 per PointCloud set
-    uint32_t total_storage_buffers = (oit_sets * 2) + (rt_sets * 2) + pointcloud_sets + compute_sets;
+    uint32_t total_storage_buffers = (oit_sets * 2) + (rt_sets * 6) + pointcloud_sets;
 
     // Acceleration Structures: 1 per RT set
     uint32_t total_accel_structs = rt_sets;
-    uint32_t total_sampled_images = compute_sets;
 
 
     std::vector<vk::DescriptorPoolSize> pool_sizes;
@@ -1448,10 +1442,6 @@ void Engine::createDescriptorPool()
     }
     if (total_accel_structs > 0) {
         pool_sizes.push_back(vk::DescriptorPoolSize(vk::DescriptorType::eAccelerationStructureKHR, total_accel_structs));
-    }
-    if (total_sampled_images > 0) {
-        // NOTE: We use eSampledImage, not eCombinedImageSampler
-        pool_sizes.push_back(vk::DescriptorPoolSize(vk::DescriptorType::eSampledImage, total_sampled_images));
     }
 
     vk::DescriptorPoolCreateInfo pool_info;
@@ -1529,27 +1519,6 @@ void Engine::createSyncObjects(){
     for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
         in_flight_fences.emplace_back(vk::raii::Fence(logical_device, {vk::FenceCreateFlagBits::eSignaled}));
     }
-}
-
-void Engine::createAlbedoGBuffer()
-{
-    albedo_g_buffer = Image::createImage(
-        swapchain.extent.width, swapchain.extent.height, 1, mssa_samples,
-        vk::Format::eR8G8B8A8Unorm,
-        vk::ImageTiling::eOptimal,
-        // MUST be ColorAttachment (to render to) and Sampled (to read from in compute)
-        vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
-        vk::MemoryPropertyFlagBits::eDeviceLocal, *this
-    );
-
-    albedo_g_buffer.image_view = Image::createImageView(albedo_g_buffer, *this);
-
-    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device); 
-    transitionImage(cmd, albedo_g_buffer.image, 
-                    vk::ImageLayout::eUndefined, 
-                    vk::ImageLayout::eColorAttachmentOptimal, 
-                    vk::ImageAspectFlagBits::eColor);
-    endSingleTimeCommands(cmd, graphics_queue);
 }
 
 void Engine::createOITResources(){
@@ -1836,6 +1805,125 @@ void Engine::createPointCloudDescriptorSets()
 }
 
 
+void Engine::createGlobalBindlessBuffers()
+{
+    // --- 1. Create local vectors to aggregate data ---
+    std::vector<MaterialPushConstant> global_materials_data;
+    std::vector<Vertex> global_scene_vertices;
+    std::vector<uint32_t> global_scene_indices;
+    std::vector<MeshInfo> global_mesh_info;
+
+    global_texture_descriptors.clear();
+
+
+    // Helper to add textures and return the GLOBAL index
+    auto append_textures = [&](Gameobject& obj, int local_index) -> int {
+        if(local_index < 0 || local_index >= obj.textures.size()) return 0;
+
+        int global_offset = static_cast<int>(global_texture_descriptors.size());
+
+        return -1;
+    };
+
+    int current_texture_offset = 0;
+    
+    // Helper lambda to aggregate a single game object
+    auto aggregate_object = [&](Gameobject& obj) {
+        if (obj.vertices.empty()) return;
+        
+        // Get the base offsets for this object's data
+        uint32_t vertex_offset = static_cast<uint32_t>(global_scene_vertices.size());
+        uint32_t index_offset = static_cast<uint32_t>(global_scene_indices.size());
+        uint32_t material_offset = static_cast<uint32_t>(global_materials_data.size());
+        
+        // This is the key: store the offset to the *first* MeshInfo entry for this object
+        obj.mesh_info_offset = static_cast<uint32_t>(global_mesh_info.size());
+
+        for(auto& tex: obj.textures){
+            vk::DescriptorImageInfo image_info;
+            image_info.sampler = *obj.default_sampler;
+            image_info.imageView = *tex.image_view;
+            image_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+            global_texture_descriptors.push_back(image_info);
+        }
+        
+        // Append this object's data to the global vectors
+        global_scene_vertices.insert(global_scene_vertices.end(), obj.vertices.begin(), obj.vertices.end());
+        global_scene_indices.insert(global_scene_indices.end(), obj.indices.begin(), obj.indices.end());
+
+        // Append materials
+        for (const auto& mat : obj.materials) {
+            MaterialPushConstant p_const = {};
+            p_const.base_color_factor = mat.base_color_factor;
+            p_const.emissive_factor_and_pad = glm::vec4(mat.emissive_factor, 0.0f);
+            p_const.metallic_factor = mat.metallic_factor;
+            p_const.roughness_factor = mat.roughness_factor;
+            p_const.occlusion_strength = mat.occlusion_strength;
+            p_const.specular_factor = mat.specular_factor;
+            p_const.specular_color_factor = mat.specular_color_factor;
+            p_const.alpha_cutoff = mat.alpha_cutoff;
+            p_const.transmission_factor = mat.transmission_factor;
+            p_const.clearcoat_factor = mat.clearcoat_factor;
+            p_const.clearcoat_roughness_factor = mat.clearcoat_roughness_factor;
+            p_const.albedo_texture_index = current_texture_offset + mat.albedo_texture_index;
+            p_const.normal_texture_index = current_texture_offset + mat.normal_texture_index;
+            p_const.metallic_roughness_texture_index = current_texture_offset + mat.metallic_roughness_texture_index;
+            p_const.emissive_texture_index = current_texture_offset + mat.emissive_texture_index;
+            global_materials_data.push_back(p_const);
+        }
+
+        current_texture_offset += obj.textures.size();
+        
+        // Append a MeshInfo struct for *each primitive*
+        // IMPORTANT: We only add OPAQUE primitives to the ray tracing scene
+        for (const auto& prim : obj.o_primitives) {
+            global_mesh_info.push_back({
+                material_offset + prim.material_index, // Global material index
+                vertex_offset,                         // Global vertex offset for this *object*
+                index_offset + prim.first_index        // Global index offset for this *primitive*
+            });
+        }
+    };
+
+    // --- 2. Aggregate all objects ---
+    for (auto& obj : scene_objs) {
+        aggregate_object(obj);
+    }
+    /* aggregate_object(debug_cube);
+    if (use_rt_box) {
+        aggregate_object(rt_box);
+    } */
+    // We do NOT aggregate the torus, as it is not part of the hit-scene
+
+    // --- 3. Upload all 4 buffers to the GPU ---
+    
+    // Helper lambda to upload a single buffer
+    auto upload_buffer = [&](AllocatedBuffer& buffer, vk::DeviceSize data_size, const void* data) {
+        if (data_size == 0) return; // Don't upload empty buffers
+        
+        AllocatedBuffer staging_buffer;
+        createBuffer(vma_allocator, data_size, vk::BufferUsageFlagBits::eTransferSrc,
+                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, staging_buffer);
+        
+        void* mapped;
+        vmaMapMemory(vma_allocator, staging_buffer.allocation, &mapped);
+        memcpy(mapped, data, (size_t)data_size);
+        vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
+        
+        createBuffer(vma_allocator, data_size,
+                     vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+                     vk::MemoryPropertyFlagBits::eDeviceLocal, buffer);
+                     
+        copyBuffer(staging_buffer.buffer, buffer.buffer, data_size, command_pool_graphics, &logical_device, graphics_queue);
+    };
+    
+    upload_buffer(all_vertices_buffer, sizeof(Vertex) * global_scene_vertices.size(), global_scene_vertices.data());
+    upload_buffer(all_indices_buffer, sizeof(uint32_t) * global_scene_indices.size(), global_scene_indices.data());
+    upload_buffer(all_materials_buffer, sizeof(MaterialPushConstant) * global_materials_data.size(), global_materials_data.data());
+    upload_buffer(all_mesh_info_buffer, sizeof(MeshInfo) * global_mesh_info.size(), global_mesh_info.data());
+}
+
+
 // ------ Render Loop Functions
 
 void Engine::run(){
@@ -1982,11 +2070,11 @@ void Engine::recordCommandBuffer(uint32_t image_index){
             1, 1);
         
         // --- BARRIER (RT -> Compute) ---
-        // Wait for RT to finish WRITING hit_data_buffer before Compute READS it
+        // Wait for RT to finish WRITING hit_data_buffer before Vertex Shader READS it
         vk::MemoryBarrier2 mem_barrier;
         mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
         mem_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
-        mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+        mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eVertexShader;
         mem_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead;
         
         vk::DependencyInfo dep_info;
@@ -2038,17 +2126,9 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         color_attachment_lit.loadOp = vk::AttachmentLoadOp::eClear; 
         color_attachment_lit.storeOp = vk::AttachmentStoreOp::eStore; 
         color_attachment_lit.clearValue = clear_color;
-
-        // Attachment 1: Albedo G-Buffer (for Compute lookup)
-        vk::RenderingAttachmentInfo color_attachment_albedo{};
-        color_attachment_albedo.imageView = albedo_g_buffer.image_view;
-        color_attachment_albedo.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-        color_attachment_albedo.loadOp = vk::AttachmentLoadOp::eClear;
-        color_attachment_albedo.storeOp = vk::AttachmentStoreOp::eStore;
-        color_attachment_albedo.clearValue = clear_color; 
         
-        std::array<vk::RenderingAttachmentInfo, 2> color_attachments = {
-            color_attachment_lit, color_attachment_albedo
+        std::array<vk::RenderingAttachmentInfo, 1> color_attachments = {
+            color_attachment_lit
         };
 
         // Main depth attachment
@@ -2063,7 +2143,7 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         rendering_info.renderArea.offset = vk::Offset2D{0, 0};
         rendering_info.renderArea.extent = swapchain.extent;
         rendering_info.layerCount = 1;
-        rendering_info.colorAttachmentCount = 2;
+        rendering_info.colorAttachmentCount = 1;
         rendering_info.pColorAttachments = color_attachments.data();
         rendering_info.pDepthAttachment = &depth_attachment_info;
 
@@ -2181,75 +2261,6 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         cmd.endRendering();
     }
 
-    // --- BARRIER (Opaque -> Compute) ---
-    {
-        // Transition Albedo G-Buffer from ColorAttachment to ShaderReadOnly
-        vk::ImageMemoryBarrier2 albedo_barrier;
-        albedo_barrier.srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
-        albedo_barrier.srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite;
-        albedo_barrier.dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
-        albedo_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead;
-        albedo_barrier.oldLayout = vk::ImageLayout::eColorAttachmentOptimal;
-        albedo_barrier.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-        albedo_barrier.image = albedo_g_buffer.image;
-        albedo_barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
-        albedo_barrier.subresourceRange.levelCount = 1;
-        albedo_barrier.subresourceRange.layerCount = 1;
-        
-        vk::DependencyInfo dep_info;
-        dep_info.imageMemoryBarrierCount = 1;
-        dep_info.pImageMemoryBarriers = &albedo_barrier;
-        cmd.pipelineBarrier2(dep_info);
-    }
-    
-    // --- 6. G-BUFFER LOOKUP COMPUTE PASS ---
-    // (Reads hit_data_buffer pos, reads albedo_g_buffer, writes hit_data_buffer color)
-    {
-        cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *compute_lookup_pipeline.pipeline);
-        cmd.bindDescriptorSets(
-            vk::PipelineBindPoint::eCompute,
-            *compute_lookup_pipeline.layout, 0,
-            {*compute_lookup_descriptor_sets[current_frame]},
-            {});
-        
-        uint32_t group_count = (static_cast<uint32_t>(torus.vertices.size()) + 63) / 64;
-        cmd.dispatch(group_count, 1, 1);
-    }
-
-    // --- BARRIER (Compute -> Point Cloud) ---
-    {
-        // 1. Wait for Compute to finish WRITING hit_data_buffer before Vertex Shader READS it
-        vk::MemoryBarrier2 compute_to_vertex_barrier;
-        compute_to_vertex_barrier.srcStageMask = vk::PipelineStageFlagBits2::eComputeShader;
-        compute_to_vertex_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
-        compute_to_vertex_barrier.dstStageMask = vk::PipelineStageFlagBits2::eVertexShader;
-        compute_to_vertex_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead;
-        
-        // --- 2. ADD THIS ---
-        // Transition Albedo G-Buffer from ShaderReadOnly back to ColorAttachment for the *next* frame's Opaque Pass
-        vk::ImageMemoryBarrier2 albedo_barrier;
-        albedo_barrier.srcStageMask = vk::PipelineStageFlagBits2::eComputeShader;
-        albedo_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderRead;
-        albedo_barrier.dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
-        albedo_barrier.dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite;
-        albedo_barrier.oldLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-        albedo_barrier.newLayout = vk::ImageLayout::eColorAttachmentOptimal;
-        albedo_barrier.image = albedo_g_buffer.image;
-        albedo_barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
-        albedo_barrier.subresourceRange.baseMipLevel = 0;
-        albedo_barrier.subresourceRange.levelCount = 1;
-        albedo_barrier.subresourceRange.baseArrayLayer = 0;
-        albedo_barrier.subresourceRange.layerCount = 1;
-        // --- END ADD ---
-
-        vk::DependencyInfo dep_info;
-        dep_info.memoryBarrierCount = 1;
-        dep_info.pMemoryBarriers = &compute_to_vertex_barrier;
-        dep_info.imageMemoryBarrierCount = 1; // <-- SET THIS
-        dep_info.pImageMemoryBarriers = &albedo_barrier; // <-- SET THIS
-        cmd.pipelineBarrier2(dep_info);
-    }
-
     // --- 7. CONDITIONAL POINT CLOUD PASS ---
     // (Replaces the Opaque Pass's output if enabled)
     if (render_point_cloud)
@@ -2304,7 +2315,6 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     // --- 3. OIT WRITE PASS ---
     // (This pass now runs AFTER the Opaque Pass and AFTER the optional Point Cloud Pass)
     {
-        // ... (CLEAR OIT BUFFERS) ...
         cmd.fillBuffer(oit_atomic_counter_buffer.buffer, 0, sizeof(uint32_t), 0);
         vk::ClearColorValue clear_uint(std::array<uint32_t, 4>{ 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF });
         vk::ImageSubresourceRange clear_range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
@@ -2738,7 +2748,7 @@ void Engine::buildTlas(vk::raii::CommandBuffer& cmd)
         glm::mat4 transp_model = glm::transpose(obj.model_matrix);
         memcpy(&instance.transform, &transp_model, sizeof(vk::TransformMatrixKHR));
         
-        instance.instanceCustomIndex = 0; // We'll set this later if needed
+        instance.instanceCustomIndex = obj.mesh_info_offset;
         instance.mask = 0xFF; // All rays hit
         instance.instanceShaderBindingTableRecordOffset = 0; // Only one hit group
         instance.flags = static_cast<VkGeometryInstanceFlagBitsKHR>(vk::GeometryInstanceFlagBitsKHR::eTriangleFacingCullDisable);
@@ -2877,11 +2887,44 @@ void Engine::createRayTracingPipeline()
                                        vk::ShaderStageFlagBits::eRaygenKHR, nullptr),
         // Binding 2: Output Hit Buffer
         vk::DescriptorSetLayoutBinding(2, vk::DescriptorType::eStorageBuffer, 1,
-                                       vk::ShaderStageFlagBits::eRaygenKHR | vk::ShaderStageFlagBits::eClosestHitKHR | vk::ShaderStageFlagBits::eMissKHR, nullptr)
+                                       vk::ShaderStageFlagBits::eRaygenKHR | vk::ShaderStageFlagBits::eClosestHitKHR | vk::ShaderStageFlagBits::eMissKHR, nullptr),
+        // Binding 3: All Materials Buffer
+        vk::DescriptorSetLayoutBinding(3, vk::DescriptorType::eStorageBuffer, 1,
+                                       vk::ShaderStageFlagBits::eClosestHitKHR, nullptr),
+        // Binding 4: Main UBO (for lights)
+        vk::DescriptorSetLayoutBinding(4, vk::DescriptorType::eUniformBuffer, 1,
+                                       vk::ShaderStageFlagBits::eClosestHitKHR, nullptr),
+        // Binding 5: All Vertices
+        vk::DescriptorSetLayoutBinding(5, vk::DescriptorType::eStorageBuffer, 1,
+                                       vk::ShaderStageFlagBits::eClosestHitKHR, nullptr),
+        // Binding 6: All Indices
+        vk::DescriptorSetLayoutBinding(6, vk::DescriptorType::eStorageBuffer, 1,
+                                       vk::ShaderStageFlagBits::eClosestHitKHR, nullptr),
+        // Binding 7: All MeshInfo
+        vk::DescriptorSetLayoutBinding(7, vk::DescriptorType::eStorageBuffer, 1,
+                                       vk::ShaderStageFlagBits::eClosestHitKHR, nullptr),
+
+        // Binding 8: Global Texture Array
+        vk::DescriptorSetLayoutBinding(8, vk::DescriptorType::eCombinedImageSampler, 
+                                    static_cast<uint32_t>(MAX_BINDLESS_TEXTURES),
+                                    vk::ShaderStageFlagBits::eClosestHitKHR | vk::ShaderStageFlagBits::eAnyHitKHR, 
+                                    nullptr)
     };
+
+    std::vector<vk::DescriptorBindingFlags> binding_flags(9);
+    binding_flags[8] = vk::DescriptorBindingFlagBits::ePartiallyBound | vk::DescriptorBindingFlagBits::eVariableDescriptorCount;
+
+    vk::DescriptorSetLayoutBindingFlagsCreateInfo flags_info;
+    flags_info.bindingCount = bindings.size();
+    flags_info.pBindingFlags = binding_flags.data();
+
+    vk::DescriptorSetLayoutCreateInfo layout_info;
+    layout_info.pNext = &flags_info; // Chain the flags
+    layout_info.bindingCount = bindings.size();
+    layout_info.pBindings = bindings.data();
     
     // This layout is shared, so store it on the engine
-    rt_pipeline.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings);
+    rt_pipeline.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings, layout_info);
 
     // 2. Create Pipeline
     // This is a complex function, so we delegate it to the Pipeline namespace
@@ -2904,6 +2947,11 @@ void Engine::createRayTracingDescriptorSets()
         static_cast<uint32_t>(layouts.size()),
         layouts.data()
     );
+    std::vector<uint32_t> variable_counts(MAX_FRAMES_IN_FLIGHT, MAX_BINDLESS_TEXTURES);
+    vk::DescriptorSetVariableDescriptorCountAllocateInfo variable_alloc_info;
+    variable_alloc_info.descriptorSetCount = static_cast<uint32_t>(layouts.size());
+    variable_alloc_info.pDescriptorCounts = variable_counts.data();
+    alloc_info.pNext = &variable_alloc_info;
     rt_descriptor_sets = logical_device.allocateDescriptorSets(alloc_info);
 
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
@@ -2945,7 +2993,53 @@ void Engine::createRayTracingDescriptorSets()
         hit_write.descriptorCount = 1;
         hit_write.pBufferInfo = &hit_buffer_info;
 
-        std::array<vk::WriteDescriptorSet, 3> writes = {as_write, vertex_write, hit_write};
+        // Binding 3: All Materials Buffer
+        vk::DescriptorBufferInfo materials_buffer_info;
+        materials_buffer_info.buffer = all_materials_buffer.buffer;
+        materials_buffer_info.offset = 0;
+        materials_buffer_info.range = VK_WHOLE_SIZE;
+        
+        vk::WriteDescriptorSet materials_write;
+        materials_write.dstSet = *rt_descriptor_sets[i];
+        materials_write.dstBinding = 3;
+        materials_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+        materials_write.descriptorCount = 1;
+        materials_write.pBufferInfo = &materials_buffer_info;
+
+        // Binding 4: Main UBO
+        vk::DescriptorBufferInfo ubo_info;
+        ubo_info.buffer = uniform_buffers[i].buffer;
+        ubo_info.offset = 0;
+        ubo_info.range = sizeof(UniformBufferObject);
+
+        vk::WriteDescriptorSet ubo_write;
+        ubo_write.dstSet = *rt_descriptor_sets[i];
+        ubo_write.dstBinding = 4;
+        ubo_write.descriptorType = vk::DescriptorType::eUniformBuffer;
+        ubo_write.descriptorCount = 1;
+        ubo_write.pBufferInfo = &ubo_info;
+
+        vk::DescriptorBufferInfo vertices_info(all_vertices_buffer.buffer, 0, VK_WHOLE_SIZE);
+        vk::WriteDescriptorSet vertices_write(*rt_descriptor_sets[i], 5, 0,
+            vk::DescriptorType::eStorageBuffer, {}, vertices_info);
+            
+        vk::DescriptorBufferInfo indices_info(all_indices_buffer.buffer, 0, VK_WHOLE_SIZE);
+        vk::WriteDescriptorSet indices_write(*rt_descriptor_sets[i], 6, 0,
+            vk::DescriptorType::eStorageBuffer, {}, indices_info);
+            
+        vk::DescriptorBufferInfo mesh_info(all_mesh_info_buffer.buffer, 0, VK_WHOLE_SIZE);
+        vk::WriteDescriptorSet mesh_write(*rt_descriptor_sets[i], 7, 0,
+            vk::DescriptorType::eStorageBuffer, {}, mesh_info);
+        
+        vk::WriteDescriptorSet texture_write;
+        texture_write.dstSet = *rt_descriptor_sets[i];
+        texture_write.dstBinding = 8;
+        texture_write.dstArrayElement = 0;
+        texture_write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        texture_write.descriptorCount = static_cast<uint32_t>(global_texture_descriptors.size());
+        texture_write.pImageInfo = global_texture_descriptors.data();
+
+        std::array<vk::WriteDescriptorSet, 9> writes = {as_write, vertex_write, hit_write, materials_write, ubo_write, vertices_write, indices_write, mesh_write, texture_write};
         logical_device.updateDescriptorSets(writes, {});
     }
 }
@@ -3013,67 +3107,6 @@ void Engine::createShaderBindingTable()
     vmaUnmapMemory(vma_allocator, sbt_buffer.allocation);
 }
 
-void Engine::createComputeLookupPipeline()
-{
-    // 1. Create Descriptor Set Layout
-    std::vector<vk::DescriptorSetLayoutBinding> bindings = {
-        // Binding 0: Main UBO (view, proj)
-        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBuffer, 1,
-                                       vk::ShaderStageFlagBits::eCompute, nullptr),
-        // Binding 1: Hit Data Buffer (Read/Write)
-        vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eStorageBuffer, 1,
-                                       vk::ShaderStageFlagBits::eCompute, nullptr),
-        // Binding 2: Albedo G-Buffer (Read-Only)
-        vk::DescriptorSetLayoutBinding(2, vk::DescriptorType::eSampledImage, 1,
-                                       vk::ShaderStageFlagBits::eCompute, nullptr)
-    };
-    compute_lookup_pipeline.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings);
-    
-    // 2. Create Pipeline
-    compute_lookup_pipeline.pipeline = Pipeline::createComputePipeline(
-        *this,
-        &compute_lookup_pipeline,
-        c_shader_lookup
-    );
-}
-
-void Engine::createComputeLookupDescriptorSets()
-{
-    compute_lookup_descriptor_sets.clear();
-
-    std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *compute_lookup_pipeline.descriptor_set_layout);
-    vk::DescriptorSetAllocateInfo alloc_info(
-        *descriptor_pool,
-        static_cast<uint32_t>(layouts.size()),
-        layouts.data()
-    );
-    compute_lookup_descriptor_sets = logical_device.allocateDescriptorSets(alloc_info);
-
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        // Binding 0: Main UBO
-        vk::DescriptorBufferInfo ubo_info(uniform_buffers[i].buffer, 0, sizeof(UniformBufferObject));
-        vk::WriteDescriptorSet ubo_write(*compute_lookup_descriptor_sets[i], 0, 0,
-            vk::DescriptorType::eUniformBuffer, {}, ubo_info);
-
-        // Binding 1: Hit Data Buffer
-        vk::DescriptorBufferInfo hit_buffer_info(hit_data_buffer.buffer, 0, VK_WHOLE_SIZE);
-        vk::WriteDescriptorSet hit_write(*compute_lookup_descriptor_sets[i], 1, 0,
-            vk::DescriptorType::eStorageBuffer, {}, hit_buffer_info);
-
-        // Binding 2: Albedo G-Buffer
-        vk::DescriptorImageInfo albedo_info;
-        albedo_info.imageView = *albedo_g_buffer.image_view;
-        albedo_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-        // No sampler needed, we use texelFetch
-
-        vk::WriteDescriptorSet albedo_write(*compute_lookup_descriptor_sets[i], 2, 0,
-            vk::DescriptorType::eSampledImage, albedo_info);
-
-        std::array<vk::WriteDescriptorSet, 3> writes = {ubo_write, hit_write, albedo_write};
-        logical_device.updateDescriptorSets(writes, {});
-    }
-}
-
 void Engine::recreateSwapChain(){
     int width = 0, height = 0;
     glfwGetFramebufferSize(window, &width, &height);
@@ -3100,10 +3133,6 @@ void Engine::recreateSwapChain(){
                     vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment, 
                 vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
     color_image.image_view = Image::createImageView(color_image, *this);
-
-    vmaDestroyImage(vma_allocator, albedo_g_buffer.image, albedo_g_buffer.allocation);
-    createAlbedoGBuffer();
-    createComputeLookupDescriptorSets();
 
 
     vmaDestroyBuffer(vma_allocator, oit_atomic_counter_buffer.buffer, oit_atomic_counter_buffer.allocation);

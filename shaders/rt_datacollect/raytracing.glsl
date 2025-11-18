@@ -13,6 +13,42 @@ struct InputVertex {
     vec2 tex_coord_1;
 };
 
+struct MaterialData {
+    vec4  base_color_factor;
+
+    vec4  emissive_factor_and_pad;
+
+    float metallic_factor;
+    float roughness_factor;
+    float occlusion_strength;
+    float specular_factor;
+
+    vec3  specular_color_factor;
+    float alpha_cutoff;
+
+    float transmission_factor;
+    float clearcoat_factor;
+    float clearcoat_roughness_factor;
+    float pad;
+
+    int albedo_id;
+    int normal_id;
+    int mr_id;
+    int emissive_id;
+};
+
+struct PointLight {
+    vec4 position;
+    vec4 color;
+};
+
+struct MeshInfo {
+    uint material_index;
+    uint vertex_offset;
+    uint index_offset;
+    uint _pad1;
+};
+
 // Our output data structure
 struct HitData {
     vec3 hit_pos;
@@ -25,3 +61,27 @@ struct RayPayload {
     uint vertex_index;
     vec3 color;
 };
+
+// Binding 3: All Materials
+layout(set = 0, binding = 3, scalar) buffer readonly AllMaterialsBuffer {
+   MaterialData materials[];
+} all_materials;
+
+// Binding 5: All Vertices
+layout(set = 0, binding = 5, scalar) buffer readonly AllVertices {
+   InputVertex v[];
+} all_vertices;
+
+// Binding 6: All Indices
+layout(set = 0, binding = 6, scalar) buffer readonly AllIndices {
+   uint i[];
+} all_indices;
+
+// Binding 7: All MeshInfo
+layout(set = 0, binding = 7, scalar) buffer readonly AllMeshInfo {
+   MeshInfo info[];
+} all_mesh_info;
+
+
+// Binding 8: Global Texture Array (Unbounded)
+layout(set = 0, binding = 8) uniform sampler2D global_textures[];

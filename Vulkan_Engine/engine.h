@@ -16,6 +16,7 @@
 #include "vk_mem_alloc.h"
 
 const int MAX_SHADOW_LIGHTS = 10;
+const int MAX_BINDLESS_TEXTURES = 1024;
 
 
 
@@ -174,9 +175,12 @@ public:
     PipelineInfo point_cloud_pipeline;
     std::vector<vk::raii::DescriptorSet> point_cloud_descriptor_sets;
 
-    // G-buffer pipeline
-    PipelineInfo compute_lookup_pipeline;
-    std::vector<vk::raii::DescriptorSet> compute_lookup_descriptor_sets;
+    // Bindless buffer
+    std::vector<vk::DescriptorImageInfo> global_texture_descriptors;
+    AllocatedBuffer all_materials_buffer;
+    AllocatedBuffer all_vertices_buffer;
+    AllocatedBuffer all_indices_buffer;
+    AllocatedBuffer all_mesh_info_buffer;
 
     // Used to track GPU resources usage
     void printGpuMemoryUsage();
@@ -218,8 +222,6 @@ private:
     const std::string v_shader_pointcloud = "shaders/pointcloud/pointcloud.vert.spv";
     const std::string f_shader_pointcloud = "shaders/pointcloud/pointcloud.frag.spv";
 
-    const std::string c_shader_lookup = "shaders/rt_datacollect/lookup.comp.spv";
-
     // Depth variables
     AllocatedImage depth_image;
 
@@ -245,7 +247,6 @@ private:
 
     // For multisampling
     AllocatedImage color_image;
-    AllocatedImage albedo_g_buffer;
 
     // Camera
     Camera camera;
@@ -364,8 +365,6 @@ private:
 
     void createSyncObjects();
 
-    void createAlbedoGBuffer();
-
     void createPipelines();
     void loadScene(const std::string& scene_path);
     void loadManualLights(const std::string& lights_path);
@@ -395,8 +394,7 @@ private:
     void createRayTracingPipeline();
     void createRayTracingDescriptorSets();
     void createShaderBindingTable();
-    void createComputeLookupPipeline();
-    void createComputeLookupDescriptorSets();
+    void createGlobalBindlessBuffers();
 
 
 

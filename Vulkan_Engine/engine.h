@@ -238,6 +238,7 @@ private:
 
     // Scene objects
     Torus torus;
+    TorusConfig torus_config;
     std::vector<P_object> scene_objs;
     std::vector<TransparentDraw> transparent_draws;
     Gameobject debug_cube;
@@ -407,6 +408,8 @@ private:
 
     // ---- Closing functions
     void cleanup();
+
+    void updateTorusRTBuffer();
 
 };
 

@@ -35,6 +35,8 @@ struct MaterialData {
     int normal_id;
     int mr_id;
     int emissive_id;
+
+    int occlusion_id;
 };
 
 struct PointLight {
@@ -84,4 +86,4 @@ layout(set = 0, binding = 7, scalar) buffer readonly AllMeshInfo {
 
 
 // Binding 8: Global Texture Array (Unbounded)
-layout(set = 0, binding = 8) uniform sampler2D global_textures[];
+layout(set = 0, binding = 9) uniform sampler2D global_textures[];

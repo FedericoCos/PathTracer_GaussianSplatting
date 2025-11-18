@@ -247,6 +247,8 @@ struct MaterialPushConstant {
     int normal_texture_index;
     int metallic_roughness_texture_index;
     int emissive_texture_index;
+
+    int occlusion_texture_index;
 };
 
 struct Primitive {
@@ -262,6 +264,14 @@ const size_t MAX_POINTLIGHTS = 100;
 struct Pointlight{
     glm::vec4 position; // fourth value is for padding
     glm::vec4 color;
+};
+
+struct TorusConfig {
+    float major_radius = 16.0f;
+    float minor_radius = 1.0f;
+    float height = 8.0f;
+    int major_segments = 2000;
+    int minor_segments = 2000;
 };
 
 

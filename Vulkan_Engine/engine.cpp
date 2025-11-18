@@ -1188,6 +1188,15 @@ void Engine::loadScene(const std::string &scene_path)
         else{
             ubo.ambient_light = glm::vec4(1.f);
         }
+
+        if (settings.contains("torus_settings")) {
+            const auto& t_set = settings["torus_settings"];
+            torus_config.major_radius = t_set.value("major_radius", 16.0f);
+            torus_config.minor_radius = t_set.value("minor_radius", 1.0f);
+            torus_config.height = t_set.value("height", 8.0f);
+            torus_config.major_segments = t_set.value("major_segments", 2000);
+            torus_config.minor_segments = t_set.value("minor_segments", 2000);
+        }
     }
 
     // --- 2. Load Manual Lights ---
@@ -1333,7 +1342,13 @@ void Engine::loadManualLights(const std::string& lights_path)
 
 void Engine::createTorusModel()
 {
-    torus.generateMesh(16.f, 1.f, 8.f, 2000, 2000);
+    torus.generateMesh(
+        torus_config.major_radius, 
+        torus_config.minor_radius, 
+        torus_config.height, 
+        torus_config.major_segments, 
+        torus_config.minor_segments
+    );
     Primitive torusPrim;
     torusPrim.index_count = torus.indices.size();
     torusPrim.first_index = 0;
@@ -1869,6 +1884,7 @@ void Engine::createGlobalBindlessBuffers()
             p_const.normal_texture_index = current_texture_offset + mat.normal_texture_index;
             p_const.metallic_roughness_texture_index = current_texture_offset + mat.metallic_roughness_texture_index;
             p_const.emissive_texture_index = current_texture_offset + mat.emissive_texture_index;
+            p_const.occlusion_texture_index = current_texture_offset + mat.occlusion_texture_index;
             global_materials_data.push_back(p_const);
         }
 
@@ -2506,7 +2522,10 @@ void Engine::drawFrame(){
 
     bool changed = torus.inputUpdate(input, time);
     if(changed){
+        logical_device.waitIdle();
+        vmaDestroyBuffer(vma_allocator, torus.geometry_buffer.buffer, torus.geometry_buffer.allocation);
         createModel(torus); // TODO 0001 -> maybe there is a better way to manage this
+        updateTorusRTBuffer();
     }
     camera.update(time, input, torus.getRadius(), torus.getHeight());
 
@@ -2903,16 +2922,20 @@ void Engine::createRayTracingPipeline()
         // Binding 7: All MeshInfo
         vk::DescriptorSetLayoutBinding(7, vk::DescriptorType::eStorageBuffer, 1,
                                        vk::ShaderStageFlagBits::eClosestHitKHR, nullptr),
-
-        // Binding 8: Global Texture Array
+        // Binding 8: Shadow Maps ---
         vk::DescriptorSetLayoutBinding(8, vk::DescriptorType::eCombinedImageSampler, 
+                                    MAX_SHADOW_LIGHTS, 
+                                    vk::ShaderStageFlagBits::eClosestHitKHR, nullptr),
+        // Binding 9: Global Texture Array
+        vk::DescriptorSetLayoutBinding(9, vk::DescriptorType::eCombinedImageSampler, 
                                     static_cast<uint32_t>(MAX_BINDLESS_TEXTURES),
                                     vk::ShaderStageFlagBits::eClosestHitKHR | vk::ShaderStageFlagBits::eAnyHitKHR, 
                                     nullptr)
     };
 
-    std::vector<vk::DescriptorBindingFlags> binding_flags(9);
-    binding_flags[8] = vk::DescriptorBindingFlagBits::ePartiallyBound | vk::DescriptorBindingFlagBits::eVariableDescriptorCount;
+    std::vector<vk::DescriptorBindingFlags> binding_flags(10);
+    binding_flags[8] = {};
+    binding_flags[9] = vk::DescriptorBindingFlagBits::ePartiallyBound | vk::DescriptorBindingFlagBits::eVariableDescriptorCount;
 
     vk::DescriptorSetLayoutBindingFlagsCreateInfo flags_info;
     flags_info.bindingCount = bindings.size();
@@ -3030,16 +3053,29 @@ void Engine::createRayTracingDescriptorSets()
         vk::DescriptorBufferInfo mesh_info(all_mesh_info_buffer.buffer, 0, VK_WHOLE_SIZE);
         vk::WriteDescriptorSet mesh_write(*rt_descriptor_sets[i], 7, 0,
             vk::DescriptorType::eStorageBuffer, {}, mesh_info);
+
+        std::array<vk::DescriptorImageInfo, MAX_SHADOW_LIGHTS> shadow_map_infos;
+        for(int j = 0; j < MAX_SHADOW_LIGHTS; ++j) {
+            shadow_map_infos[j].sampler = *shadow_sampler;
+            shadow_map_infos[j].imageView = *shadow_maps[j].image_view;
+            shadow_map_infos[j].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        }
+        vk::WriteDescriptorSet shadow_write;
+        shadow_write.dstSet = *rt_descriptor_sets[i];
+        shadow_write.dstBinding = 8;
+        shadow_write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        shadow_write.descriptorCount = MAX_SHADOW_LIGHTS;
+        shadow_write.pImageInfo = shadow_map_infos.data();
         
         vk::WriteDescriptorSet texture_write;
         texture_write.dstSet = *rt_descriptor_sets[i];
-        texture_write.dstBinding = 8;
+        texture_write.dstBinding = 9;
         texture_write.dstArrayElement = 0;
         texture_write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
         texture_write.descriptorCount = static_cast<uint32_t>(global_texture_descriptors.size());
         texture_write.pImageInfo = global_texture_descriptors.data();
 
-        std::array<vk::WriteDescriptorSet, 9> writes = {as_write, vertex_write, hit_write, materials_write, ubo_write, vertices_write, indices_write, mesh_write, texture_write};
+        std::array<vk::WriteDescriptorSet, 10> writes = {as_write, vertex_write, hit_write, materials_write, ubo_write, vertices_write, indices_write, mesh_write, shadow_write, texture_write};
         logical_device.updateDescriptorSets(writes, {});
     }
 }
@@ -3194,5 +3230,37 @@ void Engine::cleanup(){
     // Destroy window
     glfwDestroyWindow(window);
     glfwTerminate();
+}
+
+void Engine::updateTorusRTBuffer()
+{
+    vk::DeviceSize vertex_data_size = sizeof(Vertex) * torus.vertices.size();
+
+    // Check if the existing buffer is large enough.
+    // Since your input logic only changes radius/height (not segment count), 
+    // the size remains constant, so we can reuse the buffer.
+    if (torus_vertex_data_buffer.buffer == VK_NULL_HANDLE) {
+        return;
+    }
+
+    // Create a temporary staging buffer
+    AllocatedBuffer staging_buffer;
+    createBuffer(vma_allocator, vertex_data_size,
+                 vk::BufferUsageFlagBits::eTransferSrc,
+                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                 staging_buffer);
+
+    // Map memory and copy the NEW vertex data
+    void* data;
+    vmaMapMemory(vma_allocator, staging_buffer.allocation, &data);
+    memcpy(data, torus.vertices.data(), (size_t)vertex_data_size);
+    vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
+
+    // Copy from Staging -> Existing Device Local Buffer
+    // This updates the data effectively "moving" the rays source
+    copyBuffer(staging_buffer.buffer, torus_vertex_data_buffer.buffer, vertex_data_size,
+               command_pool_graphics, &logical_device, graphics_queue);
+
+    // Staging buffer destructor cleans itself up here
 }
 

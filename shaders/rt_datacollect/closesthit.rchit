@@ -27,7 +27,20 @@ layout(set = 0, binding = 4) uniform UniformBufferObject {
     float shadowFarPlane;
 } ubo;
 
-// --- PBR MATH ---
+// Binding 8: Shadow Maps
+layout(set = 0, binding = 8) uniform samplerCubeShadow shadowMaps[10];
+
+// --- Helper: Explicit LOD Sampling (Matches Base Level of Raster) ---
+vec4 sampleTexture(int texture_id, vec2 uv) {
+    if (texture_id < 0) return vec4(1.0);
+    // Using LOD 0 matches the maximum detail. 
+    // Note: Rasterization uses Mipmaps (LOD > 0) at distance. 
+    // To perfectly match Raster blur at distance, you would need Ray Cones,
+    // but LOD 0 is the closest match for near-camera geometry.
+    return textureLod(global_textures[nonuniformEXT(texture_id)], uv, 0.0);
+}
+
+// --- PBR MATH (Identical to fragment.frag) ---
 const float PI = 3.14159265359;
 float D_GGX(vec3 N, vec3 H, float roughness) {
     float a = roughness * roughness;
@@ -59,7 +72,15 @@ float G_Smith(vec3 N, vec3 V, vec3 L, float roughness) {
 vec3 F_Schlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
-// --- END PBR MATH ---
+
+// --- SHADOW CALCULATION (Matches fragment.frag logic) ---
+float calculateShadow(vec3 fragWorldPos, vec3 lightPos, float farPlane, int shadowIndex, vec3 N, vec3 L) {
+    float shadowBias = max(0.05 * (1.0 - dot(N, L)), 0.005);
+    vec3 lightToFrag = fragWorldPos - lightPos;
+    float currentDepth = length(lightToFrag);
+    float normalizedDepth = currentDepth / farPlane;
+    return texture(shadowMaps[shadowIndex], vec4(lightToFrag, normalizedDepth - shadowBias));
+}
 
 hitAttributeEXT vec2 hitAttrib;
 
@@ -87,63 +108,84 @@ void main()
     vec3 normal_obj = v0.normal * bary.x + v1.normal * bary.y + v2.normal * bary.z;
     vec4 tangent_obj = v0.tangent * bary.x + v1.tangent * bary.y + v2.tangent * bary.z;
 
-    // --- 3. TBN & Normal Mapping ---
-    vec3 N = normalize(vec3(gl_ObjectToWorldEXT * vec4(normal_obj, 0.0)));
-    vec3 T = normalize(vec3(gl_ObjectToWorldEXT * vec4(tangent_obj.xyz, 0.0)));
-    T = normalize(T - dot(T, N) * N);
-    vec3 B = cross(N, T) * tangent_obj.w;
-    mat3 TBN = mat3(T, B, N);
+    // --- 3. Normal Calculation ---
+    // Correctly handle non-uniform scaling by using Inverse-Transpose
+    mat3 normalMatrix = transpose(mat3(gl_WorldToObjectEXT));
+    vec3 N_geo = normalize(normalMatrix * normal_obj);
 
-    if (mat.normal_id >= 0) {
-        vec3 normal_map = texture(global_textures[nonuniformEXT(mat.normal_id)], tex_coord).rgb;
+    // Double-Sided / Backface Correction
+    // (Rasterization effectively does this by interpolating normals that face the camera 
+    //  if cull mode is None, or strictly by geometry)
+    vec3 V = -gl_WorldRayDirectionEXT; 
+    if (dot(N_geo, V) < 0.0) {
+        N_geo = -N_geo;
+    }
+    
+    vec3 N = N_geo;
+
+    // --- 4. Normal Mapping ---
+    // Match fragment.frag check: if(fragInTangentW != 0)
+    if (abs(tangent_obj.w) > 0.001 && mat.normal_id >= 0) {
+        vec3 T = normalize(vec3(gl_ObjectToWorldEXT * vec4(tangent_obj.xyz, 0.0)));
+        T = normalize(T - dot(T, N_geo) * N_geo); // Gram-Schmidt
+        
+        // Use sign(w) to ensure handedness is either 1 or -1, matching Raster behavior
+        // where w is usually passed as a flat attribute or uniform.
+        vec3 B = cross(N_geo, T) * sign(tangent_obj.w);
+        mat3 TBN = mat3(T, B, N_geo);
+
+        vec3 normal_map = sampleTexture(mat.normal_id, tex_coord).rgb;
         normal_map = normal_map * 2.0 - 1.0;
+        
         N = normalize(TBN * normal_map);
     }
 
-    // --- 4. Material Properties ---
-    vec3 albedo = mat.base_color_factor.rgb * vertex_color; // Apply Vertex Color
+    // --- 5. Material Properties ---
+    vec3 albedo = mat.base_color_factor.rgb * vertex_color;
+    float alpha = mat.base_color_factor.a;
+
     if (mat.albedo_id >= 0) {
-        vec4 tex_color = texture(global_textures[nonuniformEXT(mat.albedo_id)], tex_coord);
+        vec4 tex_color = sampleTexture(mat.albedo_id, tex_coord);
         albedo *= tex_color.rgb;
+        alpha *= tex_color.a;
+    }
+
+    if (alpha < mat.alpha_cutoff) {
+        uint index = payload.vertex_index;
+        output_buffer.hits[index].hit_pos = vec3(0.0);
+        output_buffer.hits[index].hit_flag = -1.0;
+        output_buffer.hits[index].color = vec4(0.0);
+        return;
     }
 
     float metallic = mat.metallic_factor; 
     float roughness = mat.roughness_factor; 
     if (mat.mr_id >= 0) {
-        vec2 mr = texture(global_textures[nonuniformEXT(mat.mr_id)], tex_coord).bg;
+        vec2 mr = sampleTexture(mat.mr_id, tex_coord).bg;
         metallic *= mr.x;
         roughness *= mr.y;
     }
 
-    // --- FIX: Sample Occlusion Map (AO) ---
-    // Previously we only used the constant strength.
     float ao = mat.occlusion_strength;
-    // We assume AO is in the same texture as Metallic/Roughness (common glTF optimization),
-    // usually in the Red channel. But your MaterialData has a specific 'albedo_id', 'mr_id', etc.
-    // Wait, your MaterialData struct in raytracing.glsl does NOT have an occlusion_id!
-    // However, gameobject.cpp usually maps occlusion to the same texture as MR.
-    // Let's reuse mr_id if it exists, as standard glTF packs Occlusion in R, Roughness in G, Metallic in B.
-    if (mat.mr_id >= 0) {
-         float ao_sample = texture(global_textures[nonuniformEXT(mat.mr_id)], tex_coord).r;
+    if (mat.occlusion_id >= 0) {
+         float ao_sample = sampleTexture(mat.occlusion_id, tex_coord).r;
          ao *= ao_sample;
     }
 
     vec3 emissive = mat.emissive_factor_and_pad.xyz; 
     if (mat.emissive_id >= 0) {
-        emissive *= texture(global_textures[nonuniformEXT(mat.emissive_id)], tex_coord).rgb;
+        emissive *= sampleTexture(mat.emissive_id, tex_coord).rgb;
     }
     
     float cc_factor = mat.clearcoat_factor; 
     float cc_roughness = mat.clearcoat_roughness_factor;
 
-    // --- 5. Lighting Setup ---
-    vec3 V = -gl_WorldRayDirectionEXT; 
-    
+    // --- 6. Lighting Setup ---
     vec3 F0_dielectric = 0.08 * mat.specular_factor * mat.specular_color_factor;
     vec3 F0 = mix(F0_dielectric, albedo, metallic); 
     vec3 Lo = vec3(0.0);
 
-    #define CALCULATE_LIGHT(lightSource) \
+    #define CALCULATE_LIGHT(lightSource, shadowFactor) \
     { \
         vec3 L = normalize(lightSource.position.xyz - hit_pos); \
         vec3 H = normalize(V + L); \
@@ -172,22 +214,25 @@ void main()
         vec3 specular_coat = numerator_coat / denominator_coat; \
         \
         vec3 combined_lighting = (diffuse_base + specular_base) * (1.0 - cc_factor * F_coat) + specular_coat * cc_factor; \
-        Lo += combined_lighting * radiance * NdotL; \
+        Lo += combined_lighting * radiance * NdotL * shadowFactor; \
     }
 
-    // --- 6. Accumulate Lights ---
+    // --- 7. Accumulate Lights ---
     for(int i = 0; i < ubo.cur_num_pointlights; i++) {
-        CALCULATE_LIGHT(ubo.pointlights[i]);
+        CALCULATE_LIGHT(ubo.pointlights[i], 1.0);
     }
     for(int i = 0; i < ubo.cur_num_shadowlights; i++) {
-        CALCULATE_LIGHT(ubo.shadowLights[i]);
+        vec3 L = normalize(ubo.shadowLights[i].position.xyz - hit_pos);
+        // FIX: Use hit_pos exactly as is. No geometric bias.
+        // This ensures we sample the shadow map at the exact same coordinate as the Raster shader.
+        float shadowFactor = calculateShadow(hit_pos, ubo.shadowLights[i].position.xyz, ubo.shadowFarPlane, i, N, L);
+        CALCULATE_LIGHT(ubo.shadowLights[i], shadowFactor);
     }
 
-    // --- 7. Final Combine ---
+    // --- 8. Final Output ---
     vec3 ambient = ubo.ambientLight.xyz * ubo.ambientLight.w * albedo * ao;
     vec3 color = ambient + Lo + emissive; 
 
-    // --- 8. Write Output ---
     uint index = payload.vertex_index;
     output_buffer.hits[index].hit_pos = hit_pos;
     output_buffer.hits[index].hit_flag = 1.0; 

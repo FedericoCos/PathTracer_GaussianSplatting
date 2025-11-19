@@ -1,2 +1,3 @@
 *.o
 Engine
+resources/dataset/*.png

@@ -3367,7 +3367,7 @@ ImageReadbackData Engine::readImageToCPU(vk::Image image, VkFormat format, uint3
                  staging_buffer);
 
     // 2. Copy Command
-    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_transfer, &logical_device);
+    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device);
 
     vk::BufferImageCopy region;
     region.bufferOffset = 0;
@@ -3378,7 +3378,7 @@ ImageReadbackData Engine::readImageToCPU(vk::Image image, VkFormat format, uint3
     region.imageExtent = vk::Extent3D{width, height, 1};
     
     cmd.copyImageToBuffer(image, vk::ImageLayout::eTransferSrcOptimal, staging_buffer.buffer, {region});
-    endSingleTimeCommands(cmd, transfer_queue);
+    endSingleTimeCommands(cmd, graphics_queue);
 
     // 3. Read & Swizzle
     ImageReadbackData read_data;
@@ -3409,19 +3409,16 @@ ImageReadbackData Engine::readImageToCPU(vk::Image image, VkFormat format, uint3
 void Engine::captureSceneData() {
     std::cout << "\n--- Starting Scene Data Capture (" << NUM_CAPTURE_POSITIONS << " pairs) ---" << std::endl;
 
-    // 1. Wait for idle to ensure resources are available
     logical_device.waitIdle();
 
-    // 2. Backup State
     bool original_rt_state = render_point_cloud;
     bool original_proj_state = show_projected_torus;
     CameraState original_camera_state = camera.getCurrentState();
 
-    // 3. Setup Randomness
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_real_distribution<> alpha_dist(0.0f, 360.0f);
-    std::uniform_real_distribution<> beta_dist(-89.0f, 89.0f);
+    std::uniform_real_distribution<> beta_dist(-30.0f, 30.0f);
 
     // --- LAMBDA: Synchronous Rendering ---
     auto renderSync = [&](vk::raii::CommandBuffer& cmd) {
@@ -3429,286 +3426,97 @@ void Engine::captureSceneData() {
         // --- A. SHADOW PASS ---
         for (int i = 0; i < ubo.curr_num_shadowlights; ++i) {
             transitionImage(cmd, shadow_maps[i].image, vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageAspectFlagBits::eDepth);
-            
             vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
-            vk::RenderingAttachmentInfo depth_att{};
-            depth_att.imageView = *shadow_maps[i].image_view;
-            depth_att.imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
-            depth_att.loadOp = vk::AttachmentLoadOp::eClear;
-            depth_att.storeOp = vk::AttachmentStoreOp::eStore;
-            depth_att.clearValue = clear_depth;
-
-            vk::RenderingInfo shadow_info{};
-            shadow_info.renderArea.extent = vk::Extent2D{SHADOW_MAP_DIM, SHADOW_MAP_DIM};
-            shadow_info.layerCount = 6;
-            shadow_info.viewMask = 0b00111111;
-            shadow_info.pDepthAttachment = &depth_att;
-
-            cmd.beginRendering(shadow_info);
-            cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)SHADOW_MAP_DIM, (float)SHADOW_MAP_DIM, 0.f, 1.f));
-            cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), {SHADOW_MAP_DIM, SHADOW_MAP_DIM}));
-            cmd.setCullMode(vk::CullModeFlagBits::eFront);
-            
-            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.pipeline);
-            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.layout, 0, {*shadow_descriptor_sets[current_frame][i]}, {});
-
-            for(auto& obj : scene_objs) {
-                if (obj.o_primitives.empty()) continue; 
-                cmd.bindVertexBuffers(0, {obj.geometry_buffer.buffer}, {0});
-                cmd.bindIndexBuffer(obj.geometry_buffer.buffer, obj.index_buffer_offset, vk::IndexType::eUint32);
-                cmd.pushConstants<glm::mat4>(*shadow_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix);
-                for(auto& primitive : obj.o_primitives) {
-                    cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
-                }
-            }
-            if (use_rt_box && rt_box.o_pipeline && !rt_box.o_primitives.empty()) {
-                cmd.bindVertexBuffers(0, {rt_box.geometry_buffer.buffer}, {0});
-                cmd.bindIndexBuffer(rt_box.geometry_buffer.buffer, rt_box.index_buffer_offset, vk::IndexType::eUint32);
-                cmd.pushConstants<glm::mat4>(*shadow_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, rt_box.model_matrix);
-                for(auto& primitive : rt_box.o_primitives) {
-                    cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
-                }
-            }
-            cmd.endRendering();
-            transitionImage(cmd, shadow_maps[i].image, vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageAspectFlagBits::eDepth);
+            vk::RenderingAttachmentInfo depth_att{}; depth_att.imageView = *shadow_maps[i].image_view; depth_att.imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal; depth_att.loadOp = vk::AttachmentLoadOp::eClear; depth_att.storeOp = vk::AttachmentStoreOp::eStore; depth_att.clearValue = clear_depth;
+            vk::RenderingInfo shadow_info{}; shadow_info.renderArea.extent = vk::Extent2D{SHADOW_MAP_DIM, SHADOW_MAP_DIM}; shadow_info.layerCount = 6; shadow_info.viewMask = 0b00111111; shadow_info.pDepthAttachment = &depth_att;
+            cmd.beginRendering(shadow_info); cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)SHADOW_MAP_DIM, (float)SHADOW_MAP_DIM, 0.f, 1.f)); cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), {SHADOW_MAP_DIM, SHADOW_MAP_DIM})); cmd.setCullMode(vk::CullModeFlagBits::eFront);
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.pipeline); cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.layout, 0, {*shadow_descriptor_sets[current_frame][i]}, {});
+            for(auto& obj : scene_objs) { if (obj.o_primitives.empty()) continue; cmd.bindVertexBuffers(0, {obj.geometry_buffer.buffer}, {0}); cmd.bindIndexBuffer(obj.geometry_buffer.buffer, obj.index_buffer_offset, vk::IndexType::eUint32); cmd.pushConstants<glm::mat4>(*shadow_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix); for(auto& primitive : obj.o_primitives) { cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0); } }
+            if (use_rt_box && rt_box.o_pipeline && !rt_box.o_primitives.empty()) { cmd.bindVertexBuffers(0, {rt_box.geometry_buffer.buffer}, {0}); cmd.bindIndexBuffer(rt_box.geometry_buffer.buffer, rt_box.index_buffer_offset, vk::IndexType::eUint32); cmd.pushConstants<glm::mat4>(*shadow_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, rt_box.model_matrix); for(auto& primitive : rt_box.o_primitives) { cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0); } }
+            cmd.endRendering(); transitionImage(cmd, shadow_maps[i].image, vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageAspectFlagBits::eDepth);
         }
 
-        // --- B. TLAS BUILD ---
+        // --- B. TLAS ---
         buildTlas(cmd);
 
-        // --- C. RT DATA COLLECTION ---
+        // --- C. RT ---
         {
             auto align_up = [&](uint32_t size, uint32_t alignment) { return (size + alignment - 1) & ~(alignment - 1); };
-            cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline);
-            cmd.bindDescriptorSets(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.layout, 0, {*rt_descriptor_sets[current_frame]}, {});
-            cmd.pushConstants<glm::mat4>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, torus.model_matrix);
-
-            uint32_t handle_size = rt_props.pipeline_props.shaderGroupHandleSize;
-            uint32_t sbt_entry_size = align_up(handle_size, rt_props.pipeline_props.shaderGroupBaseAlignment);
-            uint64_t sbt_address = getBufferDeviceAddress(sbt_buffer.buffer);
-
-            vk::StridedDeviceAddressRegionKHR rgen{sbt_address, sbt_entry_size, sbt_entry_size};
-            vk::StridedDeviceAddressRegionKHR rmiss{sbt_address + sbt_entry_size, sbt_entry_size, sbt_entry_size};
-            vk::StridedDeviceAddressRegionKHR rchit{sbt_address + 2 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
-            vk::StridedDeviceAddressRegionKHR callable{};
-
-            vkCmdTraceRaysKHR(*cmd, reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rgen),
-                              reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rmiss),
-                              reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rchit),
-                              reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&callable),
-                              static_cast<uint32_t>(torus.vertices.size()), 1, 1);
-            
-            vk::MemoryBarrier2 mem_barrier{};
-            mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
-            mem_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
-            mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eVertexShader;
-            mem_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead;
-            vk::DependencyInfo dep_info{};
-            dep_info.memoryBarrierCount = 1;
-            dep_info.pMemoryBarriers = &mem_barrier;
-            cmd.pipelineBarrier2(dep_info);
+            cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline); cmd.bindDescriptorSets(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.layout, 0, {*rt_descriptor_sets[current_frame]}, {}); cmd.pushConstants<glm::mat4>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, torus.model_matrix);
+            uint32_t handle_size = rt_props.pipeline_props.shaderGroupHandleSize; uint32_t sbt_entry_size = align_up(handle_size, rt_props.pipeline_props.shaderGroupBaseAlignment); uint64_t sbt_address = getBufferDeviceAddress(sbt_buffer.buffer);
+            vk::StridedDeviceAddressRegionKHR rgen{sbt_address, sbt_entry_size, sbt_entry_size}; vk::StridedDeviceAddressRegionKHR rmiss{sbt_address + sbt_entry_size, sbt_entry_size, sbt_entry_size}; vk::StridedDeviceAddressRegionKHR rchit{sbt_address + 2 * sbt_entry_size, sbt_entry_size, sbt_entry_size}; vk::StridedDeviceAddressRegionKHR callable{};
+            vkCmdTraceRaysKHR(*cmd, reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rgen), reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rmiss), reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rchit), reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&callable), static_cast<uint32_t>(torus.vertices.size()), 1, 1);
+            vk::MemoryBarrier2 mem_barrier{}; mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR; mem_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite; mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eVertexShader; mem_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead; vk::DependencyInfo dep_info{}; dep_info.memoryBarrierCount = 1; dep_info.pMemoryBarriers = &mem_barrier; cmd.pipelineBarrier2(dep_info);
         }
 
-        // --- FIX: GATHER TRANSPARENTS FOR CAPTURE ---
-        // This was missing! Without it, transparent_draws is empty during capture.
+        // --- GATHER TRANSPARENTS ---
         transparent_draws.clear();
-        for(auto& obj : scene_objs){
-            if (!obj.t_primitives.empty()) {
-                for(const auto& primitive : obj.t_primitives) {
-                    const Material& material = obj.materials[primitive.material_index];
-                    transparent_draws.push_back({&obj, &primitive, &material, 0.0f});
-                }
-            }
+        for(auto& obj : scene_objs){ 
+            if (!obj.t_primitives.empty()) { 
+                for(const auto& primitive : obj.t_primitives) { 
+                    const Material& material = obj.materials[primitive.material_index]; 
+                    transparent_draws.push_back({&obj, &primitive, &material, 0.0f}); 
+                } 
+            } 
         }
-        if (torus.isVisible && !torus.t_primitives.empty()) {
-            for (const auto& primitive : torus.t_primitives) {
-                const Material& material = torus.materials[primitive.material_index];
-                transparent_draws.push_back({&torus, &primitive, &material, 0.0f});
-            }
-        }
-        // -------------------------------------------
-
-        // --- D. OPAQUE PASS ---
+        
+        // --- D. OPAQUE ---
         {
-            vk::ClearValue clear_color = vk::ClearColorValue(0.f, 0.f, 0.f, 1.f);
-            vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
-
-            vk::RenderingAttachmentInfo color_att{};
-            color_att.imageView = color_image.image_view;
-            color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-            color_att.loadOp = vk::AttachmentLoadOp::eClear;
-            color_att.storeOp = vk::AttachmentStoreOp::eStore;
-            color_att.clearValue = clear_color;
-
-            vk::RenderingAttachmentInfo depth_att{};
-            depth_att.imageView = depth_image.image_view;
-            depth_att.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
-            depth_att.loadOp = vk::AttachmentLoadOp::eClear;
-            depth_att.storeOp = vk::AttachmentStoreOp::eStore;
-            depth_att.clearValue = clear_depth;
-
-            vk::RenderingInfo render_info{};
-            render_info.renderArea.extent = swapchain.extent;
-            render_info.layerCount = 1;
-            render_info.colorAttachmentCount = 1;
-            render_info.pColorAttachments = &color_att;
-            render_info.pDepthAttachment = &depth_att;
-
-            cmd.beginRendering(render_info);
-            cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)swapchain.extent.width, (float)swapchain.extent.height, 0.f, 1.f));
-            cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapchain.extent));
-
-            PipelineInfo* last_pipe = nullptr;
-            Gameobject* last_obj = nullptr;
-            for(auto& obj : scene_objs){
-                if (obj.o_primitives.empty()) continue; 
-                if (obj.o_pipeline != last_pipe) { cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *obj.o_pipeline->pipeline); last_pipe = obj.o_pipeline; }
-                if (&obj != last_obj) { cmd.bindVertexBuffers(0, {obj.geometry_buffer.buffer}, {0}); cmd.bindIndexBuffer(obj.geometry_buffer.buffer, obj.index_buffer_offset, vk::IndexType::eUint32); last_obj = &obj; }
-                cmd.pushConstants<glm::mat4>(*obj.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix);
-                for(auto& prim : obj.o_primitives) {
-                    const Material& mat = obj.materials[prim.material_index];
-                    cmd.setCullMode(mat.is_doublesided ? vk::CullModeFlagBits::eNone : vk::CullModeFlagBits::eBack);
-                    MaterialPushConstant pc;
-                    pc.base_color_factor = mat.base_color_factor;
-                    pc.emissive_factor_and_pad = glm::vec4(mat.emissive_factor, 0.0f);
-                    pc.metallic_factor = mat.metallic_factor; pc.roughness_factor = mat.roughness_factor; pc.occlusion_strength = mat.occlusion_strength;
-                    pc.specular_factor = mat.specular_factor; pc.specular_color_factor = mat.specular_color_factor; pc.transmission_factor = mat.transmission_factor;
-                    pc.alpha_cutoff = mat.alpha_cutoff; pc.clearcoat_factor = mat.clearcoat_factor; pc.clearcoat_roughness_factor = mat.clearcoat_roughness_factor;
-                    cmd.pushConstants<MaterialPushConstant>(*obj.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), pc);
-                    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *obj.o_pipeline->layout, 0, {*mat.descriptor_sets[current_frame]}, {});
-                    cmd.drawIndexed(prim.index_count, 1, prim.first_index, 0, 0);
-                }
-            }
-            // RT Box Opaque
-            if (use_rt_box && rt_box.o_pipeline && !rt_box.o_primitives.empty()) {
-                cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *rt_box.o_pipeline->pipeline);
-                cmd.bindVertexBuffers(0, {rt_box.geometry_buffer.buffer}, {0});
-                cmd.bindIndexBuffer(rt_box.geometry_buffer.buffer, rt_box.index_buffer_offset, vk::IndexType::eUint32);
-                cmd.pushConstants<glm::mat4>(*rt_box.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, rt_box.model_matrix);
-                cmd.setCullMode(vk::CullModeFlagBits::eBack);
-                for(auto& prim : rt_box.o_primitives) {
-                    const Material& mat = rt_box.materials[prim.material_index];
-                    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *rt_box.o_pipeline->layout, 0, {*mat.descriptor_sets[current_frame]}, {});
-                    MaterialPushConstant pc; pc.base_color_factor = mat.base_color_factor; pc.metallic_factor = mat.metallic_factor; pc.roughness_factor = mat.roughness_factor; pc.occlusion_strength = mat.occlusion_strength;
-                    cmd.pushConstants<MaterialPushConstant>(*rt_box.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), pc);
-                    cmd.drawIndexed(prim.index_count, 1, prim.first_index, 0, 0);
-                }
-            }
+            vk::ClearValue clear_color = vk::ClearColorValue(0.f, 0.f, 0.f, 1.f); vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
+            vk::RenderingAttachmentInfo color_att{}; color_att.imageView = color_image.image_view; color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal; color_att.loadOp = vk::AttachmentLoadOp::eClear; color_att.storeOp = vk::AttachmentStoreOp::eStore; color_att.clearValue = clear_color;
+            vk::RenderingAttachmentInfo depth_att{}; depth_att.imageView = depth_image.image_view; depth_att.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal; depth_att.loadOp = vk::AttachmentLoadOp::eClear; depth_att.storeOp = vk::AttachmentStoreOp::eStore; depth_att.clearValue = clear_depth;
+            vk::RenderingInfo render_info{}; render_info.renderArea.extent = swapchain.extent; render_info.layerCount = 1; render_info.colorAttachmentCount = 1; render_info.pColorAttachments = &color_att; render_info.pDepthAttachment = &depth_att;
+            cmd.beginRendering(render_info); cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)swapchain.extent.width, (float)swapchain.extent.height, 0.f, 1.f)); cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapchain.extent));
+            PipelineInfo* last_pipe = nullptr; Gameobject* last_obj = nullptr;
+            for(auto& obj : scene_objs){ if (obj.o_primitives.empty()) continue; if (obj.o_pipeline != last_pipe) { cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *obj.o_pipeline->pipeline); last_pipe = obj.o_pipeline; } if (&obj != last_obj) { cmd.bindVertexBuffers(0, {obj.geometry_buffer.buffer}, {0}); cmd.bindIndexBuffer(obj.geometry_buffer.buffer, obj.index_buffer_offset, vk::IndexType::eUint32); last_obj = &obj; } cmd.pushConstants<glm::mat4>(*obj.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix); for(auto& prim : obj.o_primitives) { const Material& mat = obj.materials[prim.material_index]; cmd.setCullMode(mat.is_doublesided ? vk::CullModeFlagBits::eNone : vk::CullModeFlagBits::eBack); MaterialPushConstant pc; pc.base_color_factor = mat.base_color_factor; pc.emissive_factor_and_pad = glm::vec4(mat.emissive_factor, 0.0f); pc.metallic_factor = mat.metallic_factor; pc.roughness_factor = mat.roughness_factor; pc.occlusion_strength = mat.occlusion_strength; pc.specular_factor = mat.specular_factor; pc.specular_color_factor = mat.specular_color_factor; pc.transmission_factor = mat.transmission_factor; pc.alpha_cutoff = mat.alpha_cutoff; pc.clearcoat_factor = mat.clearcoat_factor; pc.clearcoat_roughness_factor = mat.clearcoat_roughness_factor; cmd.pushConstants<MaterialPushConstant>(*obj.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), pc); cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *obj.o_pipeline->layout, 0, {*mat.descriptor_sets[current_frame]}, {}); cmd.drawIndexed(prim.index_count, 1, prim.first_index, 0, 0); } }
+            if (use_rt_box && rt_box.o_pipeline && !rt_box.o_primitives.empty()) { cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *rt_box.o_pipeline->pipeline); cmd.bindVertexBuffers(0, {rt_box.geometry_buffer.buffer}, {0}); cmd.bindIndexBuffer(rt_box.geometry_buffer.buffer, rt_box.index_buffer_offset, vk::IndexType::eUint32); cmd.pushConstants<glm::mat4>(*rt_box.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, rt_box.model_matrix); cmd.setCullMode(vk::CullModeFlagBits::eBack); for(auto& prim : rt_box.o_primitives) { const Material& mat = rt_box.materials[prim.material_index]; cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *rt_box.o_pipeline->layout, 0, {*mat.descriptor_sets[current_frame]}, {}); MaterialPushConstant pc; pc.base_color_factor = mat.base_color_factor; pc.metallic_factor = mat.metallic_factor; pc.roughness_factor = mat.roughness_factor; pc.occlusion_strength = mat.occlusion_strength; cmd.pushConstants<MaterialPushConstant>(*rt_box.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), pc); cmd.drawIndexed(prim.index_count, 1, prim.first_index, 0, 0); } }
             cmd.endRendering();
         }
-
-        // --- E. POINT CLOUD PASS ---
+        // --- E. POINT CLOUD ---
         if (render_point_cloud) {
-            vk::ClearValue clear_color = vk::ClearColorValue(0.f, 0.f, 0.f, 1.f);
-            vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
-
-            vk::RenderingAttachmentInfo color_att{};
-            color_att.imageView = color_image.image_view;
-            color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-            color_att.loadOp = vk::AttachmentLoadOp::eClear; 
-            color_att.storeOp = vk::AttachmentStoreOp::eStore;
-            color_att.clearValue = clear_color;
-
-            vk::RenderingAttachmentInfo depth_att{};
-            depth_att.imageView = depth_image.image_view;
-            depth_att.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
-            depth_att.loadOp = vk::AttachmentLoadOp::eClear;
-            depth_att.storeOp = vk::AttachmentStoreOp::eStore;
-            depth_att.clearValue = clear_depth;
-
-            vk::RenderingInfo pc_info{};
-            pc_info.renderArea.extent = swapchain.extent;
-            pc_info.layerCount = 1;
-            pc_info.colorAttachmentCount = 1;
-            pc_info.pColorAttachments = &color_att;
-            pc_info.pDepthAttachment = &depth_att;
-
-            cmd.beginRendering(pc_info);
-            cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)swapchain.extent.width, (float)swapchain.extent.height, 0.f, 1.f));
-            cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapchain.extent));
-
-            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.pipeline);
-            cmd.setCullMode(vk::CullModeFlagBits::eNone);
-            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.layout, 0, {*point_cloud_descriptor_sets[current_frame]}, {});
-            
-            struct PC { glm::mat4 model; int mode; };
-            PC pc_data; pc_data.model = torus.model_matrix; pc_data.mode = 0;
-            cmd.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data);
-            cmd.draw(static_cast<uint32_t>(torus.vertices.size()), 1, 0, 0);
-            
+            vk::ClearValue clear_color = vk::ClearColorValue(0.f, 0.f, 0.f, 1.f); vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
+            vk::RenderingAttachmentInfo color_att{}; color_att.imageView = color_image.image_view; color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal; color_att.loadOp = vk::AttachmentLoadOp::eClear; color_att.storeOp = vk::AttachmentStoreOp::eStore; color_att.clearValue = clear_color;
+            vk::RenderingAttachmentInfo depth_att{}; depth_att.imageView = depth_image.image_view; depth_att.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal; depth_att.loadOp = vk::AttachmentLoadOp::eClear; depth_att.storeOp = vk::AttachmentStoreOp::eStore; depth_att.clearValue = clear_depth;
+            vk::RenderingInfo pc_info{}; pc_info.renderArea.extent = swapchain.extent; pc_info.layerCount = 1; pc_info.colorAttachmentCount = 1; pc_info.pColorAttachments = &color_att; pc_info.pDepthAttachment = &depth_att;
+            cmd.beginRendering(pc_info); cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)swapchain.extent.width, (float)swapchain.extent.height, 0.f, 1.f)); cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapchain.extent));
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.pipeline); cmd.setCullMode(vk::CullModeFlagBits::eNone); cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.layout, 0, {*point_cloud_descriptor_sets[current_frame]}, {});
+            struct PC { glm::mat4 model; int mode; }; PC pc_data; pc_data.model = torus.model_matrix; pc_data.mode = 0; cmd.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data); cmd.draw(static_cast<uint32_t>(torus.vertices.size()), 1, 0, 0);
             cmd.endRendering();
         }
-
         // --- F. OIT PASSES ---
         {
-            cmd.fillBuffer(oit_atomic_counter_buffer.buffer, 0, sizeof(uint32_t), 0);
-            vk::ClearColorValue clear_uint(std::array<uint32_t, 4>{ 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF });
-            vk::ImageSubresourceRange clear_range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
-            cmd.clearColorImage(oit_start_offset_image.image, vk::ImageLayout::eGeneral, clear_uint, clear_range);
-
-            vk::MemoryBarrier2 barrier{};
-            barrier.srcStageMask = vk::PipelineStageFlagBits2::eTransfer; barrier.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
-            barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader; barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageWrite | vk::AccessFlagBits2::eShaderRead;
-            vk::DependencyInfo dep{}; dep.memoryBarrierCount = 1; dep.pMemoryBarriers = &barrier;
-            cmd.pipelineBarrier2(dep);
-
-            // OIT Write
-            vk::RenderingAttachmentInfo depth_att{};
-            depth_att.imageView = depth_image.image_view;
-            depth_att.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
-            depth_att.loadOp = vk::AttachmentLoadOp::eLoad;
-            depth_att.storeOp = vk::AttachmentStoreOp::eDontCare;
-
-            vk::RenderingInfo oit_info{};
-            oit_info.renderArea.extent = swapchain.extent;
-            oit_info.layerCount = 1;
-            oit_info.pDepthAttachment = &depth_att;
-
-            cmd.beginRendering(oit_info);
-            cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)swapchain.extent.width, (float)swapchain.extent.height, 0.f, 1.f));
-            cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapchain.extent));
-            
+            cmd.fillBuffer(oit_atomic_counter_buffer.buffer, 0, sizeof(uint32_t), 0); vk::ClearColorValue clear_uint(std::array<uint32_t, 4>{ 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF }); vk::ImageSubresourceRange clear_range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1); cmd.clearColorImage(oit_start_offset_image.image, vk::ImageLayout::eGeneral, clear_uint, clear_range);
+            vk::MemoryBarrier2 barrier{}; barrier.srcStageMask = vk::PipelineStageFlagBits2::eTransfer; barrier.srcAccessMask = vk::AccessFlagBits2::eTransferWrite; barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader; barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageWrite | vk::AccessFlagBits2::eShaderRead; vk::DependencyInfo dep{}; dep.memoryBarrierCount = 1; dep.pMemoryBarriers = &barrier; cmd.pipelineBarrier2(dep);
+            vk::RenderingAttachmentInfo depth_att{}; depth_att.imageView = depth_image.image_view; depth_att.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal; depth_att.loadOp = vk::AttachmentLoadOp::eLoad; depth_att.storeOp = vk::AttachmentStoreOp::eDontCare;
+            vk::RenderingInfo oit_info{}; oit_info.renderArea.extent = swapchain.extent; oit_info.layerCount = 1; oit_info.pDepthAttachment = &depth_att;
+            cmd.beginRendering(oit_info); cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)swapchain.extent.width, (float)swapchain.extent.height, 0.f, 1.f)); cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapchain.extent));
             PipelineInfo* last_p = nullptr; Gameobject* last_o = nullptr;
-            for (const auto& draw : transparent_draws) {
-                Gameobject* obj = draw.object;
-                PipelineInfo* pipe = obj->t_pipeline;
-                if (pipe != last_p) { cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipe->pipeline); last_p = pipe; }
-                if (obj != last_o) { cmd.bindVertexBuffers(0, {obj->geometry_buffer.buffer}, {0}); cmd.bindIndexBuffer(obj->geometry_buffer.buffer, obj->index_buffer_offset, vk::IndexType::eUint32); last_o = obj; }
-                cmd.pushConstants<glm::mat4>(*pipe->layout, vk::ShaderStageFlagBits::eVertex, 0, obj->model_matrix);
+            
+            // --- DRAW TRANSPARENTS LOOP ---
+            for (const auto& draw : transparent_draws) { 
+                Gameobject* obj = draw.object; PipelineInfo* pipe = obj->t_pipeline; 
+                if (pipe != last_p) { cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipe->pipeline); last_p = pipe; } 
+                if (obj != last_o) { cmd.bindVertexBuffers(0, {obj->geometry_buffer.buffer}, {0}); cmd.bindIndexBuffer(obj->geometry_buffer.buffer, obj->index_buffer_offset, vk::IndexType::eUint32); last_o = obj; } 
+                cmd.pushConstants<glm::mat4>(*pipe->layout, vk::ShaderStageFlagBits::eVertex, 0, obj->model_matrix); 
                 if(obj != &torus) { 
-                    const Material& mat = *draw.material;
-                    MaterialPushConstant pc; pc.base_color_factor = mat.base_color_factor; pc.metallic_factor = mat.metallic_factor;
-                    cmd.pushConstants<MaterialPushConstant>(*pipe->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), pc);
-                }
-                std::array<vk::DescriptorSet, 2> sets = {*draw.material->descriptor_sets[current_frame], *oit_ppll_descriptor_sets[current_frame]};
-                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipe->layout, 0, sets, {});
-                cmd.drawIndexed(draw.primitive->index_count, 1, draw.primitive->first_index, 0, 0);
+                    const Material& mat = *draw.material; MaterialPushConstant pc; pc.base_color_factor = mat.base_color_factor; pc.metallic_factor = mat.metallic_factor; cmd.pushConstants<MaterialPushConstant>(*pipe->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), pc); 
+                } 
+                std::array<vk::DescriptorSet, 2> sets = {*draw.material->descriptor_sets[current_frame], *oit_ppll_descriptor_sets[current_frame]}; 
+                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipe->layout, 0, sets, {}); 
+                
+                // FIX: FORCE CULL MODE NONE FOR CAPTURE
+                // This guarantees windows are drawn even if back-facing relative to the capture camera
+                cmd.setCullMode(vk::CullModeFlagBits::eNone); 
+
+                cmd.drawIndexed(draw.primitive->index_count, 1, draw.primitive->first_index, 0, 0); 
             }
+            // ------------------------------
+
             cmd.endRendering();
-
-            vk::MemoryBarrier2 comp_barrier{};
-            comp_barrier.srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader; comp_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
-            comp_barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader; comp_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead;
-            vk::DependencyInfo comp_dep{}; comp_dep.memoryBarrierCount = 1; comp_dep.pMemoryBarriers = &comp_barrier;
-            cmd.pipelineBarrier2(comp_dep);
-
-            // OIT Composite
-            vk::RenderingAttachmentInfo color_att{};
-            color_att.imageView = color_image.image_view;
-            color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-            color_att.loadOp = vk::AttachmentLoadOp::eLoad;
-            color_att.storeOp = vk::AttachmentStoreOp::eStore;
-
-            vk::RenderingInfo comp_info{};
-            comp_info.renderArea.extent = swapchain.extent;
-            comp_info.layerCount = 1;
-            comp_info.colorAttachmentCount = 1;
-            comp_info.pColorAttachments = &color_att;
-
-            cmd.beginRendering(comp_info);
-            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *oit_composite_pipeline.pipeline);
-            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *oit_composite_pipeline.layout, 0, *oit_ppll_descriptor_sets[current_frame], nullptr);
-            cmd.draw(3, 1, 0, 0);
+            vk::MemoryBarrier2 comp_barrier{}; comp_barrier.srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader; comp_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite; comp_barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader; comp_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead; vk::DependencyInfo comp_dep{}; comp_dep.memoryBarrierCount = 1; comp_dep.pMemoryBarriers = &comp_barrier; cmd.pipelineBarrier2(comp_dep);
+            vk::RenderingAttachmentInfo color_att{}; color_att.imageView = color_image.image_view; color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal; color_att.loadOp = vk::AttachmentLoadOp::eLoad; color_att.storeOp = vk::AttachmentStoreOp::eStore;
+            vk::RenderingInfo comp_info{}; comp_info.renderArea.extent = swapchain.extent; comp_info.layerCount = 1; comp_info.colorAttachmentCount = 1; comp_info.pColorAttachments = &color_att;
+            cmd.beginRendering(comp_info); cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *oit_composite_pipeline.pipeline); cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *oit_composite_pipeline.layout, 0, *oit_ppll_descriptor_sets[current_frame], nullptr); cmd.draw(3, 1, 0, 0);
             cmd.endRendering();
         }
     };
@@ -3729,22 +3537,38 @@ void Engine::captureSceneData() {
         {
             vk::raii::CommandBuffer cmd_sync = beginSingleTimeCommands(command_pool_graphics, &logical_device);
             
+            // Ensure start state is Color Attachment
             transitionImage(cmd_sync, color_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageAspectFlagBits::eColor);
             transitionImage(cmd_sync, depth_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthAttachmentOptimal, vk::ImageAspectFlagBits::eDepth);
 
             renderSync(cmd_sync);
 
+            // Transition Color Image to Transfer Src
             transitionImage(cmd_sync, color_image.image, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
+            
+            // Transition Resolve Image to Transfer Dst
             transitionImage(cmd_sync, capture_resolve_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, vk::ImageAspectFlagBits::eColor);
             
+            // Resolve
             Image::resolveImage(cmd_sync, color_image, capture_resolve_image, swapchain.extent);
             
+            // Transition Resolve Image to Transfer Src (for readback)
             transitionImage(cmd_sync, capture_resolve_image.image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
             
             endSingleTimeCommands(cmd_sync, graphics_queue);
 
+            // Readback
             ImageReadbackData data = readImageToCPU(capture_resolve_image.image, capture_resolve_image.image_format, swapchain.extent.width, swapchain.extent.height);
+            
+            // FIX: Force Alpha to 255 to avoid transparency in viewer
+            for (size_t j = 3; j < data.data.size(); j += 4) {
+                data.data[j] = 255;
+            }
+            
             savePNG("resources/dataset/capture_raster_" + std::to_string(i + 1) + ".png", data);
+
+            // Cleanup: Transition color_image BACK to Transfer Src (wait, it already is) or Undefined is fine for next loop
+            // But to avoid validation warnings on next frame's initial transition, let's leave it.
         }
 
         // --- 2. POINT CLOUD CAPTURE ---
@@ -3754,29 +3578,37 @@ void Engine::captureSceneData() {
         {
             vk::raii::CommandBuffer cmd_sync = beginSingleTimeCommands(command_pool_graphics, &logical_device);
             
-            // Reset color image for next pass
+            // Transition Color Image BACK to Color Attachment (from Transfer Src)
             transitionImage(cmd_sync, color_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageAspectFlagBits::eColor);
             
             renderSync(cmd_sync);
 
+            // Transition to Transfer Src
             transitionImage(cmd_sync, color_image.image, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
+            
+            // Transition Resolve Image to Transfer Dst
             transitionImage(cmd_sync, capture_resolve_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eTransferDstOptimal, vk::ImageAspectFlagBits::eColor);
             
+            // Resolve
             Image::resolveImage(cmd_sync, color_image, capture_resolve_image, swapchain.extent);
 
+            // Transition Resolve to Transfer Src
             transitionImage(cmd_sync, capture_resolve_image.image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
 
             endSingleTimeCommands(cmd_sync, graphics_queue);
 
             ImageReadbackData data = readImageToCPU(capture_resolve_image.image, capture_resolve_image.image_format, swapchain.extent.width, swapchain.extent.height);
+            
+            // FIX: Force Alpha to 255
+            for (size_t j = 3; j < data.data.size(); j += 4) {
+                data.data[j] = 255;
+            }
+
             savePNG("resources/dataset/capture_pointcloud_" + std::to_string(i + 1) + ".png", data);
+            
+            // Final Cleanup for loop: Transition color_image back to Transfer Src (it is) 
+            // or prepare for next loop (which starts with transition Undefined -> Color Attachment)
         }
-        
-        // Cleanup
-        vk::raii::CommandBuffer cmd_cleanup = beginSingleTimeCommands(command_pool_graphics, &logical_device);
-        transitionImage(cmd_cleanup, color_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageAspectFlagBits::eColor);
-        transitionImage(cmd_cleanup, capture_resolve_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageAspectFlagBits::eColor);
-        endSingleTimeCommands(cmd_cleanup, graphics_queue);
     }
 
     // 5. Restore

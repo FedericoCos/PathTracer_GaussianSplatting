@@ -24,6 +24,8 @@ public:
     void toroidalUpdate(float &dtime, InputState &input, float &r, float &h);
     void reset();
 
+    void updateToroidalAngles(float alpha_degrees, float beta_degrees, float radius, float height);
+
     void modAspectRatio(float aspect_ratio){
         current.aspect_ratio = aspect_ratio;
         original.aspect_ratio = aspect_ratio;

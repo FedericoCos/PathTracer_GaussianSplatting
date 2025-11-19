@@ -28,4 +28,5 @@ namespace Image{
         Engine &engine
     );
     void generateMipmaps(AllocatedImage &image, Engine &engine);
+    void resolveImage(vk::raii::CommandBuffer &cmd, const AllocatedImage &src_image, const AllocatedImage &dst_image, const vk::Extent2D &extent);
 };

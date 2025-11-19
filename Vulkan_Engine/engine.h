@@ -17,6 +17,7 @@
 
 const int MAX_SHADOW_LIGHTS = 10;
 const int MAX_BINDLESS_TEXTURES = 1024;
+const int NUM_CAPTURE_POSITIONS = 50;
 
 
 
@@ -289,6 +290,9 @@ private:
         {GLFW_KEY_Q, Action::TOGGLE_MANUAL},
 
         {GLFW_KEY_P, Action::POINTCLOUD},
+        {GLFW_KEY_T, Action::TOGGLE_PROJECTION},
+
+        {GLFW_KEY_V, Action::CAPTURE_DATA},
 
     };
     std::unordered_set<int> pressed_keys;
@@ -312,6 +316,13 @@ private:
     bool use_emissive_lights_shadows = false;
 
     bool render_point_cloud = false;
+    bool show_projected_torus = false;
+
+    // For data capturing
+    bool is_capturing = false;
+    AllocatedImage capture_resolve_image;
+    bool raster = false;
+    int image_captured_count = 0;
 
     // --- Ray Tracing Function Pointers ---
     PFN_vkGetAccelerationStructureBuildSizesKHR vkGetAccelerationStructureBuildSizesKHR = nullptr;
@@ -406,11 +417,12 @@ private:
 
     void recreateSwapChain();
 
+    // Capture data function
+    ImageReadbackData readImageToCPU(vk::Image image, VkFormat format, uint32_t width, uint32_t height);
+    void captureSceneData();
+
     // ---- Closing functions
     void cleanup();
 
     void updateTorusRTBuffer();
-
 };
-
-

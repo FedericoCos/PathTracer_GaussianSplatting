@@ -158,6 +158,15 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
         frag_push_constant_range.size = sizeof(MaterialPushConstant);
         push_constant_ranges.push_back(frag_push_constant_range);
     }
+    else if (mode == TransparencyMode::POINTCLOUD) {
+        // --- FIX 3: Add Point Cloud Push Constants ---
+        // Needs: Mat4 (Model) + Int (Mode) = 64 + 4 = 68 bytes
+        vk::PushConstantRange pc_range;
+        pc_range.stageFlags = vk::ShaderStageFlagBits::eVertex;
+        pc_range.offset = 0;
+        pc_range.size = sizeof(glm::mat4) + sizeof(int);
+        push_constant_ranges.push_back(pc_range);
+    }
     // (OIT_COMPOSITE has no push constants)
 
 

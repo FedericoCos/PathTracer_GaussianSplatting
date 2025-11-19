@@ -318,7 +318,7 @@ void Engine::createRTBox(const std::string& rtbox_path)
     // --- 5. GPU Resources ---
     rt_box.textures.emplace_back();
     rt_box.default_sampler = Image::createTextureSampler(physical_device, &logical_device, 1);
-    rt_box.createDefaultTexture(*this, rt_box.textures[0], glm::vec4(125, 125, 125, 1));
+    rt_box.createDefaultTexture(*this, rt_box.textures[0], glm::vec4(125, 125, 125, 255));
     createModel(rt_box); // Upload to GPU
 }
 
@@ -747,6 +747,18 @@ void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action,
             if (action == GLFW_PRESS)
                 engine->render_point_cloud = !engine->render_point_cloud;
             break;
+
+        case Action::TOGGLE_PROJECTION:
+            if (action == GLFW_PRESS)
+                engine->show_projected_torus = !engine->show_projected_torus;
+            break;
+        
+        case Action::CAPTURE_DATA: 
+            if (action == GLFW_PRESS){
+                engine->is_capturing = true;
+                engine -> image_captured_count = 0;
+            }
+            break;
     }
 
     input.consumed  = (input.speed_up || input.speed_down || 
@@ -825,7 +837,7 @@ bool Engine::initVulkan(){
     // Get device and queues
     physical_device = Device::pickPhysicalDevice(*this);
     mssa_samples = getMaxUsableSampleCount();
-    //  mssa_samples = vk::SampleCountFlagBits::e2; // HARD-CODED FOR FULLSCREEN
+    // mssa_samples = vk::SampleCountFlagBits::e2; // HARD-CODED FOR FULLSCREEN
     logical_device = Device::createLogicalDevice(*this, queue_indices); 
     graphics_queue = Device::getQueue(*this, queue_indices.graphics_family.value());
     present_queue = Device::getQueue(*this, queue_indices.present_family.value());
@@ -886,9 +898,31 @@ bool Engine::initVulkan(){
     // TO FIX THIS
     color_image = Image::createImage(swapchain.extent.width, swapchain.extent.height,
                         1, mssa_samples, swapchain.format, vk::ImageTiling::eOptimal, 
-                    vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment, 
+                    // FIX: Added TRANSFER_SRC_BIT
+                    vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc, 
                 vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
     color_image.image_view = Image::createImageView(color_image, *this);
+
+
+    // 2. Creation of capture_resolve_image (non-MSAA Destination)
+    // MUST now include TRANSFER_DST_BIT for resolving.
+    capture_resolve_image = Image::createImage(swapchain.extent.width, swapchain.extent.height,
+                        1, vk::SampleCountFlagBits::e1, swapchain.format, vk::ImageTiling::eOptimal,
+                        vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst, 
+                        vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
+    capture_resolve_image.image_view = Image::createImageView(capture_resolve_image, *this);
+
+    vk::raii::CommandBuffer cmd_resolve_init = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+
+    // Transition from Undefined -> Color Attachment Optimal
+    transitionImage(cmd_resolve_init, 
+                    capture_resolve_image.image, 
+                    vk::ImageLayout::eUndefined, 
+                    vk::ImageLayout::eColorAttachmentOptimal, 
+                    vk::ImageAspectFlagBits::eColor);
+
+    endSingleTimeCommands(cmd_resolve_init, graphics_queue);
+
     std::cout << "Memory usage after color image creation" << std::endl;
     printGpuMemoryUsage();
 
@@ -1436,7 +1470,7 @@ void Engine::createDescriptorPool()
     uint32_t total_storage_images = oit_sets;
 
     // Storage Buffers: 2 per OIT set, 2 per RT set, 1 per PointCloud set
-    uint32_t total_storage_buffers = (oit_sets * 2) + (rt_sets * 6) + pointcloud_sets;
+    uint32_t total_storage_buffers = (oit_sets * 2) + (rt_sets * 6) + pointcloud_sets * 2;
 
     // Acceleration Structures: 1 per RT set
     uint32_t total_accel_structs = rt_sets;
@@ -1760,7 +1794,9 @@ void Engine::createPointCloudPipeline()
                                        vk::ShaderStageFlagBits::eVertex, nullptr),
         // Binding 1: Hit Data Buffer
         vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eStorageBuffer, 1,
-                                       vk::ShaderStageFlagBits::eVertex, nullptr)
+                                       vk::ShaderStageFlagBits::eVertex, nullptr),
+        // --- cBinding 2: Torus Vertex Buffer ---
+        vk::DescriptorSetLayoutBinding(2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eVertex, nullptr)
     };
     point_cloud_pipeline.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings);
     
@@ -1814,7 +1850,21 @@ void Engine::createPointCloudDescriptorSets()
         hit_write.descriptorCount = 1;
         hit_write.pBufferInfo = &hit_buffer_info;
 
-        std::array<vk::WriteDescriptorSet, 2> writes = {ubo_write, hit_write};
+        // --- FIX 2: Add Binding 2 (Torus Vertices) ---
+        vk::DescriptorBufferInfo torus_buffer_info;
+        torus_buffer_info.buffer = torus_vertex_data_buffer.buffer;
+        torus_buffer_info.offset = 0;
+        torus_buffer_info.range = VK_WHOLE_SIZE;
+
+        vk::WriteDescriptorSet torus_write;
+        torus_write.dstSet = *point_cloud_descriptor_sets[i];
+        torus_write.dstBinding = 2;
+        torus_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+        torus_write.descriptorCount = 1;
+        torus_write.pBufferInfo = &torus_buffer_info;
+
+        // Update writes array to size 3
+        std::array<vk::WriteDescriptorSet, 3> writes = {ubo_write, hit_write, torus_write};
         logical_device.updateDescriptorSets(writes, {});
     }
 }
@@ -2322,7 +2372,25 @@ void Engine::recordCommandBuffer(uint32_t image_index){
             {*point_cloud_descriptor_sets[current_frame]},
             {});
         
+        struct PC {
+            glm::mat4 model;
+            int mode;
+        };
+        PC pc_data;
+        pc_data.model = torus.model_matrix;
+        pc_data.mode = 0; // 0 = World Space Points
+
+        cmd.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data);
         cmd.draw(static_cast<uint32_t>(torus.vertices.size()), 1, 0, 0);
+
+        // --- DRAW 2: The Projected Torus (Painted Surface) ---
+        // Only draw this if T is toggled ON
+        if (show_projected_torus) {
+            pc_data.mode = 1; // 1 = Project onto Torus
+            
+            cmd.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data);
+            cmd.draw(static_cast<uint32_t>(torus.vertices.size()), 1, 0, 0);
+        }
 
         cmd.endRendering();
     }
@@ -2497,6 +2565,10 @@ void Engine::recordCommandBuffer(uint32_t image_index){
 void Engine::drawFrame(){
     while( vk::Result::eTimeout == logical_device.waitForFences(*in_flight_fences[current_frame], vk::True, UINT64_MAX));
     
+    if (is_capturing) {
+        captureSceneData();
+    }
+
     if (framebuffer_resized) {
         framebuffer_resized = false;
         recreateSwapChain();
@@ -3165,10 +3237,29 @@ void Engine::recreateSwapChain(){
 
     vmaDestroyImage(vma_allocator, color_image.image, color_image.allocation);
     color_image = Image::createImage(swapchain.extent.width, swapchain.extent.height,
-                        1, mssa_samples, swapchain.format, vk::ImageTiling::eOptimal, 
-                    vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment, 
+                        1, mssa_samples, swapchain.format, vk::ImageTiling::eOptimal,
+                    vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc, 
                 vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
     color_image.image_view = Image::createImageView(color_image, *this);
+    
+
+    vmaDestroyImage(vma_allocator, capture_resolve_image.image, capture_resolve_image.allocation);
+    capture_resolve_image = Image::createImage(swapchain.extent.width, swapchain.extent.height,
+                        1, vk::SampleCountFlagBits::e1, swapchain.format, vk::ImageTiling::eOptimal,
+                        vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst, 
+                        vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
+    capture_resolve_image.image_view = Image::createImageView(capture_resolve_image, *this);
+
+    vk::raii::CommandBuffer cmd_resolve_init = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+
+    // Transition from Undefined -> Color Attachment Optimal
+    transitionImage(cmd_resolve_init, 
+                    capture_resolve_image.image, 
+                    vk::ImageLayout::eUndefined, 
+                    vk::ImageLayout::eColorAttachmentOptimal, 
+                    vk::ImageAspectFlagBits::eColor);
+
+    endSingleTimeCommands(cmd_resolve_init, graphics_queue);
 
 
     vmaDestroyBuffer(vma_allocator, oit_atomic_counter_buffer.buffer, oit_atomic_counter_buffer.allocation);
@@ -3264,3 +3355,431 @@ void Engine::updateTorusRTBuffer()
     // Staging buffer destructor cleans itself up here
 }
 
+
+ImageReadbackData Engine::readImageToCPU(vk::Image image, VkFormat format, uint32_t width, uint32_t height) {
+    vk::DeviceSize image_size = width * height * 4;
+
+    // 1. Create Staging Buffer
+    AllocatedBuffer staging_buffer;
+    createBuffer(vma_allocator, image_size,
+                 vk::BufferUsageFlagBits::eTransferDst,
+                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                 staging_buffer);
+
+    // 2. Copy Command
+    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_transfer, &logical_device);
+
+    vk::BufferImageCopy region;
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+    region.imageOffset = vk::Offset3D{0, 0, 0};
+    region.imageExtent = vk::Extent3D{width, height, 1};
+    
+    cmd.copyImageToBuffer(image, vk::ImageLayout::eTransferSrcOptimal, staging_buffer.buffer, {region});
+    endSingleTimeCommands(cmd, transfer_queue);
+
+    // 3. Read & Swizzle
+    ImageReadbackData read_data;
+    read_data.width = width;
+    read_data.height = height;
+    read_data.data.resize((size_t)image_size);
+    
+    void* mapped_data;
+    vmaMapMemory(vma_allocator, staging_buffer.allocation, &mapped_data);
+    memcpy(read_data.data.data(), mapped_data, (size_t)image_size);
+    vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
+
+    // --- FIX: SWIZZLE BGR -> RGB ---
+    // Check if the format implies BGR. Most Swapchains are B8G8R8A8.
+    // Even if we are not 100% sure of the enum, checking for the 'B' component first is safe
+    // or simply forcing the swap if you observe the artifact.
+    bool is_bgr = (format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM || format == VK_FORMAT_B8G8R8A8_SNORM);
+
+    if (is_bgr) {
+        for (size_t i = 0; i < read_data.data.size(); i += 4) {
+            std::swap(read_data.data[i], read_data.data[i + 2]); // Swap Blue (0) and Red (2)
+        }
+    }
+
+    return read_data;
+}
+
+void Engine::captureSceneData() {
+    std::cout << "\n--- Starting Scene Data Capture (" << NUM_CAPTURE_POSITIONS << " pairs) ---" << std::endl;
+
+    // 1. Wait for idle to ensure resources are available
+    logical_device.waitIdle();
+
+    // 2. Backup State
+    bool original_rt_state = render_point_cloud;
+    bool original_proj_state = show_projected_torus;
+    CameraState original_camera_state = camera.getCurrentState();
+
+    // 3. Setup Randomness
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<> alpha_dist(0.0f, 360.0f);
+    std::uniform_real_distribution<> beta_dist(-89.0f, 89.0f);
+
+    // --- LAMBDA: Synchronous Rendering ---
+    auto renderSync = [&](vk::raii::CommandBuffer& cmd) {
+        
+        // --- A. SHADOW PASS ---
+        for (int i = 0; i < ubo.curr_num_shadowlights; ++i) {
+            transitionImage(cmd, shadow_maps[i].image, vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageAspectFlagBits::eDepth);
+            
+            vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
+            vk::RenderingAttachmentInfo depth_att{};
+            depth_att.imageView = *shadow_maps[i].image_view;
+            depth_att.imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+            depth_att.loadOp = vk::AttachmentLoadOp::eClear;
+            depth_att.storeOp = vk::AttachmentStoreOp::eStore;
+            depth_att.clearValue = clear_depth;
+
+            vk::RenderingInfo shadow_info{};
+            shadow_info.renderArea.extent = vk::Extent2D{SHADOW_MAP_DIM, SHADOW_MAP_DIM};
+            shadow_info.layerCount = 6;
+            shadow_info.viewMask = 0b00111111;
+            shadow_info.pDepthAttachment = &depth_att;
+
+            cmd.beginRendering(shadow_info);
+            cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)SHADOW_MAP_DIM, (float)SHADOW_MAP_DIM, 0.f, 1.f));
+            cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), {SHADOW_MAP_DIM, SHADOW_MAP_DIM}));
+            cmd.setCullMode(vk::CullModeFlagBits::eFront);
+            
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.pipeline);
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.layout, 0, {*shadow_descriptor_sets[current_frame][i]}, {});
+
+            for(auto& obj : scene_objs) {
+                if (obj.o_primitives.empty()) continue; 
+                cmd.bindVertexBuffers(0, {obj.geometry_buffer.buffer}, {0});
+                cmd.bindIndexBuffer(obj.geometry_buffer.buffer, obj.index_buffer_offset, vk::IndexType::eUint32);
+                cmd.pushConstants<glm::mat4>(*shadow_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix);
+                for(auto& primitive : obj.o_primitives) {
+                    cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
+                }
+            }
+            if (use_rt_box && rt_box.o_pipeline && !rt_box.o_primitives.empty()) {
+                cmd.bindVertexBuffers(0, {rt_box.geometry_buffer.buffer}, {0});
+                cmd.bindIndexBuffer(rt_box.geometry_buffer.buffer, rt_box.index_buffer_offset, vk::IndexType::eUint32);
+                cmd.pushConstants<glm::mat4>(*shadow_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, rt_box.model_matrix);
+                for(auto& primitive : rt_box.o_primitives) {
+                    cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
+                }
+            }
+            cmd.endRendering();
+            transitionImage(cmd, shadow_maps[i].image, vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageAspectFlagBits::eDepth);
+        }
+
+        // --- B. TLAS BUILD ---
+        buildTlas(cmd);
+
+        // --- C. RT DATA COLLECTION ---
+        {
+            auto align_up = [&](uint32_t size, uint32_t alignment) { return (size + alignment - 1) & ~(alignment - 1); };
+            cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline);
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.layout, 0, {*rt_descriptor_sets[current_frame]}, {});
+            cmd.pushConstants<glm::mat4>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, torus.model_matrix);
+
+            uint32_t handle_size = rt_props.pipeline_props.shaderGroupHandleSize;
+            uint32_t sbt_entry_size = align_up(handle_size, rt_props.pipeline_props.shaderGroupBaseAlignment);
+            uint64_t sbt_address = getBufferDeviceAddress(sbt_buffer.buffer);
+
+            vk::StridedDeviceAddressRegionKHR rgen{sbt_address, sbt_entry_size, sbt_entry_size};
+            vk::StridedDeviceAddressRegionKHR rmiss{sbt_address + sbt_entry_size, sbt_entry_size, sbt_entry_size};
+            vk::StridedDeviceAddressRegionKHR rchit{sbt_address + 2 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
+            vk::StridedDeviceAddressRegionKHR callable{};
+
+            vkCmdTraceRaysKHR(*cmd, reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rgen),
+                              reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rmiss),
+                              reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rchit),
+                              reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&callable),
+                              static_cast<uint32_t>(torus.vertices.size()), 1, 1);
+            
+            vk::MemoryBarrier2 mem_barrier{};
+            mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
+            mem_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
+            mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eVertexShader;
+            mem_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead;
+            vk::DependencyInfo dep_info{};
+            dep_info.memoryBarrierCount = 1;
+            dep_info.pMemoryBarriers = &mem_barrier;
+            cmd.pipelineBarrier2(dep_info);
+        }
+
+        // --- FIX: GATHER TRANSPARENTS FOR CAPTURE ---
+        // This was missing! Without it, transparent_draws is empty during capture.
+        transparent_draws.clear();
+        for(auto& obj : scene_objs){
+            if (!obj.t_primitives.empty()) {
+                for(const auto& primitive : obj.t_primitives) {
+                    const Material& material = obj.materials[primitive.material_index];
+                    transparent_draws.push_back({&obj, &primitive, &material, 0.0f});
+                }
+            }
+        }
+        if (torus.isVisible && !torus.t_primitives.empty()) {
+            for (const auto& primitive : torus.t_primitives) {
+                const Material& material = torus.materials[primitive.material_index];
+                transparent_draws.push_back({&torus, &primitive, &material, 0.0f});
+            }
+        }
+        // -------------------------------------------
+
+        // --- D. OPAQUE PASS ---
+        {
+            vk::ClearValue clear_color = vk::ClearColorValue(0.f, 0.f, 0.f, 1.f);
+            vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
+
+            vk::RenderingAttachmentInfo color_att{};
+            color_att.imageView = color_image.image_view;
+            color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+            color_att.loadOp = vk::AttachmentLoadOp::eClear;
+            color_att.storeOp = vk::AttachmentStoreOp::eStore;
+            color_att.clearValue = clear_color;
+
+            vk::RenderingAttachmentInfo depth_att{};
+            depth_att.imageView = depth_image.image_view;
+            depth_att.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+            depth_att.loadOp = vk::AttachmentLoadOp::eClear;
+            depth_att.storeOp = vk::AttachmentStoreOp::eStore;
+            depth_att.clearValue = clear_depth;
+
+            vk::RenderingInfo render_info{};
+            render_info.renderArea.extent = swapchain.extent;
+            render_info.layerCount = 1;
+            render_info.colorAttachmentCount = 1;
+            render_info.pColorAttachments = &color_att;
+            render_info.pDepthAttachment = &depth_att;
+
+            cmd.beginRendering(render_info);
+            cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)swapchain.extent.width, (float)swapchain.extent.height, 0.f, 1.f));
+            cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapchain.extent));
+
+            PipelineInfo* last_pipe = nullptr;
+            Gameobject* last_obj = nullptr;
+            for(auto& obj : scene_objs){
+                if (obj.o_primitives.empty()) continue; 
+                if (obj.o_pipeline != last_pipe) { cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *obj.o_pipeline->pipeline); last_pipe = obj.o_pipeline; }
+                if (&obj != last_obj) { cmd.bindVertexBuffers(0, {obj.geometry_buffer.buffer}, {0}); cmd.bindIndexBuffer(obj.geometry_buffer.buffer, obj.index_buffer_offset, vk::IndexType::eUint32); last_obj = &obj; }
+                cmd.pushConstants<glm::mat4>(*obj.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix);
+                for(auto& prim : obj.o_primitives) {
+                    const Material& mat = obj.materials[prim.material_index];
+                    cmd.setCullMode(mat.is_doublesided ? vk::CullModeFlagBits::eNone : vk::CullModeFlagBits::eBack);
+                    MaterialPushConstant pc;
+                    pc.base_color_factor = mat.base_color_factor;
+                    pc.emissive_factor_and_pad = glm::vec4(mat.emissive_factor, 0.0f);
+                    pc.metallic_factor = mat.metallic_factor; pc.roughness_factor = mat.roughness_factor; pc.occlusion_strength = mat.occlusion_strength;
+                    pc.specular_factor = mat.specular_factor; pc.specular_color_factor = mat.specular_color_factor; pc.transmission_factor = mat.transmission_factor;
+                    pc.alpha_cutoff = mat.alpha_cutoff; pc.clearcoat_factor = mat.clearcoat_factor; pc.clearcoat_roughness_factor = mat.clearcoat_roughness_factor;
+                    cmd.pushConstants<MaterialPushConstant>(*obj.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), pc);
+                    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *obj.o_pipeline->layout, 0, {*mat.descriptor_sets[current_frame]}, {});
+                    cmd.drawIndexed(prim.index_count, 1, prim.first_index, 0, 0);
+                }
+            }
+            // RT Box Opaque
+            if (use_rt_box && rt_box.o_pipeline && !rt_box.o_primitives.empty()) {
+                cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *rt_box.o_pipeline->pipeline);
+                cmd.bindVertexBuffers(0, {rt_box.geometry_buffer.buffer}, {0});
+                cmd.bindIndexBuffer(rt_box.geometry_buffer.buffer, rt_box.index_buffer_offset, vk::IndexType::eUint32);
+                cmd.pushConstants<glm::mat4>(*rt_box.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, rt_box.model_matrix);
+                cmd.setCullMode(vk::CullModeFlagBits::eBack);
+                for(auto& prim : rt_box.o_primitives) {
+                    const Material& mat = rt_box.materials[prim.material_index];
+                    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *rt_box.o_pipeline->layout, 0, {*mat.descriptor_sets[current_frame]}, {});
+                    MaterialPushConstant pc; pc.base_color_factor = mat.base_color_factor; pc.metallic_factor = mat.metallic_factor; pc.roughness_factor = mat.roughness_factor; pc.occlusion_strength = mat.occlusion_strength;
+                    cmd.pushConstants<MaterialPushConstant>(*rt_box.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), pc);
+                    cmd.drawIndexed(prim.index_count, 1, prim.first_index, 0, 0);
+                }
+            }
+            cmd.endRendering();
+        }
+
+        // --- E. POINT CLOUD PASS ---
+        if (render_point_cloud) {
+            vk::ClearValue clear_color = vk::ClearColorValue(0.f, 0.f, 0.f, 1.f);
+            vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
+
+            vk::RenderingAttachmentInfo color_att{};
+            color_att.imageView = color_image.image_view;
+            color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+            color_att.loadOp = vk::AttachmentLoadOp::eClear; 
+            color_att.storeOp = vk::AttachmentStoreOp::eStore;
+            color_att.clearValue = clear_color;
+
+            vk::RenderingAttachmentInfo depth_att{};
+            depth_att.imageView = depth_image.image_view;
+            depth_att.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+            depth_att.loadOp = vk::AttachmentLoadOp::eClear;
+            depth_att.storeOp = vk::AttachmentStoreOp::eStore;
+            depth_att.clearValue = clear_depth;
+
+            vk::RenderingInfo pc_info{};
+            pc_info.renderArea.extent = swapchain.extent;
+            pc_info.layerCount = 1;
+            pc_info.colorAttachmentCount = 1;
+            pc_info.pColorAttachments = &color_att;
+            pc_info.pDepthAttachment = &depth_att;
+
+            cmd.beginRendering(pc_info);
+            cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)swapchain.extent.width, (float)swapchain.extent.height, 0.f, 1.f));
+            cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapchain.extent));
+
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.pipeline);
+            cmd.setCullMode(vk::CullModeFlagBits::eNone);
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.layout, 0, {*point_cloud_descriptor_sets[current_frame]}, {});
+            
+            struct PC { glm::mat4 model; int mode; };
+            PC pc_data; pc_data.model = torus.model_matrix; pc_data.mode = 0;
+            cmd.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data);
+            cmd.draw(static_cast<uint32_t>(torus.vertices.size()), 1, 0, 0);
+            
+            cmd.endRendering();
+        }
+
+        // --- F. OIT PASSES ---
+        {
+            cmd.fillBuffer(oit_atomic_counter_buffer.buffer, 0, sizeof(uint32_t), 0);
+            vk::ClearColorValue clear_uint(std::array<uint32_t, 4>{ 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF });
+            vk::ImageSubresourceRange clear_range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
+            cmd.clearColorImage(oit_start_offset_image.image, vk::ImageLayout::eGeneral, clear_uint, clear_range);
+
+            vk::MemoryBarrier2 barrier{};
+            barrier.srcStageMask = vk::PipelineStageFlagBits2::eTransfer; barrier.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
+            barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader; barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageWrite | vk::AccessFlagBits2::eShaderRead;
+            vk::DependencyInfo dep{}; dep.memoryBarrierCount = 1; dep.pMemoryBarriers = &barrier;
+            cmd.pipelineBarrier2(dep);
+
+            // OIT Write
+            vk::RenderingAttachmentInfo depth_att{};
+            depth_att.imageView = depth_image.image_view;
+            depth_att.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+            depth_att.loadOp = vk::AttachmentLoadOp::eLoad;
+            depth_att.storeOp = vk::AttachmentStoreOp::eDontCare;
+
+            vk::RenderingInfo oit_info{};
+            oit_info.renderArea.extent = swapchain.extent;
+            oit_info.layerCount = 1;
+            oit_info.pDepthAttachment = &depth_att;
+
+            cmd.beginRendering(oit_info);
+            cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)swapchain.extent.width, (float)swapchain.extent.height, 0.f, 1.f));
+            cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapchain.extent));
+            
+            PipelineInfo* last_p = nullptr; Gameobject* last_o = nullptr;
+            for (const auto& draw : transparent_draws) {
+                Gameobject* obj = draw.object;
+                PipelineInfo* pipe = obj->t_pipeline;
+                if (pipe != last_p) { cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipe->pipeline); last_p = pipe; }
+                if (obj != last_o) { cmd.bindVertexBuffers(0, {obj->geometry_buffer.buffer}, {0}); cmd.bindIndexBuffer(obj->geometry_buffer.buffer, obj->index_buffer_offset, vk::IndexType::eUint32); last_o = obj; }
+                cmd.pushConstants<glm::mat4>(*pipe->layout, vk::ShaderStageFlagBits::eVertex, 0, obj->model_matrix);
+                if(obj != &torus) { 
+                    const Material& mat = *draw.material;
+                    MaterialPushConstant pc; pc.base_color_factor = mat.base_color_factor; pc.metallic_factor = mat.metallic_factor;
+                    cmd.pushConstants<MaterialPushConstant>(*pipe->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), pc);
+                }
+                std::array<vk::DescriptorSet, 2> sets = {*draw.material->descriptor_sets[current_frame], *oit_ppll_descriptor_sets[current_frame]};
+                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipe->layout, 0, sets, {});
+                cmd.drawIndexed(draw.primitive->index_count, 1, draw.primitive->first_index, 0, 0);
+            }
+            cmd.endRendering();
+
+            vk::MemoryBarrier2 comp_barrier{};
+            comp_barrier.srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader; comp_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
+            comp_barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader; comp_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead;
+            vk::DependencyInfo comp_dep{}; comp_dep.memoryBarrierCount = 1; comp_dep.pMemoryBarriers = &comp_barrier;
+            cmd.pipelineBarrier2(comp_dep);
+
+            // OIT Composite
+            vk::RenderingAttachmentInfo color_att{};
+            color_att.imageView = color_image.image_view;
+            color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+            color_att.loadOp = vk::AttachmentLoadOp::eLoad;
+            color_att.storeOp = vk::AttachmentStoreOp::eStore;
+
+            vk::RenderingInfo comp_info{};
+            comp_info.renderArea.extent = swapchain.extent;
+            comp_info.layerCount = 1;
+            comp_info.colorAttachmentCount = 1;
+            comp_info.pColorAttachments = &color_att;
+
+            cmd.beginRendering(comp_info);
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *oit_composite_pipeline.pipeline);
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *oit_composite_pipeline.layout, 0, *oit_ppll_descriptor_sets[current_frame], nullptr);
+            cmd.draw(3, 1, 0, 0);
+            cmd.endRendering();
+        }
+    };
+
+    // 4. Execution Loop
+    for (int i = 0; i < NUM_CAPTURE_POSITIONS; ++i) {
+        float alpha = alpha_dist(gen);
+        float beta = beta_dist(gen);
+        
+        std::cout << "Capturing pair " << i + 1 << "/" << NUM_CAPTURE_POSITIONS << "..." << std::endl;
+        camera.updateToroidalAngles(alpha, beta, torus.getRadius(), torus.getHeight());
+        updateUniformBuffer(current_frame); 
+
+        // --- 1. RASTER CAPTURE ---
+        render_point_cloud = false;
+        show_projected_torus = false;
+
+        {
+            vk::raii::CommandBuffer cmd_sync = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+            
+            transitionImage(cmd_sync, color_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageAspectFlagBits::eColor);
+            transitionImage(cmd_sync, depth_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthAttachmentOptimal, vk::ImageAspectFlagBits::eDepth);
+
+            renderSync(cmd_sync);
+
+            transitionImage(cmd_sync, color_image.image, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
+            transitionImage(cmd_sync, capture_resolve_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, vk::ImageAspectFlagBits::eColor);
+            
+            Image::resolveImage(cmd_sync, color_image, capture_resolve_image, swapchain.extent);
+            
+            transitionImage(cmd_sync, capture_resolve_image.image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
+            
+            endSingleTimeCommands(cmd_sync, graphics_queue);
+
+            ImageReadbackData data = readImageToCPU(capture_resolve_image.image, capture_resolve_image.image_format, swapchain.extent.width, swapchain.extent.height);
+            savePNG("resources/dataset/capture_raster_" + std::to_string(i + 1) + ".png", data);
+        }
+
+        // --- 2. POINT CLOUD CAPTURE ---
+        render_point_cloud = true;
+        show_projected_torus = false;
+
+        {
+            vk::raii::CommandBuffer cmd_sync = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+            
+            // Reset color image for next pass
+            transitionImage(cmd_sync, color_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageAspectFlagBits::eColor);
+            
+            renderSync(cmd_sync);
+
+            transitionImage(cmd_sync, color_image.image, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
+            transitionImage(cmd_sync, capture_resolve_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eTransferDstOptimal, vk::ImageAspectFlagBits::eColor);
+            
+            Image::resolveImage(cmd_sync, color_image, capture_resolve_image, swapchain.extent);
+
+            transitionImage(cmd_sync, capture_resolve_image.image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
+
+            endSingleTimeCommands(cmd_sync, graphics_queue);
+
+            ImageReadbackData data = readImageToCPU(capture_resolve_image.image, capture_resolve_image.image_format, swapchain.extent.width, swapchain.extent.height);
+            savePNG("resources/dataset/capture_pointcloud_" + std::to_string(i + 1) + ".png", data);
+        }
+        
+        // Cleanup
+        vk::raii::CommandBuffer cmd_cleanup = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+        transitionImage(cmd_cleanup, color_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageAspectFlagBits::eColor);
+        transitionImage(cmd_cleanup, capture_resolve_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageAspectFlagBits::eColor);
+        endSingleTimeCommands(cmd_cleanup, graphics_queue);
+    }
+
+    // 5. Restore
+    is_capturing = false;
+    std::cout << "--- Capture Complete ---" << std::endl;
+}

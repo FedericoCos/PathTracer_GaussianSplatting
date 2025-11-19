@@ -336,7 +336,10 @@ enum class Action{
     TOGGLE_EMISSIVE,
     TOGGLE_MANUAL,
 
-    POINTCLOUD
+    POINTCLOUD,
+    TOGGLE_PROJECTION,
+
+    CAPTURE_DATA
 };
 
 struct InputState{
@@ -371,6 +374,12 @@ struct InputState{
     bool height_down = false;
 
     bool left_mouse = false;
+};
+
+struct ImageReadbackData {
+    std::vector<uint8_t> data;
+    uint32_t width;
+    uint32_t height;
 };
 
 struct FreeCamera{
@@ -508,4 +517,6 @@ void copyBufferToImage(
     vk::raii::CommandPool &command_pool, 
     vk::raii::Queue &queue
 );
+
+void savePNG(const std::string& filename, const ImageReadbackData& data);
 

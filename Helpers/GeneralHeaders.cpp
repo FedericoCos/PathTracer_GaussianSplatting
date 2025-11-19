@@ -135,3 +135,19 @@ void copyBufferToImage(const VkBuffer &buffer, VkImage &image, uint32_t width, u
     command_buffer.copyBufferToImage(buffer, image, vk::ImageLayout::eTransferDstOptimal, {region});
     endSingleTimeCommands(command_buffer, queue);
 }
+
+void savePNG(const std::string& filename, const ImageReadbackData& data) {
+    // Note: STBI expects R8G8B8A8 data (4 channels)
+    int result = stbi_write_png(filename.c_str(), 
+                                data.width, 
+                                data.height, 
+                                4, // 4 channels (RGBA)
+                                data.data.data(), 
+                                data.width * 4); // Stride
+
+    if (result == 0) {
+        std::cerr << "Error: Failed to save PNG file: " << filename << std::endl;
+    } else {
+        std::cout << "Successfully saved: " << filename << std::endl;
+    }
+}

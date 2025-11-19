@@ -157,3 +157,25 @@ void Camera::reset()
 {
     current = original;
 }
+
+void Camera::updateToroidalAngles(float alpha_degrees, float beta_degrees, float radius, float height) {
+    current.t_camera.alpha = alpha_degrees;
+    current.t_camera.beta = glm::clamp(beta_degrees, -89.f, 89.f);
+    
+    // Since r and h are only available in update, we need to pass them or store them.
+    // Assuming you store r and h references in Camera or pass them from Engine:
+    
+    // For now, re-using the logic from toroidalUpdate:
+    float a = glm::radians(current.t_camera.alpha);
+
+    // Recalculate position
+    current.t_camera.postion = glm::vec3(cos(a), 0.f, sin(a)) * radius + glm::vec3(0.f, height, 0.f);
+
+    glm::vec3 look_at_target = glm::vec3(0.0f, height, 0.0f);
+    float vertical_offset = radius * tan(glm::radians(current.t_camera.beta));
+    look_at_target.y += vertical_offset;
+
+    current.view_matrix = glm::lookAt(current.t_camera.postion, look_at_target, glm::vec3(.0f, 1.f, .0f));
+    current.projection_matrix = glm::perspective(glm::radians(current.fov), current.aspect_ratio, current.near_plane, current.far_plane);
+    current.projection_matrix[1][1] *= -1;
+}

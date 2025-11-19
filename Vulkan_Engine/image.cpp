@@ -251,3 +251,16 @@ void Image::generateMipmaps(AllocatedImage &image, Engine &engine)
 
     endSingleTimeCommands(command_buffer, engine.graphics_queue);
 }
+
+void Image::resolveImage(vk::raii::CommandBuffer& cmd, const AllocatedImage& src_image, const AllocatedImage& dst_image, const vk::Extent2D& extent) {
+    vk::ImageResolve region;
+    region.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+    region.dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+    region.extent = vk::Extent3D{extent.width, extent.height, 1};
+
+    cmd.resolveImage(
+        src_image.image, vk::ImageLayout::eTransferSrcOptimal, 
+        dst_image.image, vk::ImageLayout::eTransferDstOptimal, 
+        region
+    );
+}

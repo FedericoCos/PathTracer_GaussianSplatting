@@ -159,12 +159,11 @@ vk::raii::Pipeline Pipeline::createGraphicsPipeline(
         push_constant_ranges.push_back(frag_push_constant_range);
     }
     else if (mode == TransparencyMode::POINTCLOUD) {
-        // --- FIX 3: Add Point Cloud Push Constants ---
-        // Needs: Mat4 (Model) + Int (Mode) = 64 + 4 = 68 bytes
+        // --- Point Cloud Push Constants ---
         vk::PushConstantRange pc_range;
         pc_range.stageFlags = vk::ShaderStageFlagBits::eVertex;
         pc_range.offset = 0;
-        pc_range.size = sizeof(glm::mat4) + sizeof(int);
+        pc_range.size = sizeof(PC);
         push_constant_ranges.push_back(pc_range);
     }
     // (OIT_COMPOSITE has no push constants)
@@ -379,7 +378,7 @@ vk::raii::Pipeline Pipeline::createRayTracingPipeline(Engine& engine, PipelineIn
     vk::PushConstantRange push_constant_range;
     push_constant_range.stageFlags = vk::ShaderStageFlagBits::eRaygenKHR;
     push_constant_range.offset = 0;
-    push_constant_range.size = sizeof(glm::mat4);
+    push_constant_range.size = sizeof(RayPushConstant);
 
     vk::PipelineLayoutCreateInfo pipeline_layout_info;
     pipeline_layout_info.setLayoutCount = 1;

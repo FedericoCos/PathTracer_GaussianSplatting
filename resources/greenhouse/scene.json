@@ -15,7 +15,8 @@
         "minor_radius": 1.0,
         "height": 2.0,
         "major_segments": 2000,
-        "minor_segments": 2000
+        "minor_segments": 2000,
+        "num_rays": 8000000
     },
 
     "ambient_light": [0.8, 0.8, 0.8, 0.1]

@@ -114,8 +114,12 @@ public:
         return height;
     }
 
-    float &getRadius(){
+    float &getMajorRadius(){
         return major_radius;
+    }
+
+    float &getMinorRadius(){
+        return minor_radius;
     }
     
 

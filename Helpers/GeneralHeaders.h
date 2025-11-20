@@ -339,7 +339,9 @@ enum class Action{
     POINTCLOUD,
     TOGGLE_PROJECTION,
 
-    CAPTURE_DATA
+    CAPTURE_DATA,
+
+    SAMPLING_METHOD
 };
 
 struct InputState{
@@ -476,6 +478,35 @@ struct MeshInfo {
     uint32_t vertex_offset;  // Offset into all_vertices_buffer
     uint32_t index_offset;   // Offset into all_indices_buffer
     uint32_t _pad1;          // for 16-byte alignment
+};
+
+struct RaySample {
+    glm::vec2 uv;
+};
+
+struct RayPushConstant {
+    glm::mat4 model;
+    float major_radius; 
+    float minor_radius;
+    float height;
+};
+
+struct PC { 
+    glm::mat4 model; 
+    int mode; 
+    float major_radius; 
+    float minor_radius;
+    float height;
+}; 
+
+enum class SamplingMethod {
+    HALTON,
+    STRATIFIED
+};
+
+const std::array<SamplingMethod, 2> sampling_methods = {
+    SamplingMethod::HALTON,
+    SamplingMethod::STRATIFIED
 };
 
 // ------ Helper Functions

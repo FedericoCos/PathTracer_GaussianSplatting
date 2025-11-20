@@ -5,58 +5,84 @@
 
 #include "raytracing.glsl"
 
-// Binding 0: Top-Level Acceleration Structure
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 
-// Binding 1: Input Vertex Buffer (read-only)
-layout(set = 0, binding = 1, scalar) buffer readonly InputVertexBuffer {
-    InputVertex vertices[];
-} input_buffer;
+// Binding 1 is now RaySamples
+layout(set = 0, binding = 1, scalar) buffer readonly SampleBuffer {
+    RaySample samples[];
+} sample_buffer;
 
-// Binding 2: Output Hit Buffer (write-only)
 layout(set = 0, binding = 2, scalar) buffer writeonly OutputHitBuffer {
     HitData hits[];
 } output_buffer;
 
-// Push constant for the torus's model matrix
+// We need radii in Push Constants to reconstruct surface
 layout(push_constant) uniform PushConstants {
     mat4 model;
-} push_const;
+    float major_radius; 
+    float minor_radius;
+    float height;
+} pc;
 
-// The payload to send to the hit/miss shaders
 layout(location = 0) rayPayloadEXT RayPayload payload;
+
+const float PI = 3.14159265359;
 
 void main()
 {
-    // Get the index for this shader invocation
-    uint index = gl_LaunchIDEXT.x;
-    
-    // Get the vertex for this ray
-    InputVertex v = input_buffer.vertices[index];
-    
-    // Transform pos and normal by the torus's model matrix
-    vec3 ray_origin = (push_const.model * vec4(v.pos, 1.0)).xyz;
-    vec3 ray_dir = normalize((push_const.model * vec4(v.normal, 0.0)).xyz);
+    uint index = gl_LaunchIDEXT.y * gl_LaunchSizeEXT.x + gl_LaunchIDEXT.x;
 
-    // Initialize the payload
-    payload.vertex_index = index;
-    payload.color = v.color;
+    if (index >= sample_buffer.samples.length()) {
+        return;
+    }
+
+    // 1. Get abstract UV
+    vec2 uv = sample_buffer.samples[index].uv;
+
+    // 2. Convert to Angles
+    float u = uv.x * 2.0 * PI;
+    float v = uv.y * 2.0 * PI;
+
+    // 3. Reconstruct Torus Position (Local Space)
+    // Math matches Torus::generateMesh 
+    // x = (R + r * cos(v)) * cos(u)
+    // y = r * sin(v) + h  <-- NOTE: h is usually 0 in local space, handled by model matrix translation
+    // z = (R + r * cos(v)) * sin(u)
     
-    // Initialize the output buffer for this index as a "miss"
-    // The miss shader will confirm this if no hit is found.
+    float R = pc.major_radius;
+    float r = pc.minor_radius;
+    float h = pc.height;
+    
+    float cos_u = cos(u);
+    float sin_u = sin(u);
+    float cos_v = cos(v);
+    float sin_v = sin(v);
+
+    vec3 local_pos;
+    local_pos.x = (R + r * cos_v) * cos_u;
+    local_pos.y = r * sin_v + h; 
+    local_pos.z = (R + r * cos_v) * sin_u;
+
+    // 4. Reconstruct Normal
+    // The normal of a torus vertex is just the vector from the tube center to the surface
+    vec3 local_normal;
+    local_normal.x = cos_v * cos_u;
+    local_normal.y = sin_v;
+    local_normal.z = cos_v * sin_u;
+    local_normal = normalize(local_normal);
+
+    // 5. Transform to World Space
+    vec3 ray_origin = (pc.model * vec4(local_pos, 1.0)).xyz;
+    vec3 ray_dir = normalize((pc.model * vec4(local_normal, 0.0)).xyz);
+
+    // Payload setup
+    payload.vertex_index = index;
+    payload.color = vec3(1.0); // Default white for ray origin
+
+    // Init miss
     output_buffer.hits[index].hit_pos = vec3(0.0);
     output_buffer.hits[index].hit_flag = -1.0;
 
-    // Cast the ray
-    traceRayEXT(tlas,               // tlas
-                gl_RayFlagsOpaqueEXT, // rayFlags (only hit opaque objects)
-                0xFF,                 // cullMask
-                0,                    // sbtRecordOffset
-                0,                    // sbtRecordStride
-                0,                    // missIndex (we only have one miss shader at group index 1)
-                ray_origin,           // origin
-                0.001,                // tMin (start ray slightly in front of surface)
-                ray_dir,              // direction
-                10000.0,              // tMax
-                0);                   // payload location
+    // Trace
+    traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, ray_origin, 0.001, ray_dir, 10000.0, 0);
 }

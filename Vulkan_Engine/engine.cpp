@@ -759,6 +759,18 @@ void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action,
                 engine -> image_captured_count = 0;
             }
             break;
+        
+        case Action::SAMPLING_METHOD: 
+            if (action == GLFW_PRESS){
+                engine->current_sampling = (engine->current_sampling + 1) % sampling_methods.size();
+                engine->logical_device.waitIdle();
+                vmaDestroyBuffer(engine->vma_allocator, engine->sample_data_buffer.buffer, engine->sample_data_buffer.allocation);
+                vmaDestroyBuffer(engine->vma_allocator, engine->hit_data_buffer.buffer, engine->hit_data_buffer.allocation);
+                engine->createRayTracingDataBuffers();
+                engine -> createRayTracingDescriptorSets();
+                engine -> createPointCloudDescriptorSets();
+            }
+            break;
     }
 
     input.consumed  = (input.speed_up || input.speed_down || 
@@ -1230,6 +1242,8 @@ void Engine::loadScene(const std::string &scene_path)
             torus_config.height = t_set.value("height", 8.0f);
             torus_config.major_segments = t_set.value("major_segments", 2000);
             torus_config.minor_segments = t_set.value("minor_segments", 2000);
+
+            num_rays = t_set.value("num_rays", num_rays);
         }
     }
 
@@ -1851,17 +1865,17 @@ void Engine::createPointCloudDescriptorSets()
         hit_write.pBufferInfo = &hit_buffer_info;
 
         // --- FIX 2: Add Binding 2 (Torus Vertices) ---
-        vk::DescriptorBufferInfo torus_buffer_info;
-        torus_buffer_info.buffer = torus_vertex_data_buffer.buffer;
-        torus_buffer_info.offset = 0;
-        torus_buffer_info.range = VK_WHOLE_SIZE;
+        vk::DescriptorBufferInfo sampler_buffer_info;
+        sampler_buffer_info.buffer = sample_data_buffer.buffer;
+        sampler_buffer_info.offset = 0;
+        sampler_buffer_info.range = VK_WHOLE_SIZE;
 
         vk::WriteDescriptorSet torus_write;
         torus_write.dstSet = *point_cloud_descriptor_sets[i];
         torus_write.dstBinding = 2;
         torus_write.descriptorType = vk::DescriptorType::eStorageBuffer;
         torus_write.descriptorCount = 1;
-        torus_write.pBufferInfo = &torus_buffer_info;
+        torus_write.pBufferInfo = &sampler_buffer_info;
 
         // Update writes array to size 3
         std::array<vk::WriteDescriptorSet, 3> writes = {ubo_write, hit_write, torus_write};
@@ -2101,8 +2115,14 @@ void Engine::recordCommandBuffer(uint32_t image_index){
             *rt_pipeline.layout, 0,
             {*rt_descriptor_sets[current_frame]},
             {});
+
+        RayPushConstant p_const;
+        p_const.model = torus.model_matrix;
+        p_const.major_radius = torus.getMajorRadius();
+        p_const.minor_radius = torus.getMinorRadius();
+        p_const.height = torus.getHeight();
         
-        cmd.pushConstants<glm::mat4>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, torus.model_matrix);
+        cmd.pushConstants<RayPushConstant>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, p_const);
 
         uint32_t handle_size = rt_props.pipeline_props.shaderGroupHandleSize;
         uint32_t sbt_entry_alignment = rt_props.pipeline_props.shaderGroupBaseAlignment;
@@ -2126,14 +2146,21 @@ void Engine::recordCommandBuffer(uint32_t image_index){
 
         vk::StridedDeviceAddressRegionKHR callable_sbt_region;
 
+        // Calculate square dimensions
+        uint32_t total_rays = static_cast<uint32_t>(sampling_points.size());
+        
+        // We calculate a square side that covers at least 'total_rays'
+        // ceil(sqrt(total_rays))
+        uint32_t side = static_cast<uint32_t>(std::ceil(std::sqrt(total_rays)));
+
         vkCmdTraceRaysKHR(
             *cmd,
             reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rgen_sbt_region),
             reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rmiss_sbt_region),
             reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rchit_sbt_region),
             reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&callable_sbt_region),
-            static_cast<uint32_t>(torus.vertices.size()), 
-            1, 1);
+            side, 
+            side, 1);
         
         // --- BARRIER (RT -> Compute) ---
         // Wait for RT to finish WRITING hit_data_buffer before Vertex Shader READS it
@@ -2371,14 +2398,12 @@ void Engine::recordCommandBuffer(uint32_t image_index){
             *point_cloud_pipeline.layout, 0,
             {*point_cloud_descriptor_sets[current_frame]},
             {});
-        
-        struct PC {
-            glm::mat4 model;
-            int mode;
-        };
         PC pc_data;
         pc_data.model = torus.model_matrix;
         pc_data.mode = 0; // 0 = World Space Points
+        pc_data.major_radius = torus.getMajorRadius();
+        pc_data.minor_radius = torus.getMinorRadius();
+        pc_data.height = torus.getHeight();
 
         cmd.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data);
         cmd.draw(static_cast<uint32_t>(torus.vertices.size()), 1, 0, 0);
@@ -2599,7 +2624,7 @@ void Engine::drawFrame(){
         createModel(torus); // TODO 0001 -> maybe there is a better way to manage this
         updateTorusRTBuffer();
     }
-    camera.update(time, input, torus.getRadius(), torus.getHeight());
+    camera.update(time, input, torus.getMajorRadius(), torus.getHeight());
 
     updateUniformBuffer(current_frame);
 
@@ -2924,44 +2949,45 @@ void Engine::buildTlas(vk::raii::CommandBuffer& cmd)
  */
 void Engine::createRayTracingDataBuffers()
 {
-    // --- 1. Create Input Buffer (Torus Vertices) ---
-    vk::DeviceSize vertex_data_size = sizeof(Vertex) * torus.vertices.size();
-    
-    // Create a staging buffer
+    // 1. Generate sample 
+    switch(sampling_methods[current_sampling]){
+        case SamplingMethod::HALTON:
+            Sampling::generateHaltonSamples(sampling_points, num_rays);
+            break;
+        case SamplingMethod::STRATIFIED:
+            Sampling::generateStratifiedSamples(sampling_points, num_rays);
+            break;
+    }
+
+    // 2. Create Input Buffer 
+    vk::DeviceSize sample_size = sizeof(RaySample) * sampling_points.size();
+
     AllocatedBuffer staging_buffer;
-    createBuffer(vma_allocator, vertex_data_size,
-                 vk::BufferUsageFlagBits::eTransferSrc,
-                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
-                 staging_buffer);
-    
-    // Copy torus vertex data into the staging buffer
+    createBuffer(vma_allocator, sample_size,
+                vk::BufferUsageFlagBits::eTransferSrc,
+                vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                staging_buffer);
+
+
     void* data;
     vmaMapMemory(vma_allocator, staging_buffer.allocation, &data);
-    memcpy(data, torus.vertices.data(), (size_t)vertex_data_size);
+    memcpy(data, sampling_points.data(), (size_t)sample_size);
     vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
 
-    // Create the final device-local buffer
-    createBuffer(vma_allocator, vertex_data_size,
-                 vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
-                 vk::MemoryPropertyFlagBits::eDeviceLocal,
-                 torus_vertex_data_buffer);
-                 
-    // Copy from staging to device-local
-    copyBuffer(staging_buffer.buffer, torus_vertex_data_buffer.buffer, vertex_data_size,
-               command_pool_graphics, &logical_device, graphics_queue);
+    createBuffer(vma_allocator, sample_size,
+                vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+                vk::MemoryPropertyFlagBits::eDeviceLocal,
+                sample_data_buffer);
     
-    // Staging buffer is no longer needed and will be auto-destroyed by its destructor
+    copyBuffer(staging_buffer.buffer, sample_data_buffer.buffer, sample_size,
+                command_pool_graphics, &logical_device, graphics_queue);
 
-
-    // --- 2. Create Output Buffer (Hit Data) ---
-    // We'll store two vec4s per vertex:
-    // vec4(vec3 hitPos, float hitFlag)
-    // vec4(color.rgb, 1.0)
-    vk::DeviceSize hit_data_size = sizeof(glm::vec4) * 2 * torus.vertices.size();
+    // 3. Create Output Buffer (Hit Data)
+    vk::DeviceSize hit_data_size = sizeof(glm::vec4) * 2  * sampling_points.size();
 
     createBuffer(vma_allocator, hit_data_size,
                  vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress |
-                 vk::BufferUsageFlagBits::eTransferSrc, // <-- Add eTransferSrc to allow copying to CPU
+                 vk::BufferUsageFlagBits::eTransferSrc, 
                  vk::MemoryPropertyFlagBits::eDeviceLocal,
                  hit_data_buffer);
 }
@@ -3064,7 +3090,7 @@ void Engine::createRayTracingDescriptorSets()
 
         // Binding 1: Input Buffer (Torus Vertices)
         vk::DescriptorBufferInfo vertex_buffer_info;
-        vertex_buffer_info.buffer = torus_vertex_data_buffer.buffer;
+        vertex_buffer_info.buffer = sample_data_buffer.buffer;
         vertex_buffer_info.offset = 0;
         vertex_buffer_info.range = VK_WHOLE_SIZE;
 
@@ -3427,13 +3453,34 @@ void Engine::captureSceneData() {
         for (int i = 0; i < ubo.curr_num_shadowlights; ++i) {
             transitionImage(cmd, shadow_maps[i].image, vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageAspectFlagBits::eDepth);
             vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
-            vk::RenderingAttachmentInfo depth_att{}; depth_att.imageView = *shadow_maps[i].image_view; depth_att.imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal; depth_att.loadOp = vk::AttachmentLoadOp::eClear; depth_att.storeOp = vk::AttachmentStoreOp::eStore; depth_att.clearValue = clear_depth;
-            vk::RenderingInfo shadow_info{}; shadow_info.renderArea.extent = vk::Extent2D{SHADOW_MAP_DIM, SHADOW_MAP_DIM}; shadow_info.layerCount = 6; shadow_info.viewMask = 0b00111111; shadow_info.pDepthAttachment = &depth_att;
-            cmd.beginRendering(shadow_info); cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)SHADOW_MAP_DIM, (float)SHADOW_MAP_DIM, 0.f, 1.f)); cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), {SHADOW_MAP_DIM, SHADOW_MAP_DIM})); cmd.setCullMode(vk::CullModeFlagBits::eFront);
-            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.pipeline); cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.layout, 0, {*shadow_descriptor_sets[current_frame][i]}, {});
-            for(auto& obj : scene_objs) { if (obj.o_primitives.empty()) continue; cmd.bindVertexBuffers(0, {obj.geometry_buffer.buffer}, {0}); cmd.bindIndexBuffer(obj.geometry_buffer.buffer, obj.index_buffer_offset, vk::IndexType::eUint32); cmd.pushConstants<glm::mat4>(*shadow_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix); for(auto& primitive : obj.o_primitives) { cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0); } }
+            vk::RenderingAttachmentInfo depth_att{}; depth_att.imageView = *shadow_maps[i].image_view; 
+            depth_att.imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal; 
+            depth_att.loadOp = vk::AttachmentLoadOp::eClear; 
+            depth_att.storeOp = vk::AttachmentStoreOp::eStore; 
+            depth_att.clearValue = clear_depth;
+
+            vk::RenderingInfo shadow_info{}; 
+            shadow_info.renderArea.extent = vk::Extent2D{SHADOW_MAP_DIM, SHADOW_MAP_DIM}; 
+            shadow_info.layerCount = 6; shadow_info.viewMask = 0b00111111; 
+            shadow_info.pDepthAttachment = &depth_att;
+            cmd.beginRendering(shadow_info); 
+            cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)SHADOW_MAP_DIM, (float)SHADOW_MAP_DIM, 0.f, 1.f)); 
+            cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), {SHADOW_MAP_DIM, SHADOW_MAP_DIM})); 
+            cmd.setCullMode(vk::CullModeFlagBits::eFront);
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.pipeline); 
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.layout, 0, {*shadow_descriptor_sets[current_frame][i]}, {});
+            for(auto& obj : scene_objs) { 
+                if (obj.o_primitives.empty()) continue; 
+                cmd.bindVertexBuffers(0, {obj.geometry_buffer.buffer}, {0}); 
+                cmd.bindIndexBuffer(obj.geometry_buffer.buffer, obj.index_buffer_offset, vk::IndexType::eUint32); 
+                cmd.pushConstants<glm::mat4>(*shadow_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix); 
+                for(auto& primitive : obj.o_primitives) { 
+                    cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0); 
+                } 
+            }
             // if (use_rt_box && rt_box.o_pipeline && !rt_box.o_primitives.empty()) { cmd.bindVertexBuffers(0, {rt_box.geometry_buffer.buffer}, {0}); cmd.bindIndexBuffer(rt_box.geometry_buffer.buffer, rt_box.index_buffer_offset, vk::IndexType::eUint32); cmd.pushConstants<glm::mat4>(*shadow_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, rt_box.model_matrix); for(auto& primitive : rt_box.o_primitives) { cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0); } }
-            cmd.endRendering(); transitionImage(cmd, shadow_maps[i].image, vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageAspectFlagBits::eDepth);
+            cmd.endRendering(); 
+            transitionImage(cmd, shadow_maps[i].image, vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageAspectFlagBits::eDepth);
         }
 
         // --- B. TLAS ---
@@ -3442,11 +3489,41 @@ void Engine::captureSceneData() {
         // --- C. RT ---
         {
             auto align_up = [&](uint32_t size, uint32_t alignment) { return (size + alignment - 1) & ~(alignment - 1); };
-            cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline); cmd.bindDescriptorSets(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.layout, 0, {*rt_descriptor_sets[current_frame]}, {}); cmd.pushConstants<glm::mat4>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, torus.model_matrix);
-            uint32_t handle_size = rt_props.pipeline_props.shaderGroupHandleSize; uint32_t sbt_entry_size = align_up(handle_size, rt_props.pipeline_props.shaderGroupBaseAlignment); uint64_t sbt_address = getBufferDeviceAddress(sbt_buffer.buffer);
-            vk::StridedDeviceAddressRegionKHR rgen{sbt_address, sbt_entry_size, sbt_entry_size}; vk::StridedDeviceAddressRegionKHR rmiss{sbt_address + sbt_entry_size, sbt_entry_size, sbt_entry_size}; vk::StridedDeviceAddressRegionKHR rchit{sbt_address + 2 * sbt_entry_size, sbt_entry_size, sbt_entry_size}; vk::StridedDeviceAddressRegionKHR callable{};
-            vkCmdTraceRaysKHR(*cmd, reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rgen), reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rmiss), reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rchit), reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&callable), static_cast<uint32_t>(torus.vertices.size()), 1, 1);
-            vk::MemoryBarrier2 mem_barrier{}; mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR; mem_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite; mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eVertexShader; mem_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead; vk::DependencyInfo dep_info{}; dep_info.memoryBarrierCount = 1; dep_info.pMemoryBarriers = &mem_barrier; cmd.pipelineBarrier2(dep_info);
+            cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline); 
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.layout, 0, {*rt_descriptor_sets[current_frame]}, {});
+            
+            RayPushConstant p_const;
+            p_const.model = torus.model_matrix;
+            p_const.major_radius = torus.getMajorRadius();
+            p_const.minor_radius = torus.getMinorRadius();
+            p_const.height = torus.getHeight();
+
+            cmd.pushConstants<RayPushConstant>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, p_const);
+            uint32_t handle_size = rt_props.pipeline_props.shaderGroupHandleSize; 
+            uint32_t sbt_entry_size = align_up(handle_size, rt_props.pipeline_props.shaderGroupBaseAlignment); 
+            uint64_t sbt_address = getBufferDeviceAddress(sbt_buffer.buffer);
+            vk::StridedDeviceAddressRegionKHR rgen{sbt_address, sbt_entry_size, sbt_entry_size}; 
+            vk::StridedDeviceAddressRegionKHR rmiss{sbt_address + sbt_entry_size, sbt_entry_size, sbt_entry_size}; 
+            vk::StridedDeviceAddressRegionKHR rchit{sbt_address + 2 * sbt_entry_size, sbt_entry_size, sbt_entry_size}; 
+            vk::StridedDeviceAddressRegionKHR callable{};
+            // Calculate square dimensions
+            uint32_t total_rays = static_cast<uint32_t>(sampling_points.size());
+            
+            // We calculate a square side that covers at least 'total_rays'
+            // ceil(sqrt(total_rays))
+            uint32_t side = static_cast<uint32_t>(std::ceil(std::sqrt(total_rays)));
+            vkCmdTraceRaysKHR(*cmd, reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rgen), reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rmiss), 
+                        reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rchit), reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&callable), 
+                        side, side, 1);
+            vk::MemoryBarrier2 mem_barrier{};
+            mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR; 
+            mem_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite; 
+            mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eVertexShader; 
+            mem_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead; 
+            vk::DependencyInfo dep_info{}; 
+            dep_info.memoryBarrierCount = 1; 
+            dep_info.pMemoryBarriers = &mem_barrier; 
+            cmd.pipelineBarrier2(dep_info);
         }
 
         // --- GATHER TRANSPARENTS ---
@@ -3480,7 +3557,14 @@ void Engine::captureSceneData() {
             vk::RenderingInfo pc_info{}; pc_info.renderArea.extent = swapchain.extent; pc_info.layerCount = 1; pc_info.colorAttachmentCount = 1; pc_info.pColorAttachments = &color_att; pc_info.pDepthAttachment = &depth_att;
             cmd.beginRendering(pc_info); cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)swapchain.extent.width, (float)swapchain.extent.height, 0.f, 1.f)); cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapchain.extent));
             cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.pipeline); cmd.setCullMode(vk::CullModeFlagBits::eNone); cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.layout, 0, {*point_cloud_descriptor_sets[current_frame]}, {});
-            struct PC { glm::mat4 model; int mode; }; PC pc_data; pc_data.model = torus.model_matrix; pc_data.mode = 0; cmd.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data); cmd.draw(static_cast<uint32_t>(torus.vertices.size()), 1, 0, 0);
+            PC pc_data; 
+            pc_data.model = torus.model_matrix; 
+            pc_data.mode = 0; 
+            pc_data.major_radius = torus.getMajorRadius();
+            pc_data.minor_radius = torus.getMinorRadius();
+            pc_data.height = torus.getHeight();
+            cmd.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data); 
+            cmd.draw(static_cast<uint32_t>(torus.vertices.size()), 1, 0, 0);
             cmd.endRendering();
         }
         // --- F. OIT PASSES ---
@@ -3527,7 +3611,7 @@ void Engine::captureSceneData() {
         float beta = beta_dist(gen);
         
         std::cout << "Capturing pair " << i + 1 << "/" << NUM_CAPTURE_POSITIONS << "..." << std::endl;
-        camera.updateToroidalAngles(alpha, beta, torus.getRadius(), torus.getHeight());
+        camera.updateToroidalAngles(alpha, beta, torus.getMajorRadius(), torus.getHeight());
         updateUniformBuffer(current_frame); 
 
         // --- 1. RASTER CAPTURE ---

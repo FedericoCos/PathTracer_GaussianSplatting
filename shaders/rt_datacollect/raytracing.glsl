@@ -51,6 +51,10 @@ struct MeshInfo {
     uint _pad1;
 };
 
+struct RaySample {
+    vec2 uv; // we use u for major angle, v for minor angle
+};
+
 // Our output data structure
 struct HitData {
     vec3 hit_pos;

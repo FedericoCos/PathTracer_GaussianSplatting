@@ -12,6 +12,7 @@
 #include "torus.h"
 #include "gameobject.h"
 #include "p_object.h"
+#include "sampling.h"
 
 #include "vk_mem_alloc.h"
 
@@ -294,6 +295,8 @@ private:
 
         {GLFW_KEY_V, Action::CAPTURE_DATA},
 
+        {GLFW_KEY_B, Action::SAMPLING_METHOD},
+
     };
     std::unordered_set<int> pressed_keys;
 
@@ -323,6 +326,10 @@ private:
     AllocatedImage capture_resolve_image;
     bool raster = false;
     int image_captured_count = 0;
+    std::vector<RaySample> sampling_points;
+    AllocatedBuffer sample_data_buffer;
+    int num_rays = 1000000;
+    int current_sampling = 0;
 
     // --- Ray Tracing Function Pointers ---
     PFN_vkGetAccelerationStructureBuildSizesKHR vkGetAccelerationStructureBuildSizesKHR = nullptr;

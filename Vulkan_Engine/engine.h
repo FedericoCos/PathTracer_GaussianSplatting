@@ -16,7 +16,7 @@
 
 #include "vk_mem_alloc.h"
 
-const int MAX_SHADOW_LIGHTS = 10;
+const int MAX_SHADOW_LIGHTS = 16;
 const int MAX_BINDLESS_TEXTURES = 1024;
 const int NUM_CAPTURE_POSITIONS = 50;
 
@@ -291,6 +291,7 @@ private:
         {GLFW_KEY_Q, Action::TOGGLE_MANUAL},
 
         {GLFW_KEY_P, Action::POINTCLOUD},
+        {GLFW_KEY_O, Action::F_POINTCLOUD},
         {GLFW_KEY_T, Action::TOGGLE_PROJECTION},
 
         {GLFW_KEY_V, Action::CAPTURE_DATA},
@@ -319,6 +320,7 @@ private:
     bool use_emissive_lights_shadows = false;
 
     bool render_point_cloud = false;
+    bool render_final_pointcloud = true;
     bool show_projected_torus = false;
 
     // For data capturing
@@ -432,4 +434,7 @@ private:
     void cleanup();
 
     void updateTorusRTBuffer();
+
+    void updateImportanceSampling();
+    void readBuffer(vk::Buffer buffer, vk::DeviceSize size, void* dst_ptr);
 };

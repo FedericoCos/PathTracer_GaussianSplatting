@@ -10,6 +10,14 @@
     "use_rt_box": true,
     "rt_box_file": "resources/battle/rtbox.json",
     "panel_shadows_enabled": true,
+    "torus_settings": {
+        "major_radius": 16.0,
+        "minor_radius": 1.0,
+        "height": 8.0,
+        "major_segments": 500,
+        "minor_segments": 500,
+        "num_rays": 100000
+    },
 
     "ambient_light": [0.8, 0.8, 0.8, 0.2]
   },

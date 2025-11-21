@@ -747,6 +747,10 @@ void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action,
             if (action == GLFW_PRESS)
                 engine->render_point_cloud = !engine->render_point_cloud;
             break;
+        case Action::F_POINTCLOUD:
+            if (action == GLFW_PRESS)
+                engine->render_final_pointcloud = !engine->render_final_pointcloud;
+            break;
 
         case Action::TOGGLE_PROJECTION:
             if (action == GLFW_PRESS)
@@ -764,11 +768,17 @@ void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action,
             if (action == GLFW_PRESS){
                 engine->current_sampling = (engine->current_sampling + 1) % sampling_methods.size();
                 engine->logical_device.waitIdle();
-                vmaDestroyBuffer(engine->vma_allocator, engine->sample_data_buffer.buffer, engine->sample_data_buffer.allocation);
-                vmaDestroyBuffer(engine->vma_allocator, engine->hit_data_buffer.buffer, engine->hit_data_buffer.allocation);
-                engine->createRayTracingDataBuffers();
-                engine -> createRayTracingDescriptorSets();
-                engine -> createPointCloudDescriptorSets();
+
+                if(sampling_methods[engine->current_sampling] == SamplingMethod::IMP_COL || sampling_methods[engine->current_sampling] == SamplingMethod::IMP_HIT){
+                    engine->updateImportanceSampling();
+                }
+                else{
+                    vmaDestroyBuffer(engine->vma_allocator, engine->sample_data_buffer.buffer, engine->sample_data_buffer.allocation);
+                    vmaDestroyBuffer(engine->vma_allocator, engine->hit_data_buffer.buffer, engine->hit_data_buffer.allocation);
+                    engine->createRayTracingDataBuffers();
+                    engine -> createRayTracingDescriptorSets();
+                    engine -> createPointCloudDescriptorSets();
+                }
             }
             break;
     }
@@ -2405,8 +2415,10 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         pc_data.minor_radius = torus.getMinorRadius();
         pc_data.height = torus.getHeight();
 
-        cmd.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data);
-        cmd.draw(static_cast<uint32_t>(torus.vertices.size()), 1, 0, 0);
+        if(render_final_pointcloud){
+            cmd.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data);
+            cmd.draw(static_cast<uint32_t>(sampling_points.size()), 1, 0, 0);
+        }
 
         // --- DRAW 2: The Projected Torus (Painted Surface) ---
         // Only draw this if T is toggled ON
@@ -2414,7 +2426,7 @@ void Engine::recordCommandBuffer(uint32_t image_index){
             pc_data.mode = 1; // 1 = Project onto Torus
             
             cmd.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data);
-            cmd.draw(static_cast<uint32_t>(torus.vertices.size()), 1, 0, 0);
+            cmd.draw(static_cast<uint32_t>(sampling_points.size()), 1, 0, 0);
         }
 
         cmd.endRendering();
@@ -2956,6 +2968,18 @@ void Engine::createRayTracingDataBuffers()
             break;
         case SamplingMethod::STRATIFIED:
             Sampling::generateStratifiedSamples(sampling_points, num_rays);
+            break;
+        case SamplingMethod::RANDOM:
+            Sampling::generateRandomSamples(sampling_points, num_rays);
+            break;
+        case SamplingMethod::UNIFORM:
+            Sampling::generateUniformSamples(sampling_points, num_rays);
+            break;
+        case SamplingMethod::IMP_COL:
+        case SamplingMethod::IMP_HIT:
+            // Fallback to Halton for the FIRST frame of importance sampling
+            // (Since we have no previous data yet)
+            Sampling::generateHaltonSamples(sampling_points, num_rays);
             break;
     }
 
@@ -3564,7 +3588,7 @@ void Engine::captureSceneData() {
             pc_data.minor_radius = torus.getMinorRadius();
             pc_data.height = torus.getHeight();
             cmd.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data); 
-            cmd.draw(static_cast<uint32_t>(torus.vertices.size()), 1, 0, 0);
+            cmd.draw(static_cast<uint32_t>(sampling_points.size()), 1, 0, 0);
             cmd.endRendering();
         }
         // --- F. OIT PASSES ---
@@ -3698,4 +3722,72 @@ void Engine::captureSceneData() {
     // 5. Restore
     is_capturing = false;
     std::cout << "--- Capture Complete ---" << std::endl;
+}
+
+// 1. Helper to read any buffer to CPU
+void Engine::readBuffer(vk::Buffer buffer, vk::DeviceSize size, void* dst_ptr) {
+    AllocatedBuffer staging_buffer;
+    createBuffer(vma_allocator, size, vk::BufferUsageFlagBits::eTransferDst,
+                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                 staging_buffer);
+
+    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+    vk::BufferCopy copy_region(0, 0, size);
+    cmd.copyBuffer(buffer, staging_buffer.buffer, copy_region);
+    endSingleTimeCommands(cmd, graphics_queue);
+
+    void* data;
+    vmaMapMemory(vma_allocator, staging_buffer.allocation, &data);
+    memcpy(dst_ptr, data, (size_t)size);
+    vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
+}
+
+// 2. The main Importance Sampling Logic
+void Engine::updateImportanceSampling() {
+    std::cout << "Calculating Importance Samples..." << std::endl;
+
+    // A. Read back Hit Data
+    size_t num_hits = sampling_points.size();
+    vk::DeviceSize buffer_size = sizeof(HitDataGPU) * num_hits;
+    std::vector<HitDataGPU> raw_hits(num_hits);
+    readBuffer(hit_data_buffer.buffer, buffer_size, raw_hits.data());
+
+    SamplingMethod method = sampling_methods[current_sampling];
+
+    if (method == SamplingMethod::IMP_COL) {
+        // Extract Colors
+        std::vector<glm::vec4> prev_colors;
+        prev_colors.reserve(num_hits);
+        for(const auto& hit : raw_hits) {
+            prev_colors.push_back(glm::vec4(hit.r, hit.g, hit.b, hit.a));
+        }
+        // Generate based on Color Gradients
+        Sampling::generateImportanceSamples(sampling_points, num_rays, sampling_points, prev_colors);
+    } 
+    else if (method == SamplingMethod::IMP_HIT) {
+        // Extract Flags
+        std::vector<float> prev_flags;
+        prev_flags.reserve(num_hits);
+        for(const auto& hit : raw_hits) {
+            prev_flags.push_back(hit.flag);
+        }
+        // Generate based on Hit/Miss
+        Sampling::generateHitBasedImportanceSamples(sampling_points, num_rays, sampling_points, prev_flags);
+    }
+
+    // D. Upload NEW samples to GPU
+    vk::DeviceSize sample_size = sizeof(RaySample) * sampling_points.size();
+    AllocatedBuffer staging_buffer;
+    createBuffer(vma_allocator, sample_size, vk::BufferUsageFlagBits::eTransferSrc,
+                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, staging_buffer);
+    
+    void* data;
+    vmaMapMemory(vma_allocator, staging_buffer.allocation, &data);
+    memcpy(data, sampling_points.data(), (size_t)sample_size);
+    vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
+
+    copyBuffer(staging_buffer.buffer, sample_data_buffer.buffer, sample_size,
+               command_pool_graphics, &logical_device, graphics_queue);
+               
+    // Staging buffer is destroyed automatically
 }

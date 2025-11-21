@@ -337,6 +337,7 @@ enum class Action{
     TOGGLE_MANUAL,
 
     POINTCLOUD,
+    F_POINTCLOUD,
     TOGGLE_PROJECTION,
 
     CAPTURE_DATA,
@@ -501,13 +502,28 @@ struct PC {
 
 enum class SamplingMethod {
     HALTON,
-    STRATIFIED
+    STRATIFIED,
+    IMP_COL,
+    RANDOM,
+    UNIFORM,
+    IMP_HIT
 };
 
-const std::array<SamplingMethod, 2> sampling_methods = {
+const std::array<SamplingMethod, 7> sampling_methods = {
+    SamplingMethod::RANDOM,
+    SamplingMethod::UNIFORM,
+    SamplingMethod::STRATIFIED,
     SamplingMethod::HALTON,
-    SamplingMethod::STRATIFIED
+    SamplingMethod::IMP_COL,
+    SamplingMethod::HALTON,
+    SamplingMethod::IMP_HIT,
 };
+
+struct HitDataGPU { // Matches shader struct layout
+        float px, py, pz;
+        float flag;
+        float r, g, b, a;
+    };
 
 // ------ Helper Functions
 

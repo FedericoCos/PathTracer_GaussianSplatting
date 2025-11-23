@@ -11,7 +11,7 @@
     "rt_box_file": "resources/a_library/rtbox.json",
     "panel_shadows_enabled": false,
     "torus_settings": {
-        "major_radius": 16.0,
+        "major_radius": 13.5,
         "minor_radius": 1.0,
         "height": 8.0,
         "major_segments": 500,

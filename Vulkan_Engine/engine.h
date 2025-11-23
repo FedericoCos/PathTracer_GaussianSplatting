@@ -332,6 +332,7 @@ private:
     AllocatedBuffer sample_data_buffer;
     int num_rays = 1000000;
     int current_sampling = 0;
+    bool invalid_sampling = true;
 
     // --- Ray Tracing Function Pointers ---
     PFN_vkGetAccelerationStructureBuildSizesKHR vkGetAccelerationStructureBuildSizesKHR = nullptr;

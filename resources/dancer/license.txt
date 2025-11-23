@@ -1,0 +1,8 @@
+Model Information:
+* title:	Figure of a Dancer
+* source:	https://sketchfab.com/3d-models/figure-of-a-dancer-63212acff8474095ba2626d9366df852
+* author:	The Smithsonian Institution (https://sketchfab.com/Smithsonian)
+
+Model License:
+* license type:	CC0-1.0 (http://creativecommons.org/publicdomain/zero/1.0/)
+* requirements:	Credit is not mandatory. Commercial use is allowed.

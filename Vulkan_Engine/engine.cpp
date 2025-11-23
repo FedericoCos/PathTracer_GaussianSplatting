@@ -1318,9 +1318,11 @@ void Engine::loadScene(const std::string &scene_path)
 
         // --- 4. Load Emissive Lights (if enabled) ---
         if (use_emissive_lights) {
-            auto new_lights = new_object.createEmissiveLights(emissive_multiplier);
-            // Append new lights to our master list
-            emissive_lights.insert(emissive_lights.end(), new_lights.begin(), new_lights.end());
+            if(!obj_def.contains("use_emissive_lights")){
+                auto new_lights = new_object.createEmissiveLights(emissive_multiplier);
+                // Append new lights to our master list
+                emissive_lights.insert(emissive_lights.end(), new_lights.begin(), new_lights.end());
+            }
         }
 
         if (this->use_rt_box && !rtbox_path.empty()) {
@@ -2693,7 +2695,10 @@ void Engine::updateUniformBuffer(uint32_t current_image)
     // --- 1. Main UBO ---
     ubo.view = camera.getViewMatrix();
     ubo.proj = camera.getProjectionMatrix();
-    ubo.camera_pos = camera.getCurrentState().f_camera.position;
+    if(camera.getCurrentState().is_toroidal)
+        ubo.camera_pos = camera.getCurrentState().t_camera.position;
+    else
+        ubo.camera_pos = camera.getCurrentState().f_camera.position;
 
     // --- RESET EVERYTHING ---
     ubo.curr_num_pointlights = 0;
@@ -2965,6 +2970,9 @@ void Engine::createRayTracingDataBuffers()
     switch(sampling_methods[current_sampling]){
         case SamplingMethod::HALTON:
             Sampling::generateHaltonSamples(sampling_points, num_rays);
+            break;
+        case SamplingMethod::LHS:
+            Sampling::generateLatinHypercubeSamples(sampling_points, num_rays);
             break;
         case SamplingMethod::STRATIFIED:
             Sampling::generateStratifiedSamples(sampling_points, num_rays);
@@ -3378,8 +3386,6 @@ void Engine::updateTorusRTBuffer()
     vk::DeviceSize vertex_data_size = sizeof(Vertex) * torus.vertices.size();
 
     // Check if the existing buffer is large enough.
-    // Since your input logic only changes radius/height (not segment count), 
-    // the size remains constant, so we can reuse the buffer.
     if (torus_vertex_data_buffer.buffer == VK_NULL_HANDLE) {
         return;
     }

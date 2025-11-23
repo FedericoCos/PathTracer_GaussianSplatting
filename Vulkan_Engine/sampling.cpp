@@ -26,6 +26,7 @@ void Sampling::generateHaltonSamples(std::vector<RaySample> &sampling_points, in
     }
 
     std::cout << "Generated " << sampling_points.size() << " Halton samples." << std::endl;
+    sortSamples(sampling_points);
 }
 
 void Sampling::generateStratifiedSamples(std::vector<RaySample> &sampling_points, int &num_rays)
@@ -53,10 +54,8 @@ void Sampling::generateStratifiedSamples(std::vector<RaySample> &sampling_points
         sampling_points[i].uv = glm::vec2(u, v);
     }
 
-    // Shuffle to prevent "half-rendered scene" artifacts if GPU dispatch is clipped
-    // std::shuffle(sampling_points.begin(), sampling_points.end(), gen);
-
     std::cout << "Generated " << num_rays << " Stratified samples." << std::endl;
+    sortSamples(sampling_points);
 }
 
 void Sampling::generateImportanceSamples(
@@ -156,6 +155,7 @@ void Sampling::generateImportanceSamples(
     }
 
     std::cout << "Generated " << num_rays << " Importance samples based on previous frame." << std::endl;
+    sortSamples(sampling_points);
 }
 
 // --- 1. COMPLETELY RANDOM ---
@@ -173,6 +173,7 @@ void Sampling::generateRandomSamples(std::vector<RaySample> &sampling_points, in
         sampling_points[i].uv = glm::vec2(dis(gen), dis(gen));
     }
     std::cout << "Generated " << num_rays << " Random samples." << std::endl;
+    sortSamples(sampling_points);
 }
 
 void Sampling::generateUniformSamples(std::vector<RaySample> &sampling_points, int &num_rays)
@@ -197,6 +198,7 @@ void Sampling::generateUniformSamples(std::vector<RaySample> &sampling_points, i
     }
 
     std::cout << "Generated " << num_rays << " Uniform samples (" << cols << "x" << rows << " grid)." << std::endl;
+    sortSamples(sampling_points);
 }
 
 // --- 3. HIT-BASED IMPORTANCE SAMPLING ---
@@ -282,4 +284,76 @@ void Sampling::generateHitBasedImportanceSamples(
     }
 
     std::cout << "Generated " << num_rays << " Hit-Based Importance samples." << std::endl;
+    sortSamples(sampling_points);
+}
+
+void Sampling::generateLatinHypercubeSamples(std::vector<RaySample> &sampling_points, int &num_rays)
+{
+    sampling_points.clear();
+    sampling_points.resize(num_rays);
+
+    // 1. Create bins for U and V axes
+    // We need indices 0 to N-1 for both dimensions
+    std::vector<int> u_indices(num_rays);
+    std::vector<int> v_indices(num_rays);
+
+    // Fill with 0, 1, 2, ..., num_rays - 1
+    std::iota(u_indices.begin(), u_indices.end(), 0);
+    std::iota(v_indices.begin(), v_indices.end(), 0);
+
+    // 2. Shuffle them independently
+    // This ensures that for any index i, u_indices[i] and v_indices[i] 
+    // are random pairings, but globally unique in their respective dimensions.
+    std::random_device rd;
+    std::mt19937 gen(rd());
+
+    std::shuffle(u_indices.begin(), u_indices.end(), gen);
+    std::shuffle(v_indices.begin(), v_indices.end(), gen);
+
+    std::uniform_real_distribution<float> dis(0.0f, 1.0f);
+
+    // 3. Generate Samples
+    for(int i = 0; i < num_rays; i++){
+        // LHS Logic:
+        // Bin Index + Random Jitter / Total Bins
+        float u = (u_indices[i] + dis(gen)) / static_cast<float>(num_rays);
+        float v = (v_indices[i] + dis(gen)) / static_cast<float>(num_rays);
+
+        sampling_points[i].uv = glm::vec2(u, v);
+    }
+
+    std::cout << "Generated " << num_rays << " Latin Hypercube samples. Sorting..." << std::endl;
+    
+    // 4. Sort for GPU Coherence (Morton Code)
+    // Important: LHS is naturally very scattered. Sorting is mandatory 
+    // to maintain framerate.
+    sortSamples(sampling_points);
+}
+
+uint32_t expandBits(uint16_t v)
+{
+    uint32_t x = v;
+    x = (x | (x << 8)) & 0x00FF00FF;
+    x = (x | (x << 4)) & 0x0F0F0F0F;
+    x = (x | (x << 2)) & 0x33333333;
+    x = (x | (x << 1)) & 0x55555555;
+    return x;
+}
+
+// Helper: Calculates 30-bit Morton code for 2D coordinates in [0,1]
+uint32_t morton2D(float u, float v)
+{
+    // Quantize [0,1] to [0, 32767] (15 bits)
+    // We effectively create a 32k x 32k grid for sorting purposes
+    float x = std::clamp(u * 32768.0f, 0.0f, 32767.0f);
+    float y = std::clamp(v * 32768.0f, 0.0f, 32767.0f);
+    
+    return (expandBits((uint16_t)x) | (expandBits((uint16_t)y) << 1));
+}
+
+void Sampling::sortSamples(std::vector<RaySample> &samples)
+{
+    std::sort(samples.begin(), samples.end(), [](const RaySample& a, const RaySample& b) {
+        return morton2D(a.uv.x, a.uv.y) < morton2D(b.uv.x, b.uv.y);
+    });
 }

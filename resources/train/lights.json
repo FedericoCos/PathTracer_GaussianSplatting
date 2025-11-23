@@ -1,219 +1,432 @@
 [
-  {
-    "type": "pointlight",
-    "position": [10.5, 29, -13],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-  {
-    "shadow": true,
-    "type": "pointlight",
-    "position": [10.5, 29, -25],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-  {
-    "type": "pointlight",
-    "position": [10.5, 29, -19],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-
-
-  {
-    "type": "pointlight",
-    "position": [10.5, 29, -33],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-  {
-    "shadow": true,
-    "type": "pointlight",
-    "position": [10.5, 29, -45],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-  {
-    "type": "pointlight",
-    "position": [10.5, 29, -39],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-
-
-  {
-    "type": "pointlight",
-    "position": [10.5, 29, -53],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-  {
-    "shadow": true,
-    "type": "pointlight",
-    "position": [10.5, 29, -65],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-  {
-    "type": "pointlight",
-    "position": [10.5, 29, -59],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-
-
-  {
-    "type": "pointlight",
-    "position": [10.5, 29, -73],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-  {
-    "shadow": true,
-    "type": "pointlight",
-    "position": [10.5, 29, -85],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-  {
-    "type": "pointlight",
-    "position": [10.5, 29, -79],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-
-
-  {
-    "type": "pointlight",
-    "position": [10.5, 29, -93],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-  {
-    "shadow": true,
-    "type": "pointlight",
-    "position": [10.5, 29, -105],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-  {
-    "type": "pointlight",
-    "position": [10.5, 29, -99],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-
-
-
-
-
-
-
-
-
-
-
-  {
-    "type": "pointlight",
-    "position": [-10.5, 29, -13],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-  {
-    "shadow": true,
-    "type": "pointlight",
-    "position": [-10.5, 29, -25],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-  {
-    "type": "pointlight",
-    "position": [-10.5, 29, -19],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-
-
-  {
-    "type": "pointlight",
-    "position": [-10.5, 29, -33],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-  {
-    "shadow": true,
-    "type": "pointlight",
-    "position": [-10.5, 29, -45],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-  {
-    "type": "pointlight",
-    "position": [-10.5, 29, -39],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-
-
-  {
-    "type": "pointlight",
-    "position": [-10.5, 29, -53],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-  {
-    "shadow": true,
-    "type": "pointlight",
-    "position": [-10.5, 29, -65],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-  {
-    "type": "pointlight",
-    "position": [-10.5, 29, -59],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-
-
-  {
-    "type": "pointlight",
-    "position": [-10.5, 29, -73],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-  {
-    "shadow": true,
-    "type": "pointlight",
-    "position": [-10.5, 29, -85],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-  {
-    "type": "pointlight",
-    "position": [-10.5, 29, -79],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-
-
-  {
-    "type": "pointlight",
-    "position": [-10.5, 29, -93],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-  {
-    "shadow": true,
-    "type": "pointlight",
-    "position": [-10.5, 29, -105],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  },
-  {
-    "type": "pointlight",
-    "position": [-10.5, 29, -99],
-    "color": [1.0, 0.7, 0.7],
-    "intensity": 50.0
-  }
+    {
+        "type": "pointlight",
+        "position": [
+            10.5,
+            29,
+            47
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "shadow": true,
+        "type": "pointlight",
+        "position": [
+            10.5,
+            29,
+            35
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "type": "pointlight",
+        "position": [
+            10.5,
+            29,
+            41
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "type": "pointlight",
+        "position": [
+            10.5,
+            29,
+            27
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "shadow": true,
+        "type": "pointlight",
+        "position": [
+            10.5,
+            29,
+            15
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "type": "pointlight",
+        "position": [
+            10.5,
+            29,
+            21
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "type": "pointlight",
+        "position": [
+            10.5,
+            29,
+            7
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "shadow": true,
+        "type": "pointlight",
+        "position": [
+            10.5,
+            29,
+            -5
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "type": "pointlight",
+        "position": [
+            10.5,
+            29,
+            1
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "type": "pointlight",
+        "position": [
+            10.5,
+            29,
+            -13
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "shadow": true,
+        "type": "pointlight",
+        "position": [
+            10.5,
+            29,
+            -25
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "type": "pointlight",
+        "position": [
+            10.5,
+            29,
+            -19
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "type": "pointlight",
+        "position": [
+            10.5,
+            29,
+            -33
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "shadow": true,
+        "type": "pointlight",
+        "position": [
+            10.5,
+            29,
+            -45
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "type": "pointlight",
+        "position": [
+            10.5,
+            29,
+            -39
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "type": "pointlight",
+        "position": [
+            -10.5,
+            29,
+            47
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "shadow": true,
+        "type": "pointlight",
+        "position": [
+            -10.5,
+            29,
+            35
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "type": "pointlight",
+        "position": [
+            -10.5,
+            29,
+            41
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "type": "pointlight",
+        "position": [
+            -10.5,
+            29,
+            27
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "shadow": true,
+        "type": "pointlight",
+        "position": [
+            -10.5,
+            29,
+            15
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "type": "pointlight",
+        "position": [
+            -10.5,
+            29,
+            21
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "type": "pointlight",
+        "position": [
+            -10.5,
+            29,
+            7
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "shadow": true,
+        "type": "pointlight",
+        "position": [
+            -10.5,
+            29,
+            -5
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "type": "pointlight",
+        "position": [
+            -10.5,
+            29,
+            1
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "type": "pointlight",
+        "position": [
+            -10.5,
+            29,
+            -13
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "shadow": true,
+        "type": "pointlight",
+        "position": [
+            -10.5,
+            29,
+            -25
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "type": "pointlight",
+        "position": [
+            -10.5,
+            29,
+            -19
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "type": "pointlight",
+        "position": [
+            -10.5,
+            29,
+            -33
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "shadow": true,
+        "type": "pointlight",
+        "position": [
+            -10.5,
+            29,
+            -45
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    },
+    {
+        "type": "pointlight",
+        "position": [
+            -10.5,
+            29,
+            -39
+        ],
+        "color": [
+            1.0,
+            0.7,
+            0.7
+        ],
+        "intensity": 50.0
+    }
 ]

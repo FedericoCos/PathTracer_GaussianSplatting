@@ -1,0 +1,11 @@
+Model Information:
+* title:	Amethyst Library Diorama
+* source:	https://sketchfab.com/3d-models/amethyst-library-diorama-e872eb40fac04d5eb1e7d2ecfc5ae931
+* author:	harryr_447 (https://sketchfab.com/harryr_447)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Amethyst Library Diorama" (https://sketchfab.com/3d-models/amethyst-library-diorama-e872eb40fac04d5eb1e7d2ecfc5ae931) by harryr_447 (https://sketchfab.com/harryr_447) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

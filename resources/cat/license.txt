@@ -1,0 +1,11 @@
+Model Information:
+* title:	Cat with jet pack
+* source:	https://sketchfab.com/3d-models/cat-with-jet-pack-9afc8fd58c0d4f7d827f2007d6ac1e80
+* author:	Muru (https://sketchfab.com/muru)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Cat with jet pack" (https://sketchfab.com/3d-models/cat-with-jet-pack-9afc8fd58c0d4f7d827f2007d6ac1e80) by Muru (https://sketchfab.com/muru) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

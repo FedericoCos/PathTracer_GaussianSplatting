@@ -28,4 +28,8 @@ namespace Sampling{
         const std::vector<float>& prev_flags, // <--- Uses flags (1.0 or -1.0) instead of color
         int grid_resolution = 256
     );
+
+    void generateLatinHypercubeSamples(std::vector<RaySample> &sampling_points, int &num_rays);
+
+    void sortSamples(std::vector<RaySample> &samples);
 };

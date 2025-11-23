@@ -394,7 +394,7 @@ struct FreeCamera{
 };
 
 struct ToroidalCamera{
-    glm::vec3 postion;
+    glm::vec3 position;
     float alpha = 0.f;
     float beta = 0.f;
     float alpha_speed = .2f;
@@ -506,13 +506,15 @@ enum class SamplingMethod {
     IMP_COL,
     RANDOM,
     UNIFORM,
-    IMP_HIT
+    IMP_HIT,
+    LHS
 };
 
-const std::array<SamplingMethod, 7> sampling_methods = {
+const std::array<SamplingMethod, 8> sampling_methods = {
     SamplingMethod::RANDOM,
     SamplingMethod::UNIFORM,
     SamplingMethod::STRATIFIED,
+    SamplingMethod::LHS,
     SamplingMethod::HALTON,
     SamplingMethod::IMP_COL,
     SamplingMethod::HALTON,

@@ -4,56 +4,56 @@
     "type": "pointlight",
     "position": [2, 8, -7.5],
     "color": [1.0, 0.88, 0.52],
-    "intensity": 5.1
+    "intensity": 10.11
   },
   {
     "shadow": true,
     "type": "pointlight",
     "position": [3.7, 8, -7.5],
     "color": [1.0, 0.88, 0.52],
-    "intensity": 5.1
+    "intensity": 10.11
   },
   {
     "shadow": true,
     "type": "pointlight",
     "position": [5.8, 8, -7.5],
     "color": [1.0, 0.88, 0.52],
-    "intensity": 5.1
+    "intensity": 10.11
   },
   {
     "shadow": true,
     "type": "pointlight",
     "position": [6.5, 8, -6.6],
     "color": [1.0, 0.88, 0.52],
-    "intensity": 5.1
+    "intensity": 10.11
   },
   {
     "shadow": true,
     "type": "pointlight",
     "position": [6.5, 8, -2.9],
     "color": [1.0, 0.88, 0.52],
-    "intensity": 5.1
+    "intensity": 10.11
   },
   {
     "shadow": true,
     "type": "pointlight",
     "position": [6.5, 8, -1.2],
     "color": [1.0, 0.88, 0.52],
-    "intensity": 5.1
+    "intensity": 10.11
   },
   {
     "shadow": true,
     "type": "pointlight",
     "position": [6.5, 8, 2.5],
     "color": [1.0, 0.88, 0.52],
-    "intensity": 5.1
+    "intensity": 10.11
   },
   {
     "shadow": true,
     "type": "pointlight",
     "position": [6.5, 8, 4.25],
     "color": [1.0, 0.88, 0.52],
-    "intensity": 5.1
+    "intensity": 10.11
   },
 
   {
@@ -61,55 +61,55 @@
     "type": "pointlight",
     "position": [-1.75, 8, -7.5],
     "color": [1.0, 0.88, 0.52],
-    "intensity": 5.1
+    "intensity": 10.11
   },
   {
     "shadow": true,
     "type": "pointlight",
     "position": [-3.45, 8, -7.5],
     "color": [1.0, 0.88, 0.52],
-    "intensity": 5.1
+    "intensity": 10.11
   },
   {
     "shadow": true,
     "type": "pointlight",
     "position": [-5.55, 8, -7.5],
     "color": [1.0, 0.88, 0.52],
-    "intensity": 5.1
+    "intensity": 10.11
   },
   {
     "shadow": true,
     "type": "pointlight",
     "position": [-6.25, 8, -6.6],
     "color": [1.0, 0.88, 0.52],
-    "intensity": 5.1
+    "intensity": 10.11
   },
   {
     "shadow": true,
     "type": "pointlight",
     "position": [-6.25, 8, -2.9],
     "color": [1.0, 0.88, 0.52],
-    "intensity": 5.1
+    "intensity": 10.11
   },
   {
     "shadow": true,
     "type": "pointlight",
     "position": [-6.25, 8, -1.2],
     "color": [1.0, 0.88, 0.52],
-    "intensity": 5.1
+    "intensity": 10.11
   },
   {
     "shadow": true,
     "type": "pointlight",
     "position": [-6.25, 8, 2.5],
     "color": [1.0, 0.88, 0.52],
-    "intensity": 5.1
+    "intensity": 10.11
   },
   {
     "shadow": true,
     "type": "pointlight",
     "position": [-6.25, 8, 4.25],
     "color": [1.0, 0.88, 0.52],
-    "intensity": 5.1
+    "intensity": 10.11
   }
 ]

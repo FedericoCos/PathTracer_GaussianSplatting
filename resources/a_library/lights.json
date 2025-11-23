@@ -1,0 +1,34 @@
+[
+  {
+    "shadow": true,
+    "type": "pointlight",
+    "position": [10.5, 7.3, 2.5],
+    "color": [0.56, 0.20, 0.56],
+    "intensity": 10
+  },
+  {
+    "type": "pointlight",
+    "position": [35, 13, 3],
+    "color": [0.56, 0.20, 0.56],
+    "intensity": 100
+  },
+  {
+    "shadow": true,
+    "type": "pointlight",
+    "position": [3.4, 25, 2.6],
+    "color": [0.56, 0.20, 0.56],
+    "intensity": 550
+  },
+  {
+    "type": "pointlight",
+    "position": [19, 13, 19],
+    "color": [0.56, 0.20, 0.56],
+    "intensity": 100
+  },
+  {
+    "type": "pointlight",
+    "position": [19, 13, -13.5],
+    "color": [0.56, 0.20, 0.56],
+    "intensity": 100
+  }
+]

@@ -1,0 +1,11 @@
+Model Information:
+* title:	Chappie - Blender Rig Free
+* source:	https://sketchfab.com/3d-models/chappie-blender-rig-free-fc2424ff8ab840ac907d38dc073d1327
+* author:	benjamin514 (https://sketchfab.com/benjamin514)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Chappie - Blender Rig Free" (https://sketchfab.com/3d-models/chappie-blender-rig-free-fc2424ff8ab840ac907d38dc073d1327) by benjamin514 (https://sketchfab.com/benjamin514) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

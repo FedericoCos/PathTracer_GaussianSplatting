@@ -3,7 +3,7 @@
         "type": "pointlight",
         "position": [
             10.5,
-            29,
+            28,
             47
         ],
         "color": [
@@ -18,7 +18,7 @@
         "type": "pointlight",
         "position": [
             10.5,
-            29,
+            28,
             35
         ],
         "color": [
@@ -32,7 +32,7 @@
         "type": "pointlight",
         "position": [
             10.5,
-            29,
+            28,
             41
         ],
         "color": [
@@ -46,7 +46,7 @@
         "type": "pointlight",
         "position": [
             10.5,
-            29,
+            28,
             27
         ],
         "color": [
@@ -61,7 +61,7 @@
         "type": "pointlight",
         "position": [
             10.5,
-            29,
+            28,
             15
         ],
         "color": [
@@ -75,7 +75,7 @@
         "type": "pointlight",
         "position": [
             10.5,
-            29,
+            28,
             21
         ],
         "color": [
@@ -89,7 +89,7 @@
         "type": "pointlight",
         "position": [
             10.5,
-            29,
+            28,
             7
         ],
         "color": [
@@ -104,7 +104,7 @@
         "type": "pointlight",
         "position": [
             10.5,
-            29,
+            28,
             -5
         ],
         "color": [
@@ -118,7 +118,7 @@
         "type": "pointlight",
         "position": [
             10.5,
-            29,
+            28,
             1
         ],
         "color": [
@@ -132,7 +132,7 @@
         "type": "pointlight",
         "position": [
             10.5,
-            29,
+            28,
             -13
         ],
         "color": [
@@ -147,7 +147,7 @@
         "type": "pointlight",
         "position": [
             10.5,
-            29,
+            28,
             -25
         ],
         "color": [
@@ -161,7 +161,7 @@
         "type": "pointlight",
         "position": [
             10.5,
-            29,
+            28,
             -19
         ],
         "color": [
@@ -175,7 +175,7 @@
         "type": "pointlight",
         "position": [
             10.5,
-            29,
+            28,
             -33
         ],
         "color": [
@@ -190,7 +190,7 @@
         "type": "pointlight",
         "position": [
             10.5,
-            29,
+            28,
             -45
         ],
         "color": [
@@ -204,7 +204,7 @@
         "type": "pointlight",
         "position": [
             10.5,
-            29,
+            28,
             -39
         ],
         "color": [
@@ -218,7 +218,7 @@
         "type": "pointlight",
         "position": [
             -10.5,
-            29,
+            28,
             47
         ],
         "color": [
@@ -233,7 +233,7 @@
         "type": "pointlight",
         "position": [
             -10.5,
-            29,
+            28,
             35
         ],
         "color": [
@@ -247,7 +247,7 @@
         "type": "pointlight",
         "position": [
             -10.5,
-            29,
+            28,
             41
         ],
         "color": [
@@ -261,7 +261,7 @@
         "type": "pointlight",
         "position": [
             -10.5,
-            29,
+            28,
             27
         ],
         "color": [
@@ -276,7 +276,7 @@
         "type": "pointlight",
         "position": [
             -10.5,
-            29,
+            28,
             15
         ],
         "color": [
@@ -290,7 +290,7 @@
         "type": "pointlight",
         "position": [
             -10.5,
-            29,
+            28,
             21
         ],
         "color": [
@@ -304,7 +304,7 @@
         "type": "pointlight",
         "position": [
             -10.5,
-            29,
+            28,
             7
         ],
         "color": [
@@ -319,7 +319,7 @@
         "type": "pointlight",
         "position": [
             -10.5,
-            29,
+            28,
             -5
         ],
         "color": [
@@ -333,7 +333,7 @@
         "type": "pointlight",
         "position": [
             -10.5,
-            29,
+            28,
             1
         ],
         "color": [
@@ -347,7 +347,7 @@
         "type": "pointlight",
         "position": [
             -10.5,
-            29,
+            28,
             -13
         ],
         "color": [
@@ -362,7 +362,7 @@
         "type": "pointlight",
         "position": [
             -10.5,
-            29,
+            28,
             -25
         ],
         "color": [
@@ -376,7 +376,7 @@
         "type": "pointlight",
         "position": [
             -10.5,
-            29,
+            28,
             -19
         ],
         "color": [
@@ -390,7 +390,7 @@
         "type": "pointlight",
         "position": [
             -10.5,
-            29,
+            28,
             -33
         ],
         "color": [
@@ -405,7 +405,7 @@
         "type": "pointlight",
         "position": [
             -10.5,
-            29,
+            28,
             -45
         ],
         "color": [
@@ -419,7 +419,7 @@
         "type": "pointlight",
         "position": [
             -10.5,
-            29,
+            28,
             -39
         ],
         "color": [

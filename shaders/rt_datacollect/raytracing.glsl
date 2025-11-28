@@ -59,25 +59,30 @@ struct HitData {
     float padding;
 };
 
-// --- 4. PAYLOADS ---
+// --- 4. PAYLOADS (THE FIX) ---
 struct RayPayload {
+    // A. Lighting Result
+    vec3 color;
+    
+    // B. Next Ray State (For Iterative Loop)
+    vec3 next_ray_origin;
+    vec3 next_ray_dir;
+    float hit_flag; // -1=Miss, 1=Stop, 2=Bounce
+    vec3 weight;    // Color attenuation for next bounce
+    
+    // C. Geometry Capture (For Point Cloud)
     vec3 hit_pos;
     vec3 normal;
-    vec3 color;      
-    float hit_flag;  
-    uint depth;      
 };
 
 struct ShadowPayload {
     bool isHit;
 };
 
-// --- 5. BINDINGS (GUARDED) ---
-// Only visible if RAY_TRACING is defined
+// --- 5. BINDINGS ---
 #ifdef RAY_TRACING
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
-// Binding 1 & 2 are usually local to RayGen
 layout(set = 0, binding = 3, scalar) buffer readonly AllMaterialsBuffer { MaterialData materials[]; } all_materials;
 layout(set = 0, binding = 4) uniform UniformBufferObject {
     mat4 view;
@@ -95,8 +100,9 @@ layout(set = 0, binding = 5, scalar) buffer readonly AllVertices { InputVertex v
 layout(set = 0, binding = 6, scalar) buffer readonly AllIndices { uint i[]; } all_indices;
 layout(set = 0, binding = 7, scalar) buffer readonly AllMeshInfo { MeshInfo info[]; } all_mesh_info;
 
-// SWAPPED BINDINGS (From previous fix)
+// Binding 9: Output Image
 layout(set = 0, binding = 9, rgba8) uniform image2D rt_output_image;
+// Binding 10: Textures
 layout(set = 0, binding = 10) uniform sampler2D global_textures[];
 
 #endif

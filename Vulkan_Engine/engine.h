@@ -16,9 +16,9 @@
 
 #include "vk_mem_alloc.h"
 
-const int MAX_SHADOW_LIGHTS = 16;
+const int MAX_SHADOW_LIGHTS = 40;
 const int MAX_BINDLESS_TEXTURES = 1024;
-const int NUM_CAPTURE_POSITIONS = 50;
+const int NUM_CAPTURE_POSITIONS = 168;
 
 
 
@@ -58,9 +58,9 @@ public:
     }
 
 
-    void init() {
+    void init(int mssa_val) {
        initWindow();
-       initVulkan();
+       initVulkan(mssa_val);
     };
 
     void run();
@@ -322,6 +322,8 @@ private:
     bool render_point_cloud = false;
     bool render_final_pointcloud = true;
     bool show_projected_torus = false;
+    bool render_torus = true;
+    bool activate_point_cloud = true;
 
     // For data capturing
     bool is_capturing = false;
@@ -377,7 +379,7 @@ private:
 
     // ----- Init functions
     bool initWindow();
-    bool initVulkan();
+    bool initVulkan(int mssa_val);
 
     void createInstance();
     void createSurface();
@@ -437,5 +439,7 @@ private:
     void updateTorusRTBuffer();
 
     void updateImportanceSampling();
-    void readBuffer(vk::Buffer buffer, vk::DeviceSize size, void* dst_ptr);
+    void saveTransformsJson(const std::string &filename, const std::vector<FrameData> &frames);
+    void savePly(const std::string &filename);
+    void readBuffer(vk::Buffer buffer, vk::DeviceSize size, void *dst_ptr);
 };

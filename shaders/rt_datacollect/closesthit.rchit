@@ -19,8 +19,8 @@ layout(set = 0, binding = 4) uniform UniformBufferObject {
     mat4 proj;
     vec3 cameraPos;
     vec4 ambientLight;
-    PointLight pointlights[100];
-    PointLight shadowLights[100];
+    PointLight pointlights[150];
+    PointLight shadowLights[150];
     int cur_num_pointlights;
     int cur_num_shadowlights;
     int panelShadowsEnabled;
@@ -69,8 +69,23 @@ float G_Smith(vec3 N, vec3 V, vec3 L, float roughness) {
     return ggx1 * ggx2;
 }
 
+// Hammon approximation for the Smith-GGX Height-Correlated Visibility term.
+// This replaces both the G_Smith function AND the division by (4 * NdotV * NdotL).
+float V_SmithGGXCorrelatedFast(float NdotV, float NdotL, float roughness) {
+    float a = roughness;
+    float ggxV = NdotL * (NdotV * (1.0 - a) + a);
+    float ggxL = NdotV * (NdotL * (1.0 - a) + a);
+    
+    // The 0.5 factor comes from the 1/(4 * ...) part of the BRDF.
+    // The max() is to prevent division by zero.
+    return 0.5 / max(ggxV + ggxL, 0.0001);
+}
+
 vec3 F_Schlick(float cosTheta, vec3 F0) {
-    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+    float x = clamp(1.0 - cosTheta, 0.0, 1.0);
+    float x5 = x * x; // x^2
+    x5 = x5 * x5 * x; // x^4 * x = x^5
+    return F0 + (1.0 - F0) * x5;
 }
 
 // --- SHADOW CALCULATION (Matches fragment.frag logic) ---
@@ -185,6 +200,8 @@ void main()
     vec3 F0 = mix(F0_dielectric, albedo, metallic); 
     vec3 Lo = vec3(0.0);
 
+    float NdotV = max(dot(N, V), 0.0);
+
     #define CALCULATE_LIGHT(lightSource, shadowFactor) \
     { \
         vec3 L = normalize(lightSource.position.xyz - hit_pos); \
@@ -192,17 +209,15 @@ void main()
         float NdotL = max(dot(N, L), 0.0); \
         float HdotV = max(dot(H, V), 0.0); \
         float distance = length(lightSource.position.xyz - hit_pos); \
-        float attenuation = 1.0 / (distance * distance); \
+        float attenuation = 1.0 / (max(distance * distance, 0.0001)); \
         vec3 radiance = lightSource.color.rgb * lightSource.color.a * attenuation; \
         \
         float NDF_base = D_GGX(N, H, roughness); \
-        float G_base = G_Smith(N, V, L, roughness); \
+        float Vis_base = V_SmithGGXCorrelatedFast(NdotV, NdotL, roughness); \
         vec3 F_base = F_Schlick(HdotV, F0); \
         vec3 kS_base = F_base; \
         vec3 kD_base = (vec3(1.0) - kS_base) * (1.0 - metallic); \
-        vec3 numerator_base = NDF_base * G_base * F_base; \
-        float denominator_base = 4.0 * max(dot(N, V), 0.0) * NdotL + 0.001; \
-        vec3 specular_base = numerator_base / denominator_base; \
+        vec3 specular_base = NDF_base * Vis_base * F_base; \
         vec3 diffuse_base = (kD_base * albedo / PI); \
         \
         float NDF_coat = D_GGX(N, H, cc_roughness); \
@@ -237,4 +252,6 @@ void main()
     output_buffer.hits[index].hit_pos = hit_pos;
     output_buffer.hits[index].hit_flag = 1.0; 
     output_buffer.hits[index].color = vec4(color, 1.0);
+    output_buffer.hits[index].normal = N;
+    output_buffer.hits[index].padding = 0.0;
 }

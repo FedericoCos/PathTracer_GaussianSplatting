@@ -75,9 +75,9 @@ private:
     CameraState current, original;
 
     static constexpr float speed_incr = 0.5f;
-    static constexpr float rot_incr = 0.001f;
+    static constexpr float rot_incr = 0.01f;
     static constexpr float fov_incr = 5.f;
-    static constexpr float alpha_incr = 0.05f;
-    static constexpr float beta_incr = 0.05f;
+    static constexpr float alpha_incr = 0.5f;
+    static constexpr float beta_incr = 0.5f;
     static constexpr float radius_incr = 0.5f;
 };

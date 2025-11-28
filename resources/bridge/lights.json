@@ -1,0 +1,62 @@
+[
+  {
+    "type": "pointlight",
+    "position": [-20, 2.5, -10],
+    "color": [1.0, 0.7, 0.7],
+    "intensity": 50.0
+  },
+  {
+    "type": "pointlight",
+    "position": [-10, 2.5, -10],
+    "color": [1.0, 0.7, 0.7],
+    "intensity": 50.0
+  },
+  {
+    "type": "pointlight",
+    "position": [0, 2.5, -10],
+    "color": [1.0, 0.7, 0.7],
+    "intensity": 50.0
+  },
+  {
+    "type": "pointlight",
+    "position": [10, 2.5, -10],
+    "color": [1.0, 0.7, 0.7],
+    "intensity": 50.0
+  },
+  {
+    "type": "pointlight",
+    "position": [20, 2.5, -10],
+    "color": [1.0, 0.7, 0.7],
+    "intensity": 50.0
+  },
+  {
+    "type": "pointlight",
+    "position": [-20, 2.5, 5],
+    "color": [0.7, 0.7, 1.0],
+    "intensity": 50.0
+  },
+  {
+    "type": "pointlight",
+    "position": [-10, 2.5, 5],
+    "color": [0.7, 0.7, 1.0],
+    "intensity": 50.0
+  },
+  {
+    "type": "pointlight",
+    "position": [0, 2.5, 5],
+    "color": [0.7, 0.7, 1.0],
+    "intensity": 50.0
+  },
+  {
+    "type": "pointlight",
+    "position": [10, 2.5, 5],
+    "color": [0.7, 0.7, 1.0],
+    "intensity": 50.0
+  },
+  {
+    "type": "pointlight",
+    "position": [20, 2.5, 5],
+    "color": [0.7, 0.7, 1.0],
+    "intensity": 50.0
+  }
+]

@@ -60,6 +60,8 @@ struct HitData {
     vec3 hit_pos;
     float hit_flag; // 1.0 = hit, -1.0 = miss
     vec4 color;
+    vec3 normal;
+    float padding;
 };
 
 // Payload passed from rgen -> rchit/rmiss

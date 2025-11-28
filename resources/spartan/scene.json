@@ -1,0 +1,24 @@
+{
+  "settings": {
+    "lights_file": "resources/spartan/lights.json",
+    "use_manual_lights": false,
+    "use_manual_lights_shadows": false,
+    "use_emissive_lights": false,
+    "use_emissive_lights_shadows": false,
+    "emissive_intensity_multiplier": 300.0,
+
+    "use_rt_box": true,
+    "rt_box_file": "resources/spartan/rtbox.json",
+    "panel_shadows_enabled": true,
+
+    "ambient_light": [0.8, 0.8, 0.8, 0.05]
+  },
+  "objects": [
+    {
+      "model": "resources/spartan/scene.gltf",
+      "position": [0.0, 0.0, 0.0],
+      "scale": [7, 7, 7],
+      "rotation": [0.0, 0.0, 0.0]
+    }
+  ]
+}

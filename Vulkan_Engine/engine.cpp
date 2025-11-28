@@ -851,7 +851,7 @@ bool Engine::initWindow(){
     return true;
 }
 
-bool Engine::initVulkan(){
+bool Engine::initVulkan(int mssa_val){
     createInstance();
     setupDebugMessanger();
     createSurface();
@@ -859,7 +859,27 @@ bool Engine::initVulkan(){
     // Get device and queues
     physical_device = Device::pickPhysicalDevice(*this);
     mssa_samples = getMaxUsableSampleCount();
-    // mssa_samples = vk::SampleCountFlagBits::e2; // HARD-CODED FOR FULLSCREEN
+    switch (mssa_val)
+    {
+    case 2:
+        mssa_samples = vk::SampleCountFlagBits::e2;
+        break;
+    case 4:
+        mssa_samples = vk::SampleCountFlagBits::e4;
+        break;
+    case 8:
+        mssa_samples = vk::SampleCountFlagBits::e8;
+        break;
+    case 16:
+        mssa_samples = vk::SampleCountFlagBits::e16;
+        break;
+    case 32:
+        mssa_samples = vk::SampleCountFlagBits::e32;
+        break;
+    
+    default:
+        break;
+    }
     logical_device = Device::createLogicalDevice(*this, queue_indices); 
     graphics_queue = Device::getQueue(*this, queue_indices.graphics_family.value());
     present_queue = Device::getQueue(*this, queue_indices.present_family.value());
@@ -1229,6 +1249,9 @@ void Engine::loadScene(const std::string &scene_path)
         lights_path = settings.value("lights_file", "");
         this->use_rt_box = settings.value("use_rt_box", false);
         rtbox_path = settings.value("rt_box_file", "");
+
+        this -> render_torus = settings.value("render_torus", render_torus);
+        this -> activate_point_cloud = settings.value("render_pointcloud", activate_point_cloud);
 
         this->panel_shadows_enabled = settings.value("panel_shadows_enabled", true);
         this->shadow_light_far_plane = settings.value("shadow_far_plane", 100.0f);
@@ -2110,11 +2133,14 @@ void Engine::recordCommandBuffer(uint32_t image_index){
                         vk::ImageAspectFlagBits::eDepth);
     }
 
-    // --- TLAS BUILD PASS ---
-    buildTlas(cmd);
+    if(activate_point_cloud){
+        // --- TLAS BUILD PASS ---
+        buildTlas(cmd);
+    }
 
     // --- 5. RAY TRACING DATA COLLECTION PASS ---
     // (Writes to hit_data_buffer)
+    if(activate_point_cloud)
     {
         auto align_up = [&](uint32_t size, uint32_t alignment) {
             return (size + alignment - 1) & ~(alignment - 1);
@@ -2198,7 +2224,7 @@ void Engine::recordCommandBuffer(uint32_t image_index){
             }
         }
     }
-    if (torus.isVisible && !torus.t_primitives.empty()) {
+    if (torus.isVisible && !torus.t_primitives.empty() && render_torus) {
         for (const auto& primitive : torus.t_primitives) {
             const Material& material = torus.materials[primitive.material_index];
             transparent_draws.push_back({&torus, &primitive, &material, 0.0f});
@@ -2368,7 +2394,7 @@ void Engine::recordCommandBuffer(uint32_t image_index){
 
     // --- 7. CONDITIONAL POINT CLOUD PASS ---
     // (Replaces the Opaque Pass's output if enabled)
-    if (render_point_cloud)
+    if (render_point_cloud && activate_point_cloud)
     {
         vk::ClearValue clear_color = vk::ClearColorValue(0.f, 0.f, 0.f, 1.f);
         vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
@@ -3015,7 +3041,7 @@ void Engine::createRayTracingDataBuffers()
                 command_pool_graphics, &logical_device, graphics_queue);
 
     // 3. Create Output Buffer (Hit Data)
-    vk::DeviceSize hit_data_size = sizeof(glm::vec4) * 2  * sampling_points.size();
+    vk::DeviceSize hit_data_size = sizeof(HitDataGPU) * sampling_points.size();
 
     createBuffer(vma_allocator, hit_data_size,
                  vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress |
@@ -3464,6 +3490,8 @@ ImageReadbackData Engine::readImageToCPU(vk::Image image, VkFormat format, uint3
 
 void Engine::captureSceneData() {
     std::cout << "\n--- Starting Scene Data Capture (" << NUM_CAPTURE_POSITIONS << " pairs) ---" << std::endl;
+    std::vector<FrameData> recorded_frames;
+    std::vector<FrameData> test_frames;
 
     logical_device.waitIdle();
 
@@ -3474,7 +3502,7 @@ void Engine::captureSceneData() {
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_real_distribution<> alpha_dist(0.0f, 360.0f);
-    std::uniform_real_distribution<> beta_dist(-30.0f, 30.0f);
+    std::uniform_real_distribution<> beta_dist(.0f, 360.0f);
 
     // --- LAMBDA: Synchronous Rendering ---
     auto renderSync = [&](vk::raii::CommandBuffer& cmd) {
@@ -3674,12 +3702,46 @@ void Engine::captureSceneData() {
             // Readback
             ImageReadbackData data = readImageToCPU(capture_resolve_image.image, capture_resolve_image.image_format, swapchain.extent.width, swapchain.extent.height);
             
-            // FIX: Force Alpha to 255 to avoid transparency in viewer
-            for (size_t j = 3; j < data.data.size(); j += 4) {
-                data.data[j] = 255;
+            uint32_t target_w = data.width / 2;
+            uint32_t target_h = data.height / 2;
+
+            std::vector<uint8_t> resized_pixels(target_w * target_h * 4);
+
+            for (uint32_t y = 0; y < target_h; ++y) {
+                for (uint32_t x = 0; x < target_w; ++x) {
+                    // Sample the pixel at (x*2, y*2)
+                    uint32_t src_idx = ((y * 2) * data.width + (x * 2)) * 4;
+                    uint32_t dst_idx = (y * target_w + x) * 4;
+
+                    resized_pixels[dst_idx + 0] = data.data[src_idx + 0]; // R
+                    resized_pixels[dst_idx + 1] = data.data[src_idx + 1]; // G
+                    resized_pixels[dst_idx + 2] = data.data[src_idx + 2]; // B
+                    resized_pixels[dst_idx + 3] = 255;                    // A (Force Opaque)
+                }
             }
-            
-            savePNG("resources/dataset/capture_raster_" + std::to_string(i + 1) + ".png", data);
+
+            // Update data structure with new size
+            data.width = target_w;
+            data.height = target_h;
+            data.data = resized_pixels;
+
+            // JSON path: NO extension
+            std::string relative_path_json = "./train/r_" + std::to_string(i);
+            // File path: JPG extension
+            std::string full_save_path = "dataset/train/r_" + std::to_string(i) + ".jpg";
+
+            saveJPG(full_save_path, data);
+
+            FrameData frame_data;
+            frame_data.file_path = relative_path_json; 
+            // CRITICAL: Invert View Matrix to get Camera-to-World
+            frame_data.transform_matrix = glm::inverse(camera.getViewMatrix()); 
+            if (i % 4 == 0) {
+            test_frames.push_back(frame_data);
+            } else {
+                recorded_frames.push_back(frame_data);
+            }
+            std::cout << "Captured frame " << i << std::endl;
 
             // Cleanup: Transition color_image BACK to Transfer Src (wait, it already is) or Undefined is fine for next loop
             // But to avoid validation warnings on next frame's initial transition, let's leave it.
@@ -3725,9 +3787,17 @@ void Engine::captureSceneData() {
         }
     }
 
-    // 5. Restore
+    // 2. Export Transforms JSON
+    saveTransformsJson("dataset/transforms_train.json", recorded_frames);
+    saveTransformsJson("dataset/transforms_test.json", test_frames);
+
+    // 3. Export Point Cloud (Just once!)
+    // We can just run one ray-trace pass now to get a valid cloud
+    // (Since your loop moved the camera, the last hit buffer contains valid world-space points)
+    savePly("dataset/points3d.ply");
+
     is_capturing = false;
-    std::cout << "--- Capture Complete ---" << std::endl;
+    std::cout << "--- Dataset Generation Complete ---" << std::endl;
 }
 
 // 1. Helper to read any buffer to CPU
@@ -3796,4 +3866,100 @@ void Engine::updateImportanceSampling() {
                command_pool_graphics, &logical_device, graphics_queue);
                
     // Staging buffer is destroyed automatically
+}
+
+void Engine::saveTransformsJson(const std::string& filename, const std::vector<FrameData>& frames) {
+    json root;
+    
+    // 1. Camera Angle X (Horizontal FOV in radians)
+    // 1. Get Vertical FOV from Camera (in Radians)
+    float fov_y = glm::radians(camera.getCurrentState().fov);
+    
+    // 2. Get Aspect Ratio from Swapchain (Width / Height)
+    // Note: Ensure you use the resolution of the SAVED IMAGES (e.g. if you resized to 960x526)
+    // Assuming your camera aspect ratio matches your saved image aspect ratio:
+    float aspect = camera.getCurrentState().aspect_ratio;
+
+    // 3. Convert to Horizontal FOV (camera_angle_x)
+    // Formula: tan(fovX / 2) = aspect * tan(fovY / 2)
+    float fov_x = 2.0f * atan(tan(fov_y / 2.0f) * aspect);
+
+    root["camera_angle_x"] = fov_x;
+
+    // 2. Frames
+    root["frames"] = json::array();
+    for (const auto& frame : frames) {
+        json frame_json;
+        frame_json["file_path"] = frame.file_path;
+        
+        // Convert glm::mat4 to 4x4 array
+        frame_json["transform_matrix"] = json::array();
+        for (int row = 0; row < 4; ++row) {
+            json row_arr = json::array();
+            for (int col = 0; col < 4; ++col) {
+                // GLM is column-major, but JSON expects row-major reading usually, 
+                // effectively we just need to write out the rows.
+                row_arr.push_back(frame.transform_matrix[col][row]); 
+            }
+            frame_json["transform_matrix"].push_back(row_arr);
+        }
+        
+        root["frames"].push_back(frame_json);
+    }
+
+    std::ofstream file(filename);
+    file << root.dump(4); // Pretty print
+    std::cout << "Saved transforms to: " << filename << std::endl;
+}
+
+void Engine::savePly(const std::string& filename) {
+    std::cout << "Exporting PLY..." << std::endl;
+
+    // 1. Read Hit Buffer from GPU
+    size_t num_rays = sampling_points.size();
+    std::vector<HitDataGPU> hits(num_rays);
+    readBuffer(hit_data_buffer.buffer, sizeof(HitDataGPU) * num_rays, hits.data());
+
+    // 2. Filter valid points
+    std::vector<HitDataGPU> valid_points;
+    for (const auto& hit : hits) {
+        if (hit.flag > 0.0f) { // Check for hit
+            valid_points.push_back(hit);
+        }
+    }
+
+    std::ofstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open " << filename << std::endl;
+        return;
+    }
+
+    // 3. Write PLY Header
+    file << "ply\n";
+    file << "format ascii 1.0\n";
+    file << "element vertex " << valid_points.size() << "\n";
+    file << "property float x\n";
+    file << "property float y\n";
+    file << "property float z\n";
+    file << "property float nx\n";
+    file << "property float ny\n";
+    file << "property float nz\n";
+    file << "property uchar red\n";
+    file << "property uchar green\n";
+    file << "property uchar blue\n";
+    file << "end_header\n";
+
+    // 2. Write Data
+    for (const auto& p : valid_points) {
+        int r = static_cast<int>(p.r * 255.0f);
+        int g = static_cast<int>(p.g * 255.0f);
+        int b = static_cast<int>(p.b * 255.0f);
+        
+        file << p.px << " " << p.py << " " << p.pz << " " 
+             << p.nx << " " << p.ny << " " << p.nz << " "  // <--- Use REAL normals
+             << r << " " << g << " " << b << "\n";
+    }
+
+    file.close();
+    std::cout << "Saved " << valid_points.size() << " points to " << filename << std::endl;
 }

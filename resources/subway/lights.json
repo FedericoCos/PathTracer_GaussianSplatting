@@ -1,0 +1,1273 @@
+[
+  {
+    "shadow": true,
+    "type": "pointlight",
+    "position": [0.6, 2.4, 4.25],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.9
+  },
+  {
+    "type": "pointlight",
+    "position": [-0.3, 2.4, 4.25],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.9
+  },
+  {
+    "shadow": true,
+    "type": "pointlight",
+    "position": [6.2, 2.4, 4.25],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.9
+  },
+  {
+    "type": "pointlight",
+    "position": [5.3, 2.4, 4.25],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.9
+  },
+  {
+    "shadow": true,
+    "type": "pointlight",
+    "position": [11.6, 2.4, 4.25],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.9
+  },
+  {
+    "type": "pointlight",
+    "position": [10.7, 2.4, 4.25],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.9
+  },
+  {
+    "shadow": true,
+    "type": "pointlight",
+    "position": [17, 2.4, 4.25],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.9
+  },
+  {
+    "type": "pointlight",
+    "position": [16.1, 2.4, 4.25],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.9
+  },
+  {
+    "shadow": true,
+    "type": "pointlight",
+    "position": [-4.9, 2.4, 4.25],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.9
+  },
+  {
+    "type": "pointlight",
+    "position": [-5.8, 2.4, 4.25],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.9
+  },
+  {
+    "shadow": true,
+    "type": "pointlight",
+    "position": [-10.3, 2.4, 4.25],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.9
+  },
+  {
+    "type": "pointlight",
+    "position": [-11.2, 2.4, 4.25],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.9
+  },
+  {
+    "shadow": true,
+    "type": "pointlight",
+    "position": [-15.7, 2.4, 4.25],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.9
+  },
+  {
+    "type": "pointlight",
+    "position": [-16.6, 2.4, 4.25],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.9
+  },
+  {
+    "shadow": true,
+    "type": "pointlight",
+    "position": [-21.1, 2.4, 4.25],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.9
+  },
+  {
+    "type": "pointlight",
+    "position": [-22, 2.4, 4.25],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.9
+  },
+
+
+  {
+    "type": "pointlight",
+    "position": [-48, 2.4, 4.85],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [18.2, 2.4, 4.85],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.5
+  },
+
+
+  {
+    "type": "pointlight",
+    "position": [-0.55, 3.3, 2.45],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.0
+  },
+  {
+    "type": "pointlight",
+    "position": [-9.15, 3.3, 2.45],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.0
+  },
+  {
+    "type": "pointlight",
+    "position": [-17.75, 3.3, 2.45],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.0
+  },
+  {
+    "type": "pointlight",
+    "position": [-26.35, 3.3, 2.45],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.0
+  },
+  {
+    "type": "pointlight",
+    "position": [-34.95, 3.3, 2.45],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.0
+  },
+  {
+    "type": "pointlight",
+    "position": [-43.55, 3.3, 2.45],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.0
+  },
+  {
+    "type": "pointlight",
+    "position": [8.05, 3.3, 2.45],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.0
+  },
+  {
+    "type": "pointlight",
+    "position": [16.65, 3.3, 2.45],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 1.0
+  },
+
+
+
+
+
+  {
+    "shadow": true,
+    "type": "pointlight",
+    "position": [
+      0.6,
+      2.4,
+      -10.95
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.9
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -0.3,
+      2.4,
+      -10.95
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.9
+  },
+  {
+    "shadow": true,
+    "type": "pointlight",
+    "position": [
+      6.2,
+      2.4,
+      -10.95
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.9
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      5.3,
+      2.4,
+      -10.95
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.9
+  },
+  {
+    "shadow": true,
+    "type": "pointlight",
+    "position": [
+      11.6,
+      2.4,
+      -10.95
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.9
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      10.7,
+      2.4,
+      -10.95
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.9
+  },
+  {
+    "shadow": true,
+    "type": "pointlight",
+    "position": [
+      17,
+      2.4,
+      -10.95
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.9
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      16.1,
+      2.4,
+      -10.95
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.9
+  },
+  {
+    "shadow": true,
+    "type": "pointlight",
+    "position": [
+      -4.9,
+      2.4,
+      -10.95
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.9
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -5.8,
+      2.4,
+      -10.95
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.9
+  },
+  {
+    "shadow": true,
+    "type": "pointlight",
+    "position": [
+      -10.3,
+      2.4,
+      -10.95
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.9
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -11.2,
+      2.4,
+      -10.95
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.9
+  },
+  {
+    "shadow": true,
+    "type": "pointlight",
+    "position": [
+      -15.7,
+      2.4,
+      -10.95
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.9
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -16.6,
+      2.4,
+      -10.95
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.9
+  },
+  {
+    "shadow": true,
+    "type": "pointlight",
+    "position": [
+      -21.1,
+      2.4,
+      -10.95
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.9
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -22,
+      2.4,
+      -10.95
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.9
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -48,
+      2.4,
+      -11.55
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      18.2,
+      2.4,
+      -11.55
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -0.55,
+      3.3,
+      -9.15
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.0
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -9.15,
+      3.3,
+      -9.15
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.0
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -17.75,
+      3.3,
+      -9.15
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.0
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -26.35,
+      3.3,
+      -9.15
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.0
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -34.95,
+      3.3,
+      -9.15
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.0
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -43.55,
+      3.3,
+      -9.15
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.0
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      8.05,
+      3.3,
+      -9.15
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.0
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      16.65,
+      3.3,
+      -9.15
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 1.0
+  },
+
+
+
+
+
+
+  {
+    "type": "pointlight",
+    "position": [7.6, 2.3, 0],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [6.4, 2.3, 0],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [5.0, 2.3, 0],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [3.8, 2.3, 0],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [2.4, 2.3, 0],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [1.2, 2.3, 0],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [-0.2, 2.3, 0],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [-1.4, 2.3, 0],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [-2.8, 2.3, 0],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [-4, 2.3, 0],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [-5.4, 2.3, 0],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [-6.6, 2.3, 0],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [-8, 2.3, 0],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [-9.2, 2.3, 0],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -15.35,
+      2.3,
+      0
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -16.55,
+      2.3,
+      0
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -17.95,
+      2.3,
+      0
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -19.15,
+      2.3,
+      0
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -20.55,
+      2.3,
+      0
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -21.75,
+      2.3,
+      0
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -23.15,
+      2.3,
+      0
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -24.35,
+      2.3,
+      0
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -25.75,
+      2.3,
+      0
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -26.95,
+      2.3,
+      0
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -28.35,
+      2.3,
+      0
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -29.55,
+      2.3,
+      0
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -30.95,
+      2.3,
+      0
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.7
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      -32.15,
+      2.3,
+      0
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.7
+  },
+
+  {
+    "type": "pointlight",
+    "position": [23.65, 2.0, 2.2],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [23.65, 2.0, -2.2],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [31.75, 2.0, 2.2],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [31.75, 2.0, -2.2],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [39.85, 2.0, 2.2],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [39.85, 2.0, -2.2],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [47.95, 2.0, 2.2],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [47.95, 2.0, -2.2],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [56.05, 2.0, 2.2],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [56.05, 2.0, -2.2],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [64.15, 2.0, 2.2],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [64.15, 2.0, -2.2],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [72.25, 2.0, 2.2],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [72.25, 2.0, -2.2],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [80.35, 2.0, 2.2],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [80.35, 2.0, -2.2],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.5
+  },
+
+  {
+    "type": "pointlight",
+    "position": [
+      23.65,
+      2.0,
+      -4.4
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      23.65,
+      2.0,
+      -8.8
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      31.75,
+      2.0,
+      -4.4
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      31.75,
+      2.0,
+      -8.8
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      39.85,
+      2.0,
+      -4.4
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      39.85,
+      2.0,
+      -8.8
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      47.95,
+      2.0,
+      -4.4
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      47.95,
+      2.0,
+      -8.8
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      56.05,
+      2.0,
+      -4.4
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      56.05,
+      2.0,
+      -8.8
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      64.15,
+      2.0,
+      -4.4
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      64.15,
+      2.0,
+      -8.8
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      72.25,
+      2.0,
+      -4.4
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      72.25,
+      2.0,
+      -8.8
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      80.35,
+      2.0,
+      -4.4
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.5
+  },
+  {
+    "type": "pointlight",
+    "position": [
+      80.35,
+      2.0,
+      -8.8
+    ],
+    "color": [
+      1.0,
+      0.88,
+      0.52
+    ],
+    "intensity": 0.5
+  },
+
+
+  {
+    "type": "pointlight",
+    "position": [9.45, 2.49, 1.9],
+    "color": [1.0, 0.0, 0.0],
+    "intensity": 0.05
+  },
+  {
+    "type": "pointlight",
+    "position": [9.3, 2.49, 1.9],
+    "color": [1.0, 0.0, 0.0],
+    "intensity": 0.05
+  },
+  {
+    "type": "pointlight",
+    "position": [9.45, 2.49, -1.9],
+    "color": [1.0, 0.0, 0.0],
+    "intensity": 0.05
+  },
+  {
+    "type": "pointlight",
+    "position": [9.3, 2.49, -1.9],
+    "color": [1.0, 0.0, 0.0],
+    "intensity": 0.05
+  },
+
+  {
+    "type": "pointlight",
+    "position": [-9.45, 2.49, 1.9],
+    "color": [1.0, 0.0, 0.0],
+    "intensity": 0.05
+  },
+  {
+    "type": "pointlight",
+    "position": [-9.3, 2.49, 1.9],
+    "color": [1.0, 0.0, 0.0],
+    "intensity": 0.05
+  },
+  {
+    "type": "pointlight",
+    "position": [-9.45, 2.49, -1.9],
+    "color": [1.0, 0.0, 0.0],
+    "intensity": 0.05
+  },
+  {
+    "type": "pointlight",
+    "position": [-9.3, 2.49, -1.9],
+    "color": [1.0, 0.0, 0.0],
+    "intensity": 0.05
+  },
+
+  {
+    "type": "pointlight",
+    "position": [-15.65, 2.49, 1.9],
+    "color": [1.0, 0.0, 0.0],
+    "intensity": 0.05
+  },
+  {
+    "type": "pointlight",
+    "position": [-15.5, 2.49, 1.9],
+    "color": [1.0, 0.0, 0.0],
+    "intensity": 0.05
+  },
+  {
+    "type": "pointlight",
+    "position": [-15.65, 2.49, -1.9],
+    "color": [1.0, 0.0, 0.0],
+    "intensity": 0.05
+  },
+  {
+    "type": "pointlight",
+    "position": [-15.5, 2.49, -1.9],
+    "color": [1.0, 0.0, 0.0],
+    "intensity": 0.05
+  },
+
+  {
+    "type": "pointlight",
+    "position": [-34.36, 2.49, 1.9],
+    "color": [1.0, 0.0, 0.0],
+    "intensity": 0.05
+  },
+  {
+    "type": "pointlight",
+    "position": [-34.21, 2.49, 1.9],
+    "color": [1.0, 0.0, 0.0],
+    "intensity": 0.05
+  },
+  {
+    "type": "pointlight",
+    "position": [-34.36, 2.49, -1.9],
+    "color": [1.0, 0.0, 0.0],
+    "intensity": 0.05
+  },
+  {
+    "type": "pointlight",
+    "position": [-34.21, 2.49, -1.9],
+    "color": [1.0, 0.0, 0.0],
+    "intensity": 0.05
+  },
+
+
+  {
+    "type": "pointlight",
+    "position": [12, 0.6, 0.9],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.05
+  },
+  {
+    "type": "pointlight",
+    "position": [12, 0.6, -0.9],
+    "color": [1.0, 0.88, 0.52],
+    "intensity": 0.05
+  }
+  
+  
+
+]

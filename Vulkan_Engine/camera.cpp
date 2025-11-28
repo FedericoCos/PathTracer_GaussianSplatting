@@ -61,11 +61,11 @@ void Camera::freeCameraUpdate(float &dtime, InputState &input){
 
     if(input.left_mouse){
         if (input.look_x != 0.f) {
-            rot = glm::rotate(rot, input.look_x * current.f_camera.sensitivity, current.f_camera.up);
+            rot = glm::rotate(rot, input.look_x * current.f_camera.sensitivity * dtime, current.f_camera.up);
             input.look_x = 0.f;
         }
         if (input.look_y != 0.f) {
-            rot = glm::rotate(rot, input.look_y * current.f_camera.sensitivity, glm::cross(current.f_camera.direction, current.f_camera.up));
+            rot = glm::rotate(rot, input.look_y * current.f_camera.sensitivity * dtime, glm::cross(current.f_camera.direction, current.f_camera.up));
             input.look_y = 0.f;
         }
     }
@@ -126,16 +126,16 @@ void Camera::toroidalUpdate(float &dtime, InputState &input, float &r, float &h)
     }
 
     if(input.move.x < 0.0f){
-        current.t_camera.alpha += current.t_camera.alpha_speed;
+        current.t_camera.alpha += current.t_camera.alpha_speed * dtime;
     }
     else if(input.move.x > 0.0f){
-        current.t_camera.alpha -= current.t_camera.alpha_speed;
+        current.t_camera.alpha -= current.t_camera.alpha_speed * dtime;
     }
     if(input.move.y > 0.0f){
-        current.t_camera.beta += current.t_camera.beta_speed; 
+        current.t_camera.beta += current.t_camera.beta_speed * dtime; 
     }
     else if(input.move.y < 0.0f){
-        current.t_camera.beta -= current.t_camera.beta_speed;     
+        current.t_camera.beta -= current.t_camera.beta_speed * dtime;     
     }
 
     // --- Logic Fixes Start Here ---

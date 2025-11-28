@@ -151,3 +151,19 @@ void savePNG(const std::string& filename, const ImageReadbackData& data) {
         std::cout << "Successfully saved: " << filename << std::endl;
     }
 }
+
+void saveJPG(const std::string& filename, const ImageReadbackData& data, int quality) {
+    // 4 channels (RGBA), width * 4 stride
+    int result = stbi_write_jpg(filename.c_str(), 
+                                data.width, 
+                                data.height, 
+                                4, 
+                                data.data.data(), 
+                                quality);
+
+    if (result == 0) {
+        std::cerr << "Error: Failed to save JPG file: " << filename << std::endl;
+    } else {
+        std::cout << "Successfully saved: " << filename << std::endl;
+    }
+}

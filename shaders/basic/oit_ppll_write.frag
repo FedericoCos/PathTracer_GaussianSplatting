@@ -12,8 +12,8 @@ layout(binding = 0) uniform UniformBufferObject {
     mat4 proj;
     vec3 cameraPos;
     vec4 ambientLight;
-    PointLight[100] pointlights;
-    PointLight[100] shadowLights;
+    PointLight[150] pointlights;
+    PointLight[150] shadowLights;
     int cur_num_pointlights;
     int cur_num_shadowlights;
     int panelShadowsEnabled;
@@ -93,8 +93,22 @@ float G_Smith(vec3 N, vec3 V, vec3 L, float roughness) {
     float ggx2 = G_SchlickGGX(NdotV, roughness);
     return ggx1 * ggx2;
 }
+// Hammon approximation for the Smith-GGX Height-Correlated Visibility term.
+// This replaces both the G_Smith function AND the division by (4 * NdotV * NdotL).
+float V_SmithGGXCorrelatedFast(float NdotV, float NdotL, float roughness) {
+    float a = roughness;
+    float ggxV = NdotL * (NdotV * (1.0 - a) + a);
+    float ggxL = NdotV * (NdotL * (1.0 - a) + a);
+    
+    // The 0.5 factor comes from the 1/(4 * ...) part of the BRDF.
+    // The max() is to prevent division by zero.
+    return 0.5 / max(ggxV + ggxL, 0.0001);
+}
 vec3 F_Schlick(float cosTheta, vec3 F0) {
-    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+    float x = clamp(1.0 - cosTheta, 0.0, 1.0);
+    float x5 = x * x; // x^2
+    x5 = x5 * x5 * x; // x^4 * x = x^5
+    return F0 + (1.0 - F0) * x5;
 }
 
 float calculateShadow(vec3 fragWorldPos, vec3 lightPos, float farPlane, int shadowIndex, vec3 N, vec3 L) {
@@ -136,24 +150,18 @@ void main() {
     // --- 2. Calculate Base Vectors ---
     vec3 V = normalize(ubo.cameraPos - fragWorldPos);
     vec3 N;
+    vec3 N_geom = normalize(fragWorldNormal); 
     if(fragInTangentW != 0){
         vec3 normal_from_map = texture(normalSampler, fragTexCoord).xyz * 2.0 - 1.0;
         N = normalize(fragTBN * normal_from_map);
     }
     else{
-        N = normalize(fragWorldNormal);
+        N = N_geom;
     }
     float NdotV = max(dot(N, V), 0.0);
     // --- 3. Calculate Base Layer F0 ---
     vec3 F0_dielectric = 0.08 * material.specular_factor * material.specular_color_factor;
     vec3 F0 = mix(F0_dielectric, albedo, metallic);
-
-    // --- 4. Define Lights ---
-    // --- REMOVED ---
-    // const int NUM_POINT_LIGHTS = 64;
-    // PointLight pointLights[NUM_POINT_LIGHTS];
-    // ... all hardcoded light definitions ...
-    // --- REMOVED ---
 
 
     // --- 5. Calculate Lighting ---
@@ -168,26 +176,24 @@ void main() {
         float HdotV = max(dot(H, V), 0.0);
         // --- MODIFIED ---
         float distance = length(ubo.pointlights[i].position.xyz - fragWorldPos);
-        float attenuation = 1.0 / (distance * distance);
+        float attenuation = 1.0 / (max(distance * distance, 0.0001));
         // --- MODIFIED ---
         vec3 radiance = ubo.pointlights[i].color.rgb * ubo.pointlights[i].color.a * attenuation;
         
         // --- (A) Base Layer (Metallic/Roughness) ---
         float NDF_base = D_GGX(N, H, roughness);
-        float G_base = G_Smith(N, V, L, roughness);
+        float Vis_base = V_SmithGGXCorrelatedFast(NdotV, NdotL, roughness);
         vec3 F_base = F_Schlick(HdotV, F0);
         
         vec3 kS_base = F_base;
         vec3 kD_base = (vec3(1.0) - kS_base) * (1.0 - metallic);
         
-        vec3 numerator_base = NDF_base * G_base * F_base;
-        float denominator_base = 4.0 * NdotV * NdotL + 0.001;
-        vec3 specular_base = numerator_base / denominator_base;
+        vec3 specular_base = NDF_base * Vis_base * F_base;
         // Scale diffuse by (1.0 - transmission)
         vec3 diffuse_base = (kD_base * albedo / PI) * (1.0 - transmission);
         // --- (B) Clearcoat Layer --- // --- NEW ---
-        float NDF_coat = D_GGX(N, H, cc_roughness);
-        float G_coat = G_Smith(N, V, L, cc_roughness);
+        float NDF_coat = D_GGX(N_geom, H, cc_roughness);
+        float G_coat   = G_Smith(N_geom, V, L, cc_roughness);
         vec3 F0_coat = vec3(0.04);
         vec3 F_coat = F_Schlick(HdotV, F0_coat);
         vec3 numerator_coat = NDF_coat * G_coat * F_coat;
@@ -210,26 +216,24 @@ void main() {
         float HdotV = max(dot(H, V), 0.0);
         // --- MODIFIED ---
         float distance = length(ubo.shadowLights[i].position.xyz - fragWorldPos);
-        float attenuation = 1.0 / (distance * distance);
+        float attenuation = 1.0 / (max(distance * distance, 0.0001));
         // --- MODIFIED ---
         vec3 radiance = ubo.shadowLights[i].color.rgb * ubo.shadowLights[i].color.a * attenuation;
         
         // --- (A) Base Layer (Metallic/Roughness) ---
         float NDF_base = D_GGX(N, H, roughness);
-        float G_base = G_Smith(N, V, L, roughness);
+        float Vis_base = V_SmithGGXCorrelatedFast(NdotV, NdotL, roughness);
         vec3 F_base = F_Schlick(HdotV, F0);
         
         vec3 kS_base = F_base;
         vec3 kD_base = (vec3(1.0) - kS_base) * (1.0 - metallic);
         
-        vec3 numerator_base = NDF_base * G_base * F_base;
-        float denominator_base = 4.0 * NdotV * NdotL + 0.001;
-        vec3 specular_base = numerator_base / denominator_base;
+        vec3 specular_base = NDF_base * Vis_base * F_base;
         vec3 diffuse_base = (kD_base * albedo / PI);
         
         // --- (B) Clearcoat Layer --- // --- NEW ---
-        float NDF_coat = D_GGX(N, H, cc_roughness);
-        float G_coat = G_Smith(N, V, L, cc_roughness);
+        float NDF_coat = D_GGX(N_geom, H, cc_roughness);
+        float G_coat   = G_Smith(N_geom, V, L, cc_roughness);
         // F0 for clearcoat is always dielectric (non-metallic).
         // 0.04 is standard for IOR 1.5.
         vec3 F0_coat = vec3(0.04); 

@@ -10,6 +10,8 @@
     "use_rt_box": true,
     "rt_box_file": "resources/greenhouse/rtbox.json",
     "panel_shadows_enabled": true,
+    "render_torus": false,
+    "render_pointcloud": false,
     "torus_settings": {
         "major_radius": 11.0,
         "minor_radius": 1.0,

@@ -1,0 +1,27 @@
+{
+  "settings": {
+    "lights_file": "resources/subway/lights.json",
+    "use_manual_lights": true,
+    "use_manual_lights_shadows": false,
+    "use_emissive_lights": false,
+    "use_emissive_lights_shadows": false,
+    "emissive_intensity_multiplier": 100.0,
+
+    "render_torus": false,
+    "render_pointcloud": false,
+
+    "use_rt_box": false,
+    "rt_box_file": "resources/subway/rtbox.json",
+    "panel_shadows_enabled": true,
+
+    "ambient_light": [0.8, 0.8, 0.8, 0.00]
+  },
+  "objects": [
+    {
+      "model": "resources/subway/scene.gltf",
+      "position": [0, 0, 0],
+      "scale": [1, 1, 1],
+      "rotation": [0.0, 0.0, 0.0]
+    }
+  ]
+}

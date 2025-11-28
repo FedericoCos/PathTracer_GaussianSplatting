@@ -259,7 +259,7 @@ struct Primitive {
     glm::vec3 center;
 };
 
-const size_t MAX_POINTLIGHTS = 100;
+const size_t MAX_POINTLIGHTS = 150;
 
 struct Pointlight{
     glm::vec4 position; // fourth value is for padding
@@ -389,16 +389,16 @@ struct FreeCamera{
     glm::vec3 position = glm::vec3(0.f, 1.5f, 8.f);
     glm::vec3 direction = glm::vec3(0.f, 0.f, -1.f);
     glm::vec3 up = glm::vec3(0.f, 1.f, 0.f);
-    float speed = 2.5f;
-    float sensitivity = .002f;
+    float speed = 4.5f;
+    float sensitivity = .3f;
 };
 
 struct ToroidalCamera{
     glm::vec3 position;
     float alpha = 0.f;
     float beta = 0.f;
-    float alpha_speed = .2f;
-    float beta_speed = .2f;
+    float alpha_speed = 20.f;
+    float beta_speed = 20.f;
 };
 
 struct CameraState{
@@ -525,7 +525,14 @@ struct HitDataGPU { // Matches shader struct layout
         float px, py, pz;
         float flag;
         float r, g, b, a;
+        float nx, ny, nz;
+        float padding;
     };
+
+struct FrameData {
+    std::string file_path;
+    glm::mat4 transform_matrix; // Camera-to-World
+};
 
 // ------ Helper Functions
 
@@ -568,4 +575,6 @@ void copyBufferToImage(
 );
 
 void savePNG(const std::string& filename, const ImageReadbackData& data);
+
+void saveJPG(const std::string& filename, const ImageReadbackData& data, int quality = 90);
 

@@ -28,20 +28,11 @@ $(TARGET): $(OBJS)
 
 # Run the program
 test: $(TARGET)
-	glslc shaders/basic/vertex.vert -o shaders/basic/vertex.spv
-	glslc shaders/basic/fragment.frag -o shaders/basic/fragment.spv
-	glslc shaders/basic/vertex_torus.vert -o shaders/basic/vertex_torus.spv
-	glslc shaders/basic/fragment_torus.frag -o shaders/basic/fragment_torus.spv
-	glslc shaders/basic/oit_write.frag -o shaders/basic/oit_write.spv
-	glslc shaders/basic/oit_ppll_write.frag -o shaders/basic/oit_ppll_write.spv
-	glslc shaders/basic/oit_composite.vert -o shaders/basic/oit_composite_vert.spv
-	glslc shaders/basic/oit_composite.frag -o shaders/basic/oit_composite_frag.spv
-	glslc shaders/basic/oit_ppll_composite.frag -o shaders/basic/oit_ppll_composite_frag.spv
-	glslc shaders/basic/shadow.vert -o shaders/basic/shadow_vert.spv
-	glslc shaders/basic/shadow.frag -o shaders/basic/shadow_frag.spv
 	glslc -fshader-stage=rgen --target-env=vulkan1.4 shaders/rt_datacollect/raygen.rgen -o shaders/rt_datacollect/raygen.rgen.spv
+	glslc -fshader-stage=rgen --target-env=vulkan1.4 shaders/rt_datacollect/raygen_camera.rgen -o shaders/rt_datacollect/raygen_camera.rgen.spv
 	glslc -fshader-stage=rchit --target-env=vulkan1.4 shaders/rt_datacollect/closesthit.rchit -o shaders/rt_datacollect/closesthit.rchit.spv
 	glslc -fshader-stage=rmiss --target-env=vulkan1.4 shaders/rt_datacollect/miss.rmiss -o shaders/rt_datacollect/miss.rmiss.spv
+	glslc -fshader-stage=rmiss --target-env=vulkan1.4 shaders/rt_datacollect/shadow.rmiss -o shaders/rt_datacollect/shadow.rmiss.spv
 	glslc shaders/pointcloud/pointcloud.frag -o shaders/pointcloud/pointcloud.frag.spv
 	glslc shaders/pointcloud/pointcloud.vert --target-env=vulkan1.4 -o shaders/pointcloud/pointcloud.vert.spv
 	glslc --target-env=vulkan1.4 shaders/rt_datacollect/lookup.comp -o shaders/rt_datacollect/lookup.comp.spv

@@ -34,19 +34,6 @@ constexpr bool enableValidationLayers = true;
 constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
 
-struct TransparentDraw {
-    Gameobject* object; // Base pointer to the game object
-    const Primitive* primitive;
-    const Material* material;
-    float distance_sq; // Squared distance from camera
-
-    // Sort back-to-front (farthest first)
-    bool operator<(const TransparentDraw& other) const {
-        return distance_sq > other.distance_sq;
-    }
-};
-
-
 class Engine{
 public:
     Engine(){
@@ -107,35 +94,8 @@ public:
     // For multisampling
     vk::SampleCountFlagBits mssa_samples = vk::SampleCountFlagBits::e1;
 
-
-    // OIT variables
-    /* AllocatedImage oit_accum_image; // MSAA Accumulation buffer
-    AllocatedImage oit_reveal_image; // MSAA revealage buffer
-    AllocatedImage oit_accum_resolved; // Resolved (non-MSAA) accum
-    AllocatedImage oit_reveal_resolved; // Resolved (non-MSAA) reveal
-    vk::raii::Sampler oit_sampler = nullptr;
-
-    PipelineInfo oit_composite_pipeline;
-    std::vector<vk::raii::DescriptorSet> oit_composite_descriptor_sets; */
-
-    AllocatedBuffer oit_atomic_counter_buffer;
-    AllocatedBuffer oit_fragment_list_buffer;
-    AllocatedImage oit_start_offset_image;
-    uint32_t oit_max_fragments;
-
-    std::vector<vk::raii::DescriptorSet> oit_ppll_descriptor_sets;
-    PipelineInfo oit_composite_pipeline;
-
     // Uniform Buffer
     UniformBufferObject ubo{};
-
-    std::array<AllocatedImage, MAX_SHADOW_LIGHTS> shadow_maps;
-    vk::raii::Sampler shadow_sampler = nullptr;
-    PipelineInfo shadow_pipeline;
-    const uint32_t SHADOW_MAP_DIM = 1024;
-    vk::Format shadow_map_format;
-    bool panel_shadows_enabled = true; 
-    float shadow_light_far_plane = 100.f;
 
     struct ShadowUBO {
         glm::mat4 proj;
@@ -143,13 +103,6 @@ public:
         glm::vec4 lightPos;
         float farPlane;
     } shadow_ubo_data; // One struct for temp data
-    
-    // We need 5 UBOs per frame
-    std::array<std::vector<AllocatedBuffer>, MAX_FRAMES_IN_FLIGHT> shadow_ubos;
-    std::array<std::vector<void*>, MAX_FRAMES_IN_FLIGHT> shadow_ubos_mapped;
-    
-    // We need 5 descriptor sets per frame
-    std::array<std::vector<vk::raii::DescriptorSet>, MAX_FRAMES_IN_FLIGHT> shadow_descriptor_sets;
 
 
     // Ray Tracing TLAS members
@@ -159,6 +112,11 @@ public:
     AllocatedBuffer tlas_scratch_buffer;
     uint64_t tlas_scratch_addr = 0;
     const uint32_t MAX_TLAS_INSTANCES = 1024;
+
+    bool panel_shadows_enabled = true; 
+    float shadow_light_far_plane = 100.f;
+
+    AllocatedImage rt_output_image;
 
     // Ray tracing data buffers
     AllocatedBuffer torus_vertex_data_buffer;
@@ -202,20 +160,6 @@ private:
     // RAII context
     vk::raii::Context context;
 
-    // Pipeline variables
-    std::map<PipelineKey, std::vector<Gameobject>> p_o_map;
-    std::map<PipelineKey, PipelineInfo> p_p_map;
-    const std::string v_shader_pbr = "shaders/basic/vertex.spv";
-    const std::string f_shader_pbr = "shaders/basic/fragment.spv";
-    const std::string f_shader_oit_write = "shaders/basic/oit_ppll_write.spv"; 
-    const std::string v_shader_oit_composite = "shaders/basic/oit_composite_vert.spv"; 
-    const std::string f_shader_oit_composite = "shaders/basic/oit_ppll_composite_frag.spv"; 
-    
-    const std::string v_shader_torus = "shaders/basic/vertex_torus.spv";
-    const std::string f_shader_torus = "shaders/basic/fragment_torus.spv";
-
-    const std::string v_shader_shadow = "shaders/basic/shadow_vert.spv";
-    const std::string f_shader_shadow = "shaders/basic/shadow_frag.spv";
 
     const std::string rt_rgen_shader = "shaders/rt_datacollect/raygen.rgen.spv";
     const std::string rt_rmiss_shader = "shaders/rt_datacollect/miss.rmiss.spv";
@@ -242,14 +186,10 @@ private:
     Torus torus;
     TorusConfig torus_config;
     std::vector<P_object> scene_objs;
-    std::vector<TransparentDraw> transparent_draws;
     Gameobject debug_cube;
 
     Gameobject createDebugCube();
     void createRTBox(const std::string& rtbox_path);
-
-    // For multisampling
-    AllocatedImage color_image;
 
     // Camera
     Camera camera;
@@ -328,7 +268,6 @@ private:
     // For data capturing
     bool is_capturing = false;
     AllocatedImage capture_resolve_image;
-    bool raster = false;
     int image_captured_count = 0;
     std::vector<RaySample> sampling_points;
     AllocatedBuffer sample_data_buffer;
@@ -377,6 +316,8 @@ private:
     static void mouse_button_callback(GLFWwindow *window, int button, int action, int mods);
     static void cursor_position_callback(GLFWwindow *window, double x_pos, double y_pos);
 
+    void createRTOutputImage();
+
     // ----- Init functions
     bool initWindow();
     bool initVulkan(int mssa_val);
@@ -405,14 +346,6 @@ private:
     void createUniformBuffers();
     void createDescriptorPool();
     void createDescriptorSets();
-
-    void createOITResources();
-    // void destroyOITResources(); // to later implement
-    void createOITCompositePipeline();
-    void createOITDescriptorSets();
-
-    void createShadowResources();
-    void createShadowPipeline();
 
     // RT Pipeline Functions
     void createRayTracingPipeline();

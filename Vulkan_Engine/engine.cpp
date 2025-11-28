@@ -14,6 +14,73 @@
 
 
 // ------ Helper Functions
+void Engine::readBuffer(vk::Buffer buffer, vk::DeviceSize size, void* dst_ptr) {
+    AllocatedBuffer staging_buffer;
+    createBuffer(vma_allocator, size, vk::BufferUsageFlagBits::eTransferDst,
+                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                 staging_buffer);
+
+    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+    vk::BufferCopy copy_region(0, 0, size);
+    cmd.copyBuffer(buffer, staging_buffer.buffer, copy_region);
+    endSingleTimeCommands(cmd, graphics_queue);
+
+    void* data;
+    vmaMapMemory(vma_allocator, staging_buffer.allocation, &data);
+    memcpy(dst_ptr, data, (size_t)size);
+    vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
+}
+
+// 2. The main Importance Sampling Logic
+void Engine::updateImportanceSampling() {
+    std::cout << "Calculating Importance Samples..." << std::endl;
+
+    // A. Read back Hit Data
+    size_t num_hits = sampling_points.size();
+    vk::DeviceSize buffer_size = sizeof(HitDataGPU) * num_hits;
+    std::vector<HitDataGPU> raw_hits(num_hits);
+    readBuffer(hit_data_buffer.buffer, buffer_size, raw_hits.data());
+
+    SamplingMethod method = sampling_methods[current_sampling];
+
+    if (method == SamplingMethod::IMP_COL) {
+        // Extract Colors
+        std::vector<glm::vec4> prev_colors;
+        prev_colors.reserve(num_hits);
+        for(const auto& hit : raw_hits) {
+            prev_colors.push_back(glm::vec4(hit.r, hit.g, hit.b, hit.a));
+        }
+        // Generate based on Color Gradients
+        Sampling::generateImportanceSamples(sampling_points, num_rays, sampling_points, prev_colors);
+    } 
+    else if (method == SamplingMethod::IMP_HIT) {
+        // Extract Flags
+        std::vector<float> prev_flags;
+        prev_flags.reserve(num_hits);
+        for(const auto& hit : raw_hits) {
+            prev_flags.push_back(hit.flag);
+        }
+        // Generate based on Hit/Miss
+        Sampling::generateHitBasedImportanceSamples(sampling_points, num_rays, sampling_points, prev_flags);
+    }
+
+    // D. Upload NEW samples to GPU
+    vk::DeviceSize sample_size = sizeof(RaySample) * sampling_points.size();
+    AllocatedBuffer staging_buffer;
+    createBuffer(vma_allocator, sample_size, vk::BufferUsageFlagBits::eTransferSrc,
+                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, staging_buffer);
+    
+    void* data;
+    vmaMapMemory(vma_allocator, staging_buffer.allocation, &data);
+    memcpy(data, sampling_points.data(), (size_t)sample_size);
+    vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
+
+    copyBuffer(staging_buffer.buffer, sample_data_buffer.buffer, sample_size,
+               command_pool_graphics, &logical_device, graphics_queue);
+               
+    // Staging buffer is destroyed automatically
+}
+
 void Engine::printGpuMemoryUsage()
 {
     // Get memory properties from the physical device
@@ -834,6 +901,51 @@ void Engine::cursor_position_callback(GLFWwindow *window, double x_pos, double y
     }
 }
 
+void Engine::createRTOutputImage() {
+    // Create Image: Storage (for writing) | TransferSrc (for copy/blit) | TransferDst (for clear)
+    vk::Format rt_format = vk::Format::eB8G8R8A8Unorm;
+    
+    rt_output_image = Image::createImage(
+        swapchain.extent.width, swapchain.extent.height,
+        1, vk::SampleCountFlagBits::e1, 
+        rt_format, // Or eR16G16B16A16Sfloat for HDR
+        vk::ImageTiling::eOptimal,
+        vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst,
+        vk::MemoryPropertyFlagBits::eDeviceLocal, 
+        *this
+    );
+
+    rt_output_image.image_view = Image::createImageView(rt_output_image, *this);
+
+    // Usage: TransferDst (from RT image) | TransferSrc (to CPU buffer)
+    capture_resolve_image = Image::createImage(
+        swapchain.extent.width, swapchain.extent.height,
+        1, vk::SampleCountFlagBits::e1, 
+        vk::Format::eR8G8B8A8Unorm, // Standard format for saving to disk (JPG/PNG)
+        vk::ImageTiling::eOptimal,
+        vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc,
+        vk::MemoryPropertyFlagBits::eDeviceLocal, 
+        *this
+    );
+    /* capture_resolve_image.image_view = Image::createImageView(capture_resolve_image, *this);
+
+    vk::raii::CommandBuffer cmd_resolve_init = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+
+    // Transition from Undefined -> Color Attachment Optimal
+    transitionImage(cmd_resolve_init, 
+                    capture_resolve_image.image, 
+                    vk::ImageLayout::eUndefined, 
+                    vk::ImageLayout::eColorAttachmentOptimal, 
+                    vk::ImageAspectFlagBits::eColor);
+
+    endSingleTimeCommands(cmd_resolve_init, graphics_queue); */
+
+    // Transition to General Layout (Ready for RayGen writing)
+    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+    transitionImage(cmd, rt_output_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
+    endSingleTimeCommands(cmd, graphics_queue);
+}
+
 // ------ Init Functions
 
 bool Engine::initWindow(){
@@ -937,46 +1049,10 @@ bool Engine::initVulkan(int mssa_val){
 
     createTlasResources();
 
-    // TO FIX THIS
-    color_image = Image::createImage(swapchain.extent.width, swapchain.extent.height,
-                        1, mssa_samples, swapchain.format, vk::ImageTiling::eOptimal, 
-                    // FIX: Added TRANSFER_SRC_BIT
-                    vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc, 
-                vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
-    color_image.image_view = Image::createImageView(color_image, *this);
-
-
-    // 2. Creation of capture_resolve_image (non-MSAA Destination)
-    // MUST now include TRANSFER_DST_BIT for resolving.
-    capture_resolve_image = Image::createImage(swapchain.extent.width, swapchain.extent.height,
-                        1, vk::SampleCountFlagBits::e1, swapchain.format, vk::ImageTiling::eOptimal,
-                        vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst, 
-                        vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
-    capture_resolve_image.image_view = Image::createImageView(capture_resolve_image, *this);
-
-    vk::raii::CommandBuffer cmd_resolve_init = beginSingleTimeCommands(command_pool_graphics, &logical_device);
-
-    // Transition from Undefined -> Color Attachment Optimal
-    transitionImage(cmd_resolve_init, 
-                    capture_resolve_image.image, 
-                    vk::ImageLayout::eUndefined, 
-                    vk::ImageLayout::eColorAttachmentOptimal, 
-                    vk::ImageAspectFlagBits::eColor);
-
-    endSingleTimeCommands(cmd_resolve_init, graphics_queue);
-
-    std::cout << "Memory usage after color image creation" << std::endl;
-    printGpuMemoryUsage();
+    createRTOutputImage();
 
     Image::createDepthResources(physical_device, depth_image, swapchain.extent.width, swapchain.extent.height, *this);
     std::cout << "Memory usage after depth image creation" << std::endl;
-    printGpuMemoryUsage();
-    createOITResources();
-    std::cout << "Memory usage after OIT resources creation" << std::endl;
-    printGpuMemoryUsage();
-
-    createShadowResources();
-    std::cout << "Memory usage after Shadow resources creation" << std::endl;
     printGpuMemoryUsage();
 
     // PIPELINE CREATION
@@ -988,14 +1064,6 @@ bool Engine::initVulkan(int mssa_val){
     printGpuMemoryUsage();
 
     debug_cube = createDebugCube();
-    
-    // Assign the opaque PBR pipeline to the debug cube
-    PipelineKey p_key;
-    p_key.v_shader = v_shader_pbr;
-    p_key.f_shader = f_shader_pbr;
-    p_key.mode = TransparencyMode::OPAQUE;
-    p_key.cull_mode = vk::CullModeFlagBits::eBack;
-    debug_cube.o_pipeline = &p_p_map[p_key];
 
 
     createTorusModel();
@@ -1004,26 +1072,9 @@ bool Engine::initVulkan(int mssa_val){
 
     createGlobalBindlessBuffers();
 
-    for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
-        // Resize the inner vectors to hold 5 elements
-        shadow_ubos[i].resize(MAX_SHADOW_LIGHTS);
-        shadow_ubos_mapped[i].resize(MAX_SHADOW_LIGHTS);
-
-        for (int j = 0; j < MAX_SHADOW_LIGHTS; ++j) {
-            createBuffer(vma_allocator, sizeof(ShadowUBO), 
-                         vk::BufferUsageFlagBits::eUniformBuffer,
-                         vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
-                         shadow_ubos[i][j]); // This access is now valid
-            vmaMapMemory(vma_allocator, shadow_ubos[i][j].allocation, &shadow_ubos_mapped[i][j]);
-        }
-    }
-
     createUniformBuffers();
     createDescriptorPool();
-    createRayTracingDescriptorSets();
-    createPointCloudDescriptorSets();
     createDescriptorSets();
-    createOITDescriptorSets();
 
     createShaderBindingTable();
 
@@ -1117,103 +1168,7 @@ void Engine::createPipelines()
 {
     // Creating the pipeline of the objects in the scene
 
-    // Pipeline of pbr objects
-    PipelineKey p_key;
-    std::vector<vk::DescriptorSetLayoutBinding> bindings = {
-        // Binding 0: Uniform Buffer (View/Proj) - Vertex Shader
-        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBuffer, 1, 
-                                       vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, nullptr),
-        // Binding 1: Albedo/BaseColor Texture - Fragment Shader
-        vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eCombinedImageSampler, 1, 
-                                       vk::ShaderStageFlagBits::eFragment, nullptr),
-        // Binding 2: Normal Map Texture - Fragment Shader
-        vk::DescriptorSetLayoutBinding(2, vk::DescriptorType::eCombinedImageSampler, 1,
-                                       vk::ShaderStageFlagBits::eFragment, nullptr),             
-        // Binding 3: Metallic/Roughness Texture - Fragment Shader
-        vk::DescriptorSetLayoutBinding(3, vk::DescriptorType::eCombinedImageSampler, 1,
-                                       vk::ShaderStageFlagBits::eFragment, nullptr),
-        // Binding 4: Ambient Occlusion (AO)
-        vk::DescriptorSetLayoutBinding(4, vk::DescriptorType::eCombinedImageSampler, 1, 
-                                       vk::ShaderStageFlagBits::eFragment, nullptr),                 
-        // Binding 5: Emissive
-        vk::DescriptorSetLayoutBinding(5, vk::DescriptorType::eCombinedImageSampler, 1,
-                                       vk::ShaderStageFlagBits::eFragment, nullptr),
-        // Binding 6: Transmission
-        vk::DescriptorSetLayoutBinding(6, vk::DescriptorType::eCombinedImageSampler, 1,
-                                        vk::ShaderStageFlagBits::eFragment, nullptr),
-        // Binding 7: Clearcoat
-        vk::DescriptorSetLayoutBinding(7, vk::DescriptorType::eCombinedImageSampler, 1,
-                                        vk::ShaderStageFlagBits::eFragment, nullptr),
-        // Binding 8: Clearcoat Roughness
-        vk::DescriptorSetLayoutBinding(8, vk::DescriptorType::eCombinedImageSampler, 1,
-                                        vk::ShaderStageFlagBits::eFragment, nullptr),
-        // Binding 9: Shadow Map Array
-        vk::DescriptorSetLayoutBinding(9, vk::DescriptorType::eCombinedImageSampler, 
-                                       MAX_SHADOW_LIGHTS, // 5 maps
-                                       vk::ShaderStageFlagBits::eFragment, nullptr)
-    };
-
-    createShadowPipeline();
-    
-    // Key definition
-    p_key.v_shader = v_shader_pbr;
-    p_key.f_shader = f_shader_pbr;
-    p_key.mode = TransparencyMode::OPAQUE;
-    p_key.cull_mode = vk::CullModeFlagBits::eBack;
-
-    // Pipeline creation
-    PipelineInfo& p_info = p_p_map[p_key];
-    p_info.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings);
-    p_info.pipeline = Pipeline::createGraphicsPipeline(
-        *this,
-        &p_info,
-        p_key.v_shader,
-        p_key.f_shader,
-        p_key.mode,
-        p_key.cull_mode
-    );
-
-    createOITCompositePipeline();
-
     createPointCloudPipeline();
-
-    // OIT Write PBR pipeline
-    p_key.f_shader = f_shader_oit_write;
-    p_key.mode = TransparencyMode::OIT_WRITE;
-    PipelineInfo& p_info_transparent = p_p_map[p_key];
-    p_info_transparent.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings);
-    p_info_transparent.pipeline = Pipeline::createGraphicsPipeline(
-        *this,
-        &p_info_transparent,
-        p_key.v_shader,
-        p_key.f_shader,
-        p_key.mode,
-        p_key.cull_mode
-    );
-
-
-    // Pipeline for the torus
-    bindings = {
-        // Binding 0: Uniform Buffer (View/Proj) - Vertex Shader
-        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBuffer, 1, 
-                                       vk::ShaderStageFlagBits::eVertex, nullptr)
-    };
-    p_key.v_shader = v_shader_torus;
-    p_key.f_shader = f_shader_torus;
-    p_key.mode = TransparencyMode::OIT_WRITE;
-    p_key.cull_mode = vk::CullModeFlagBits::eBack;
-
-    PipelineInfo& p_info_torus = p_p_map[p_key];
-    p_info_torus.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings);
-    p_info_torus.pipeline = Pipeline::createGraphicsPipeline(
-        *this,
-        &p_info_torus,
-        p_key.v_shader,
-        p_key.f_shader,
-        p_key.mode,
-        p_key.cull_mode
-    );
-
 }
 
 void Engine::loadScene(const std::string &scene_path)
@@ -1252,9 +1207,6 @@ void Engine::loadScene(const std::string &scene_path)
 
         this -> render_torus = settings.value("render_torus", render_torus);
         this -> activate_point_cloud = settings.value("render_pointcloud", activate_point_cloud);
-
-        this->panel_shadows_enabled = settings.value("panel_shadows_enabled", true);
-        this->shadow_light_far_plane = settings.value("shadow_far_plane", 100.0f);
 
         if(settings.contains("ambient_light")){
             ubo.ambient_light = glm::vec4{
@@ -1326,19 +1278,6 @@ void Engine::loadScene(const std::string &scene_path)
             });
         }
 
-        // --- (Pipeline assignment logic - unchanged) ---
-        PipelineKey p_key;
-        p_key.v_shader = "shaders/basic/vertex.spv";
-        p_key.f_shader = "shaders/basic/fragment.spv";
-        p_key.mode = TransparencyMode::OPAQUE;
-        p_key.cull_mode = vk::CullModeFlagBits::eBack;
-        if(!p_p_map.contains(p_key)){ /* ... error ... */ }
-        new_object.o_pipeline = &p_p_map[p_key];
-        p_key.mode = TransparencyMode::OIT_WRITE;
-        p_key.f_shader = f_shader_oit_write;
-        new_object.t_pipeline = &p_p_map[p_key];
-        // --- (End pipeline logic) ---
-
         // --- 4. Load Emissive Lights (if enabled) ---
         if (use_emissive_lights) {
             if(!obj_def.contains("use_emissive_lights")){
@@ -1349,21 +1288,7 @@ void Engine::loadScene(const std::string &scene_path)
         }
 
         if (this->use_rt_box && !rtbox_path.empty()) {
-            createRTBox(rtbox_path); // Create the box
-            
-            // --- We must assign its pipelines here! ---
-            PipelineKey p_key;
-            p_key.v_shader = v_shader_pbr;
-            p_key.f_shader = f_shader_pbr;
-            p_key.mode = TransparencyMode::OPAQUE;
-            p_key.cull_mode = vk::CullModeFlagBits::eBack;
-            rt_box.o_pipeline = &p_p_map[p_key];
-
-            PipelineKey p_key_trans = p_key;
-            p_key_trans.f_shader = f_shader_oit_write;
-            p_key_trans.mode = TransparencyMode::OIT_WRITE;
-            rt_box.t_pipeline = &p_p_map[p_key_trans];
-            // --- End pipeline assignment ---
+            createRTBox(rtbox_path);
             
         } else if (this->use_rt_box && rtbox_path.empty()) {
             std::cerr << "Warning: 'use_rt_box' is true but no 'rt_box_file' was specified." << std::endl;
@@ -1436,8 +1361,6 @@ void Engine::createTorusModel()
     torusPrim.index_count = torus.indices.size();
     torusPrim.first_index = 0;
     torusPrim.material_index = 0;
-    
-    torus.t_primitives.push_back(torusPrim);
 
     Material torusMat;
     torusMat.albedo_texture_index = -1; // No texture, shader should use baseColorFactor
@@ -1448,20 +1371,6 @@ void Engine::createTorusModel()
     torus.materials.push_back(std::move(torusMat));
 
     createModel(torus); 
-
-    // --- UNCOMMENT AND FIX THIS BLOCK ---
-    // Setup torus pipeline
-    PipelineKey p_key;
-    p_key.v_shader = v_shader_torus;
-    p_key.f_shader = f_shader_torus;
-    p_key.mode = TransparencyMode::OIT_WRITE; // Use the OIT write pipeline
-    p_key.cull_mode = vk::CullModeFlagBits::eBack;
-
-    if(!p_p_map.contains(p_key)){
-        throw std::runtime_error("Torus pipeline (OIT_WRITE) not found in p_p_map!");
-    }
-    torus.t_pipeline = &p_p_map[p_key]; // Assign the transparent pipeline
-    // --- END BLOCK ---
 }
 
 void Engine::createUniformBuffers()
@@ -1483,69 +1392,26 @@ void Engine::createUniformBuffers()
 
 void Engine::createDescriptorPool()
 {
-    // --- 1. Count PBR materials (scene + debug + rt_box) ---
-    uint32_t pbr_material_count = 0;
-    for(auto& obj : scene_objs){
-        pbr_material_count += obj.materials.size();
-    }
-    pbr_material_count += debug_cube.materials.size();
-    if (use_rt_box) {
-        pbr_material_count += rt_box.materials.size();
-    }
-
-    // --- 2. Count Torus materials ---
-    // We get this *after* createTorusModel() is called, so materials exist
-    uint32_t torus_material_count = torus.materials.size(); 
-
-    // --- 3. Calculate total sets needed ---
-    uint32_t pbr_sets = pbr_material_count * MAX_FRAMES_IN_FLIGHT;
-    uint32_t torus_sets = torus_material_count * MAX_FRAMES_IN_FLIGHT;
-    uint32_t shadow_sets = MAX_SHADOW_LIGHTS * MAX_FRAMES_IN_FLIGHT;
-    uint32_t oit_sets = MAX_FRAMES_IN_FLIGHT; // For PPLL buffers
     uint32_t rt_sets = MAX_FRAMES_IN_FLIGHT;
-    uint32_t pointcloud_sets = MAX_FRAMES_IN_FLIGHT;
+    uint32_t pc_sets = MAX_FRAMES_IN_FLIGHT;
+    uint32_t total_sets = rt_sets + pc_sets;
 
-    uint32_t total_max_sets = pbr_sets + torus_sets + shadow_sets + oit_sets + rt_sets + pointcloud_sets;
+    std::vector<vk::DescriptorPoolSize> pool_sizes = {
+        { vk::DescriptorType::eUniformBuffer, total_sets },
+        { vk::DescriptorType::eStorageBuffer, MAX_FRAMES_IN_FLIGHT * 10 },
+        { vk::DescriptorType::eAccelerationStructureKHR, rt_sets },
+        
+        // --- UPDATED: We use Storage Images for Binding 10 (Output) ---
+        { vk::DescriptorType::eStorageImage, rt_sets },
 
-    // --- 4. Calculate total individual descriptors needed ---
-    
-    // UBOs: 1 per PBR set, 1 per Torus set, 1 per Shadow set, 1 per PointCloud set
-    uint32_t total_ubos = pbr_sets + torus_sets + shadow_sets + pointcloud_sets + rt_sets;
-
-    // Samplers: (8 PBR + shadows) per PBR set. Torus/OIT/Shadow sets use 0.
-    uint32_t total_samplers = pbr_sets * (8 + MAX_SHADOW_LIGHTS) + (MAX_BINDLESS_TEXTURES * MAX_FRAMES_IN_FLIGHT);
-
-    // Storage Images: 1 per OIT set
-    uint32_t total_storage_images = oit_sets;
-
-    // Storage Buffers: 2 per OIT set, 2 per RT set, 1 per PointCloud set
-    uint32_t total_storage_buffers = (oit_sets * 2) + (rt_sets * 6) + pointcloud_sets * 2;
-
-    // Acceleration Structures: 1 per RT set
-    uint32_t total_accel_structs = rt_sets;
-
-
-    std::vector<vk::DescriptorPoolSize> pool_sizes;
-    if (total_ubos > 0) {
-        pool_sizes.push_back(vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, total_ubos));
-    }
-    if (total_samplers > 0) {
-        pool_sizes.push_back(vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, total_samplers));
-    }
-    if (total_storage_images > 0) {
-        pool_sizes.push_back(vk::DescriptorPoolSize(vk::DescriptorType::eStorageImage, total_storage_images));
-    }
-    if (total_storage_buffers > 0) {
-        pool_sizes.push_back(vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, total_storage_buffers));
-    }
-    if (total_accel_structs > 0) {
-        pool_sizes.push_back(vk::DescriptorPoolSize(vk::DescriptorType::eAccelerationStructureKHR, total_accel_structs));
-    }
+        { vk::DescriptorType::eCombinedImageSampler, 
+          MAX_FRAMES_IN_FLIGHT * (MAX_SHADOW_LIGHTS + MAX_BINDLESS_TEXTURES) } 
+    };
 
     vk::DescriptorPoolCreateInfo pool_info;
-    pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    pool_info.maxSets = total_max_sets; 
-    pool_info.poolSizeCount = static_cast<uint32_t>(pool_sizes.size()); 
+    pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet; // Allow freeing if needed
+    pool_info.maxSets = total_sets;
+    pool_info.poolSizeCount = static_cast<uint32_t>(pool_sizes.size());
     pool_info.pPoolSizes = pool_sizes.data();
 
     descriptor_pool = vk::raii::DescriptorPool(logical_device, pool_info);
@@ -1553,39 +1419,11 @@ void Engine::createDescriptorPool()
 
 void Engine::createDescriptorSets()
 {
-    for(auto& obj : scene_objs){
-        obj.createMaterialDescriptorSets(*this);
-    }
+    // 1. The Main Ray Tracing Set (binds TLAS, Global Textures, Output Image, etc.)
+    createRayTracingDescriptorSets();
 
-    debug_cube.createMaterialDescriptorSets(*this);
-    if (use_rt_box) {
-        rt_box.createMaterialDescriptorSets(*this);
-    }
-
-    torus.createMaterialDescriptorSets(*this);
-
-
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-        
-        // Clear any old sets from the previous frame/swapchain
-        shadow_descriptor_sets[i].clear();
-        shadow_descriptor_sets[i].reserve(MAX_SHADOW_LIGHTS); // Optional: improves performance
-
-        for (int j = 0; j < MAX_SHADOW_LIGHTS; ++j) {
-            // Allocate one set using the shadow pipeline's layout
-            vk::DescriptorSetAllocateInfo alloc_info(*descriptor_pool, 1, &*shadow_pipeline.descriptor_set_layout);
-            
-            // Move the newly allocated set into the vector
-            shadow_descriptor_sets[i].push_back(std::move(logical_device.allocateDescriptorSets(alloc_info).front()));
-            
-            // Bind the corresponding shadow UBO
-            vk::DescriptorBufferInfo buffer_info(shadow_ubos[i][j].buffer, 0, sizeof(ShadowUBO));
-            
-            // Use the set we just added (at index j)
-            vk::WriteDescriptorSet write(*shadow_descriptor_sets[i][j], 0, 0, vk::DescriptorType::eUniformBuffer, {}, buffer_info);
-            logical_device.updateDescriptorSets(write, {});
-        }
-    }
+    // 2. The Point Cloud Overlay Set
+    createPointCloudDescriptorSets();
 }
 
 void Engine::createGraphicsCommandBuffers(){
@@ -1617,221 +1455,6 @@ void Engine::createSyncObjects(){
     for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
         in_flight_fences.emplace_back(vk::raii::Fence(logical_device, {vk::FenceCreateFlagBits::eSignaled}));
     }
-}
-
-void Engine::createOITResources(){
-    int avg_fragments_per_sample = 8;
-
-    oit_max_fragments = swapchain.extent.width * swapchain.extent.height * static_cast<int>(mssa_samples) *
-                        avg_fragments_per_sample;
-
-    // 2. Atomic Counter Buffer
-    // Initialized to 0 before OIT pass
-    createBuffer(vma_allocator, sizeof(uint32_t),
-                 vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst, // Need to clear it
-                 vk::MemoryPropertyFlagBits::eDeviceLocal,
-                 oit_atomic_counter_buffer);
-
-    // 3. Fragment List Buffer
-    // Struct: vec4(color) + float(depth) + uint(next)
-    // std430 layout: vec4(16), float(4), uint(4). Total = 24.
-    // Next struct starts at 24. This is fine.
-    // Let's use 32 bytes for safety and alignment.
-    size_t node_size = sizeof(glm::vec4) + sizeof(float) + sizeof(uint32_t) + 8; // (16 + 4 + 4 + 8 padding) = 32
-    vk::DeviceSize fragment_buffer_size = oit_max_fragments * node_size; 
-    
-    createBuffer(vma_allocator, fragment_buffer_size,
-                 vk::BufferUsageFlagBits::eStorageBuffer,
-                 vk::MemoryPropertyFlagBits::eDeviceLocal,
-                 oit_fragment_list_buffer);
-
-    // 4. Start Offset Image (Head Pointer)
-    // Initialized to 0xFFFFFFFF before OIT pass
-    oit_start_offset_image = Image::createImage(
-        swapchain.extent.width, swapchain.extent.height, 1, mssa_samples,
-        vk::Format::eR32Uint, // 32-bit unsigned int per pixel
-        vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferDst, // Storage image + clear
-        vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
-    
-    // Use the 3-arg version of createImageView from GeneralHeaders.h
-    oit_start_offset_image.image_view = Image::createImageView(
-        oit_start_offset_image, *this);
-    
-    // Transition image to eGeneral layout for storage access
-    // We do this once here, and it will stay in eGeneral forever.
-    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_transfer, &logical_device);
-    transitionImage(cmd, oit_start_offset_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
-    endSingleTimeCommands(cmd, transfer_queue);
-}
-
-void Engine::createOITCompositePipeline(){
-    // 1. Create Descriptor Set Layout
-    std::vector<vk::DescriptorSetLayoutBinding> bindings = {
-        // Binding 0: Atomic Counter
-        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eStorageBuffer, 1,
-                                        vk::ShaderStageFlagBits::eFragment, nullptr),
-        // Binding 1: Fragment List
-        vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eStorageBuffer, 1,
-                                        vk::ShaderStageFlagBits::eFragment, nullptr),
-        // Binding 2: Start Offset Image (Head Pointers)
-        vk::DescriptorSetLayoutBinding(2, vk::DescriptorType::eStorageImage, 1,
-                                        vk::ShaderStageFlagBits::eFragment, nullptr)  
-    };
-    // This layout is shared, so store it on the engine
-    oit_composite_pipeline.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings);
-
-    // 2. Create Pipeline
-    
-    oit_composite_pipeline.pipeline = Pipeline::createGraphicsPipeline(
-        *this,
-        &oit_composite_pipeline,
-        v_shader_oit_composite,
-        f_shader_oit_composite,
-        TransparencyMode::OIT_COMPOSITE,
-        vk::CullModeFlagBits::eNone
-    );
-}
-
-void Engine::createOITDescriptorSets() {
-    // This function now creates the *shared* PPLL descriptor set
-    // oit_composite_descriptor_sets.clear(); // <-- REMOVED
-    oit_ppll_descriptor_sets.clear();
-
-    std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *oit_composite_pipeline.descriptor_set_layout);
-    vk::DescriptorSetAllocateInfo alloc_info(
-        *descriptor_pool,
-        static_cast<uint32_t>(layouts.size()),
-        layouts.data()
-    );
-    oit_ppll_descriptor_sets = logical_device.allocateDescriptorSets(alloc_info);
-
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        vk::DescriptorBufferInfo atomic_counter_info;
-        atomic_counter_info.buffer = oit_atomic_counter_buffer.buffer;
-        atomic_counter_info.offset = 0;
-        atomic_counter_info.range = sizeof(uint32_t);
-
-        vk::DescriptorBufferInfo fragment_list_info;
-        fragment_list_info.buffer = oit_fragment_list_buffer.buffer;
-        fragment_list_info.offset = 0;
-        fragment_list_info.range = VK_WHOLE_SIZE; // Use the whole buffer
-        
-        vk::DescriptorImageInfo start_offset_info;
-        start_offset_info.imageView = *oit_start_offset_image.image_view;
-        start_offset_info.imageLayout = vk::ImageLayout::eGeneral; // Stays in general layout
-        
-        std::array<vk::WriteDescriptorSet, 3> writes = {};
-        
-        // Binding 0: Atomic Counter
-        writes[0].dstSet = *oit_ppll_descriptor_sets[i];
-        writes[0].dstBinding = 0;
-        writes[0].descriptorType = vk::DescriptorType::eStorageBuffer;
-        writes[0].descriptorCount = 1;
-        writes[0].pBufferInfo = &atomic_counter_info;
-
-        // Binding 1: Fragment List
-        writes[1].dstSet = *oit_ppll_descriptor_sets[i];
-        writes[1].dstBinding = 1;
-        writes[1].descriptorType = vk::DescriptorType::eStorageBuffer;
-        writes[1].descriptorCount = 1;
-        writes[1].pBufferInfo = &fragment_list_info;
-
-        // Binding 2: Start Offset Image
-        writes[2].dstSet = *oit_ppll_descriptor_sets[i];
-        writes[2].dstBinding = 2;
-        writes[2].descriptorType = vk::DescriptorType::eStorageImage;
-        writes[2].descriptorCount = 1;
-        writes[2].pImageInfo = &start_offset_info;
-        
-        logical_device.updateDescriptorSets(writes, {});
-    }
-}
-
-void Engine::createShadowResources() {
-    shadow_map_format = findDepthFormat(physical_device);
-
-    for (int i = 0; i < MAX_SHADOW_LIGHTS; ++i) {
-        // --- 1. Create Shadow Map Image (Manual VMA) ---
-        vk::ImageCreateInfo imageInfo;
-        imageInfo.imageType = vk::ImageType::e2D;
-        imageInfo.extent = vk::Extent3D{SHADOW_MAP_DIM, SHADOW_MAP_DIM, 1};
-        imageInfo.mipLevels = 1;
-        imageInfo.arrayLayers = 6; // <-- FIX: Must be 6
-        imageInfo.format = shadow_map_format;
-        imageInfo.tiling = vk::ImageTiling::eOptimal;
-        imageInfo.initialLayout = vk::ImageLayout::eUndefined;
-        imageInfo.usage = vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eSampled;
-        imageInfo.samples = vk::SampleCountFlagBits::e1; // <-- FIX: Must be 1
-        imageInfo.sharingMode = vk::SharingMode::eExclusive;
-        imageInfo.flags = vk::ImageCreateFlagBits::eCubeCompatible; // <-- FIX: Must have this flag
-
-        VmaAllocationCreateInfo allocInfo = {};
-        allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-        allocInfo.requiredFlags = (VkMemoryPropertyFlags)vk::MemoryPropertyFlagBits::eDeviceLocal;
-
-        // Manually create the image using VMA
-        VkImage vkImage;
-        VkImageCreateInfo vkImageInfo = (VkImageCreateInfo)imageInfo; // Cast to C-style struct
-        vmaCreateImage(vma_allocator, &vkImageInfo, &allocInfo,
-                       &vkImage, &shadow_maps[i].allocation, nullptr);
-
-        shadow_maps[i].image = vkImage;
-        shadow_maps[i].image_format = static_cast<VkFormat>(shadow_map_format);
-        shadow_maps[i].image_extent = imageInfo.extent;
-        shadow_maps[i].mip_levels = 1;
-
-        // --- 2. Create Image View (as a Cube) ---
-        vk::ImageViewCreateInfo viewInfo;
-        viewInfo.image = shadow_maps[i].image;
-        viewInfo.viewType = vk::ImageViewType::eCube; // This is correct
-        viewInfo.format = shadow_map_format;
-        viewInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eDepth;
-        viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = 6; // This is correct
-        
-        shadow_maps[i].image_view = vk::raii::ImageView(logical_device, viewInfo);
-    }
-
-    // --- 3. Create Sampler (only one is needed) ---
-    vk::SamplerCreateInfo samplerInfo;
-    samplerInfo.magFilter = vk::Filter::eLinear;
-    samplerInfo.minFilter = vk::Filter::eLinear;
-    samplerInfo.addressModeU = vk::SamplerAddressMode::eClampToBorder;
-    samplerInfo.addressModeV = vk::SamplerAddressMode::eClampToBorder;
-    samplerInfo.addressModeW = vk::SamplerAddressMode::eClampToBorder;
-    samplerInfo.borderColor = vk::BorderColor::eFloatOpaqueWhite; // Depth 1.0 (far)
-    samplerInfo.compareEnable = vk::True;
-    samplerInfo.compareOp = vk::CompareOp::eLess;
-    samplerInfo.maxLod = 1.0f;
-    
-    shadow_sampler = vk::raii::Sampler(logical_device, samplerInfo);
-}
-
-void Engine::createShadowPipeline() {
-    // 1. Descriptor Set Layout (for one ShadowUBO)
-    std::vector<vk::DescriptorSetLayoutBinding> bindings = {
-        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBuffer, 1, 
-                                       vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment)
-    };
-    shadow_pipeline.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings);
-    
-    // 2. Push Constant (Model Matrix)
-    vk::PushConstantRange push_constant_range(vk::ShaderStageFlagBits::eVertex, 0, sizeof(glm::mat4));
-    
-    // 3. Pipeline Layout
-    vk::PipelineLayoutCreateInfo pipeline_layout_info({}, 1, &*shadow_pipeline.descriptor_set_layout, 1, &push_constant_range);
-    shadow_pipeline.layout = vk::raii::PipelineLayout(logical_device, pipeline_layout_info);
-    
-    // 4. Create Pipeline (using the new shadow pipeline function)
-    shadow_pipeline.pipeline = Pipeline::createShadowPipeline(
-        *this,
-        &shadow_pipeline,
-        v_shader_shadow,
-        f_shader_shadow
-    );
 }
 
 void Engine::createPointCloudPipeline()
@@ -2004,10 +1627,10 @@ void Engine::createGlobalBindlessBuffers()
     for (auto& obj : scene_objs) {
         aggregate_object(obj);
     }
-    /* aggregate_object(debug_cube);
+    // aggregate_object(debug_cube);
     if (use_rt_box) {
         aggregate_object(rt_box);
-    } */
+    }
     // We do NOT aggregate the torus, as it is not part of the hit-scene
 
     // --- 3. Upload all 4 buffers to the GPU ---
@@ -2042,19 +1665,6 @@ void Engine::createGlobalBindlessBuffers()
 // ------ Render Loop Functions
 
 void Engine::run(){
-    {
-        vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_transfer, &logical_device);
-
-        for (int i = 0; i < MAX_SHADOW_LIGHTS; ++i) {
-            transitionImage(cmd, shadow_maps[i].image,
-                            vk::ImageLayout::eUndefined,
-                            vk::ImageLayout::eShaderReadOnlyOptimal,
-                            vk::ImageAspectFlagBits::eDepth);
-        }
-
-        endSingleTimeCommands(cmd, transfer_queue);
-    }
-
     while(!glfwWindowShouldClose(window)){
         glfwPollEvents();
         drawFrame();
@@ -2068,144 +1678,66 @@ void Engine::run(){
 void Engine::recordCommandBuffer(uint32_t image_index){
     auto& cmd = graphics_command_buffer[current_frame];
     cmd.begin({});
-    
-    // --- SHADOW PASS ---
-    for (int i = 0; i < ubo.curr_num_shadowlights; ++i) {
-        // Transition shadow map to be a depth attachment
-        transitionImage(cmd, shadow_maps[i].image, 
-                        vk::ImageLayout::eShaderReadOnlyOptimal, 
-                        vk::ImageLayout::eDepthStencilAttachmentOptimal, 
-                        vk::ImageAspectFlagBits::eDepth);
 
-        vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
-        vk::RenderingAttachmentInfo depth_attachment_info;
-        depth_attachment_info.imageView = *shadow_maps[i].image_view;
-        depth_attachment_info.imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
-        depth_attachment_info.loadOp = vk::AttachmentLoadOp::eClear;
-        depth_attachment_info.storeOp = vk::AttachmentStoreOp::eStore;
-        depth_attachment_info.clearValue = clear_depth;
+    // --- 1. BUILD TLAS (Required for all RT passes) ---
+    buildTlas(cmd);
 
-        vk::RenderingInfo shadow_rendering_info;
-        shadow_rendering_info.renderArea.offset = vk::Offset2D{0, 0};
-        shadow_rendering_info.renderArea.extent = vk::Extent2D{SHADOW_MAP_DIM, SHADOW_MAP_DIM};
-        shadow_rendering_info.layerCount = 6;
-        shadow_rendering_info.viewMask = 0b00111111;
-        shadow_rendering_info.colorAttachmentCount = 0;
-        shadow_rendering_info.pDepthAttachment = &depth_attachment_info;
+    // --- 2. COMMON RT SETUP ---
+    auto align_up = [&](uint32_t size, uint32_t alignment) { return (size + alignment - 1) & ~(alignment - 1); };
+    uint32_t handle_size = rt_props.pipeline_props.shaderGroupHandleSize;
+    uint32_t sbt_entry_size = align_up(handle_size, rt_props.pipeline_props.shaderGroupBaseAlignment);
+    uint64_t sbt_address = getBufferDeviceAddress(sbt_buffer.buffer);
 
-        cmd.beginRendering(shadow_rendering_info);
+    cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline);
+    cmd.bindDescriptorSets(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.layout, 0, {*rt_descriptor_sets[current_frame]}, {});
 
-        cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)SHADOW_MAP_DIM, (float)SHADOW_MAP_DIM, 0.f, 1.f));
-        cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), {SHADOW_MAP_DIM, SHADOW_MAP_DIM}));
-        cmd.setCullMode(vk::CullModeFlagBits::eFront);
+    // Push Constants (Used by both RayGen shaders)
+    RayPushConstant p_const;
+    p_const.model = torus.model_matrix;
+    p_const.major_radius = torus.getMajorRadius();
+    p_const.minor_radius = torus.getMinorRadius();
+    p_const.height = torus.getHeight();
+    cmd.pushConstants<RayPushConstant>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, p_const);
 
-        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.pipeline);
-        
-        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.layout, 0, 
-                    {*shadow_descriptor_sets[current_frame][i]}, {});
+    // Define Common SBT Regions
+    // Miss Group starts at Index 2, contains 2 shaders (Primary, Shadow)
+    vk::StridedDeviceAddressRegionKHR rmiss_region;
+    rmiss_region.deviceAddress = sbt_address + 2 * sbt_entry_size;
+    rmiss_region.stride = sbt_entry_size;
+    rmiss_region.size = 2 * sbt_entry_size;
 
-        for(auto& obj : scene_objs) {
-            if (obj.o_primitives.empty()) continue; 
-            
-            cmd.bindVertexBuffers(0, {obj.geometry_buffer.buffer}, {0});
-            cmd.bindIndexBuffer(obj.geometry_buffer.buffer, obj.index_buffer_offset, vk::IndexType::eUint32);
-            cmd.pushConstants<glm::mat4>(*shadow_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix);
-            
-            for(auto& primitive : obj.o_primitives) {
-                cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
-            }
-        }
-        
-        if (use_rt_box && rt_box.o_pipeline && !rt_box.o_primitives.empty()) {
-            cmd.bindVertexBuffers(0, {rt_box.geometry_buffer.buffer}, {0});
-            cmd.bindIndexBuffer(rt_box.geometry_buffer.buffer, rt_box.index_buffer_offset, vk::IndexType::eUint32);
-            cmd.pushConstants<glm::mat4>(*shadow_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, rt_box.model_matrix);
-            for(auto& primitive : rt_box.o_primitives) {
-                cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
-            }
-        }
+    // Hit Group starts at Index 4, contains 1 shader group
+    vk::StridedDeviceAddressRegionKHR rhit_region;
+    rhit_region.deviceAddress = sbt_address + 4 * sbt_entry_size;
+    rhit_region.stride = sbt_entry_size;
+    rhit_region.size = sbt_entry_size; // Only 1 hit group type
 
-        cmd.endRendering();
+    vk::StridedDeviceAddressRegionKHR callable_region{};
 
-        transitionImage(cmd, shadow_maps[i].image, 
-                        vk::ImageLayout::eDepthStencilAttachmentOptimal, 
-                        vk::ImageLayout::eShaderReadOnlyOptimal, 
-                        vk::ImageAspectFlagBits::eDepth);
-    }
-
-    if(activate_point_cloud){
-        // --- TLAS BUILD PASS ---
-        buildTlas(cmd);
-    }
-
-    // --- 5. RAY TRACING DATA COLLECTION PASS ---
-    // (Writes to hit_data_buffer)
+    // --- 3. PASS 1: TORUS CAPTURE (Data Collection) ---
     if(activate_point_cloud)
     {
-        auto align_up = [&](uint32_t size, uint32_t alignment) {
-            return (size + alignment - 1) & ~(alignment - 1);
-        };
+        // RayGen Index 0: Torus Capture
+        vk::StridedDeviceAddressRegionKHR rgen_torus;
+        rgen_torus.deviceAddress = sbt_address + 0 * sbt_entry_size;
+        rgen_torus.stride = sbt_entry_size;
+        rgen_torus.size = sbt_entry_size;
 
-        cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline);
-
-        cmd.bindDescriptorSets(
-            vk::PipelineBindPoint::eRayTracingKHR,
-            *rt_pipeline.layout, 0,
-            {*rt_descriptor_sets[current_frame]},
-            {});
-
-        RayPushConstant p_const;
-        p_const.model = torus.model_matrix;
-        p_const.major_radius = torus.getMajorRadius();
-        p_const.minor_radius = torus.getMinorRadius();
-        p_const.height = torus.getHeight();
+        uint32_t side = static_cast<uint32_t>(std::ceil(std::sqrt(sampling_points.size())));
         
-        cmd.pushConstants<RayPushConstant>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, p_const);
-
-        uint32_t handle_size = rt_props.pipeline_props.shaderGroupHandleSize;
-        uint32_t sbt_entry_alignment = rt_props.pipeline_props.shaderGroupBaseAlignment;
-        uint32_t sbt_entry_size = align_up(handle_size, sbt_entry_alignment);
-        uint64_t sbt_address = getBufferDeviceAddress(sbt_buffer.buffer);
+        vkCmdTraceRaysKHR(*cmd, 
+            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rgen_torus),
+            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rmiss_region),
+            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rhit_region),
+            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&callable_region),
+            side, side, 1);
         
-        vk::StridedDeviceAddressRegionKHR rgen_sbt_region;
-        rgen_sbt_region.deviceAddress = sbt_address + 0 * sbt_entry_size;
-        rgen_sbt_region.stride = sbt_entry_size;
-        rgen_sbt_region.size = sbt_entry_size;
-
-        vk::StridedDeviceAddressRegionKHR rmiss_sbt_region;
-        rmiss_sbt_region.deviceAddress = sbt_address + 1 * sbt_entry_size;
-        rmiss_sbt_region.stride = sbt_entry_size;
-        rmiss_sbt_region.size = sbt_entry_size;
-
-        vk::StridedDeviceAddressRegionKHR rchit_sbt_region;
-        rchit_sbt_region.deviceAddress = sbt_address + 2 * sbt_entry_size;
-        rchit_sbt_region.stride = sbt_entry_size;
-        rchit_sbt_region.size = sbt_entry_size;
-
-        vk::StridedDeviceAddressRegionKHR callable_sbt_region;
-
-        // Calculate square dimensions
-        uint32_t total_rays = static_cast<uint32_t>(sampling_points.size());
-        
-        // We calculate a square side that covers at least 'total_rays'
-        // ceil(sqrt(total_rays))
-        uint32_t side = static_cast<uint32_t>(std::ceil(std::sqrt(total_rays)));
-
-        vkCmdTraceRaysKHR(
-            *cmd,
-            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rgen_sbt_region),
-            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rmiss_sbt_region),
-            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rchit_sbt_region),
-            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&callable_sbt_region),
-            side, 
-            side, 1);
-        
-        // --- BARRIER (RT -> Compute) ---
-        // Wait for RT to finish WRITING hit_data_buffer before Vertex Shader READS it
+        // Barrier: Wait for writes to hit_data_buffer (Storage Buffer)
+        // This ensures the Vertex Shader in Pass 3 reads valid data
         vk::MemoryBarrier2 mem_barrier;
         mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
         mem_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
-        mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eVertexShader;
+        mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eVertexShader; 
         mem_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead;
         
         vk::DependencyInfo dep_info;
@@ -2214,415 +1746,133 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         cmd.pipelineBarrier2(dep_info);
     }
 
-    // --- GATHER TRANSPARENTS ---
-    transparent_draws.clear();
-    for(auto& obj : scene_objs){
-        if (!obj.t_primitives.empty()) {
-            for(const auto& primitive : obj.t_primitives) {
-                const Material& material = obj.materials[primitive.material_index];
-                transparent_draws.push_back({&obj, &primitive, &material, 0.0f});
-            }
-        }
-    }
-    if (torus.isVisible && !torus.t_primitives.empty() && render_torus) {
-        for (const auto& primitive : torus.t_primitives) {
-            const Material& material = torus.materials[primitive.material_index];
-            transparent_draws.push_back({&torus, &primitive, &material, 0.0f});
-        }
-    }
-
-    // --- Transition Swapchain Image ---
-    transition_image_layout(
-        image_index,
-        vk::ImageLayout::eUndefined,
-        vk::ImageLayout::eColorAttachmentOptimal,
-        {}, vk::AccessFlagBits2::eColorAttachmentWrite,
-        vk::PipelineStageFlagBits2::eTopOfPipe,
-        vk::PipelineStageFlagBits2::eColorAttachmentOutput
-    );
-
-    // --- 2. OPAQUE PASS ---
-    // This pass *always* runs, to generate the G-Buffer
+    // --- 4. PASS 2: CAMERA VIEW (Main Render) ---
     {
-        vk::ClearValue clear_color = vk::ClearColorValue(0.f, 0.f, 0.f, 1.f);
-        vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
+        // RayGen Index 1: Camera View
+        vk::StridedDeviceAddressRegionKHR rgen_camera;
+        rgen_camera.deviceAddress = sbt_address + 1 * sbt_entry_size;
+        rgen_camera.stride = sbt_entry_size;
+        rgen_camera.size = sbt_entry_size;
 
-        // Attachment 0: Lit Scene (for OIT compose)
-        vk::RenderingAttachmentInfo color_attachment_lit{};
-        color_attachment_lit.imageView = color_image.image_view;
-        color_attachment_lit.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-        // --- MODIFICATION ---
-        // If we render point cloud, we'll clear this again later.
-        // If not, we clear it now.
-        color_attachment_lit.loadOp = vk::AttachmentLoadOp::eClear; 
-        color_attachment_lit.storeOp = vk::AttachmentStoreOp::eStore; 
-        color_attachment_lit.clearValue = clear_color;
+        // Trace rays filling the screen dimensions
+        vkCmdTraceRaysKHR(*cmd, 
+            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rgen_camera),
+            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rmiss_region),
+            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rhit_region),
+            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&callable_region),
+            swapchain.extent.width, swapchain.extent.height, 1);
+            
+        // Barrier: Wait for RayGen to finish writing to rt_output_image
+        vk::ImageMemoryBarrier2 image_barrier;
+        image_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
+        image_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
+        image_barrier.dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
+        image_barrier.dstAccessMask = vk::AccessFlagBits2::eTransferRead;
+        image_barrier.oldLayout = vk::ImageLayout::eGeneral;
+        image_barrier.newLayout = vk::ImageLayout::eTransferSrcOptimal;
+        image_barrier.image = rt_output_image.image;
+        image_barrier.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
         
-        std::array<vk::RenderingAttachmentInfo, 1> color_attachments = {
-            color_attachment_lit
-        };
+        // Barrier: Prepare Swapchain to receive the copy
+        vk::ImageMemoryBarrier2 swap_barrier;
+        swap_barrier.srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe;
+        swap_barrier.srcAccessMask = {};
+        swap_barrier.dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
+        swap_barrier.dstAccessMask = vk::AccessFlagBits2::eTransferWrite;
+        swap_barrier.oldLayout = vk::ImageLayout::eUndefined;
+        swap_barrier.newLayout = vk::ImageLayout::eTransferDstOptimal;
+        swap_barrier.image = swapchain.images[image_index];
+        swap_barrier.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
 
-        // Main depth attachment
-        vk::RenderingAttachmentInfo depth_attachment_info = {};
-        depth_attachment_info.imageView = depth_image.image_view;
-        depth_attachment_info.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
-        depth_attachment_info.loadOp = vk::AttachmentLoadOp::eClear;
-        depth_attachment_info.storeOp = vk::AttachmentStoreOp::eStore; 
-        depth_attachment_info.clearValue = clear_depth;
+        vk::ImageMemoryBarrier2 barriers[] = {image_barrier, swap_barrier};
+        vk::DependencyInfo dep_info;
+        dep_info.imageMemoryBarrierCount = 2;
+        dep_info.pImageMemoryBarriers = barriers;
+        cmd.pipelineBarrier2(dep_info);
 
-        vk::RenderingInfo rendering_info;
-        rendering_info.renderArea.offset = vk::Offset2D{0, 0};
-        rendering_info.renderArea.extent = swapchain.extent;
-        rendering_info.layerCount = 1;
-        rendering_info.colorAttachmentCount = 1;
-        rendering_info.pColorAttachments = color_attachments.data();
-        rendering_info.pDepthAttachment = &depth_attachment_info;
+        // Copy RT Result -> Swapchain
+        vk::ImageCopy copyRegion;
+        copyRegion.srcSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
+        copyRegion.dstSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
+        copyRegion.extent = vk::Extent3D{ swapchain.extent.width, swapchain.extent.height, 1 };
+        cmd.copyImage(rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, 
+                      swapchain.images[image_index], vk::ImageLayout::eTransferDstOptimal, 
+                      {copyRegion});
 
-        cmd.beginRendering(rendering_info);
-
-        cmd.setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain.extent.width), static_cast<float>(swapchain.extent.height), 0.f, 1.f));
-        cmd.setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain.extent));
-
-        // --- OPAQUE DRAW LOOP ---
-        // (This is the loop from your old 'if(!render_point_cloud)' block)
-        PipelineInfo* last_bound_pipeline = nullptr;
-        Gameobject* last_bound_object = nullptr;
-
-        for(auto& obj : scene_objs){
-            // ... (Full draw loop for scene_objs) ...
-            if (obj.o_primitives.empty()) continue; 
-            if (obj.o_pipeline != last_bound_pipeline) {
-                cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *obj.o_pipeline->pipeline);
-                last_bound_pipeline = obj.o_pipeline;
-            }
-            if (&obj != last_bound_object) {
-                cmd.bindVertexBuffers(0, {obj.geometry_buffer.buffer}, {0});
-                cmd.bindIndexBuffer(obj.geometry_buffer.buffer, obj.index_buffer_offset, vk::IndexType::eUint32);
-                last_bound_object = &obj;
-            }
-            cmd.pushConstants<glm::mat4>(*obj.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix);
-            for(auto& primitive : obj.o_primitives) {
-                const Material& material = obj.materials[primitive.material_index];
-                if(material.is_doublesided){
-                    cmd.setCullMode(vk::CullModeFlagBits::eNone);
-                }else{
-                    cmd.setCullMode(vk::CullModeFlagBits::eBack);
-                }
-                MaterialPushConstant p_const;
-                p_const.base_color_factor = material.base_color_factor;
-                p_const.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 0.0f);
-                p_const.metallic_factor = material.metallic_factor;
-                p_const.roughness_factor = material.roughness_factor;
-                p_const.occlusion_strength = material.occlusion_strength;
-                p_const.specular_factor = material.specular_factor;
-                p_const.specular_color_factor = material.specular_color_factor;
-                p_const.transmission_factor = material.transmission_factor;
-                p_const.alpha_cutoff = material.alpha_cutoff;
-                p_const.clearcoat_factor = material.clearcoat_factor;
-                p_const.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
-                cmd.pushConstants<MaterialPushConstant>(*obj.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
-                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *obj.o_pipeline->layout, 0, {*material.descriptor_sets[current_frame]}, {});
-                cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
-            }
-        }
-        if (use_rt_box && rt_box.o_pipeline && !rt_box.o_primitives.empty())
-        {
-            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *rt_box.o_pipeline->pipeline);
-            cmd.bindVertexBuffers(0, {rt_box.geometry_buffer.buffer}, {0});
-            cmd.bindIndexBuffer(rt_box.geometry_buffer.buffer, rt_box.index_buffer_offset, vk::IndexType::eUint32);
-            cmd.pushConstants<glm::mat4>(*rt_box.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, rt_box.model_matrix);
-            cmd.setCullMode(vk::CullModeFlagBits::eBack);
-            for(auto& primitive : rt_box.o_primitives)
-            {
-                const Material& material = rt_box.materials[primitive.material_index];
-                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *rt_box.o_pipeline->layout, 0, {*material.descriptor_sets[current_frame]}, {});
-                MaterialPushConstant p_const;
-                p_const.base_color_factor = material.base_color_factor;
-                p_const.metallic_factor = material.metallic_factor;
-                p_const.roughness_factor = material.roughness_factor;
-                p_const.occlusion_strength = material.occlusion_strength;
-                p_const.specular_factor = material.specular_factor;
-                p_const.specular_color_factor = material.specular_color_factor;
-                p_const.transmission_factor = material.transmission_factor;
-                p_const.alpha_cutoff = material.alpha_cutoff;
-                p_const.clearcoat_factor = material.clearcoat_factor;
-                p_const.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
-                p_const.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 0.f);
-                cmd.pushConstants<MaterialPushConstant>(*rt_box.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
-                cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
-            }
-        }
-        if (debug_lights && debug_cube.o_pipeline && !debug_cube.o_primitives.empty())
-        {
-            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *debug_cube.o_pipeline->pipeline);
-            cmd.bindVertexBuffers(0, {debug_cube.geometry_buffer.buffer}, {0});
-            cmd.bindIndexBuffer(debug_cube.geometry_buffer.buffer, debug_cube.index_buffer_offset, vk::IndexType::eUint32);
-            const Material& material = debug_cube.materials[0];
-            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *debug_cube.o_pipeline->layout, 0, {*material.descriptor_sets[current_frame]}, {});
-            MaterialPushConstant p_const;
-            p_const.base_color_factor = material.base_color_factor;
-            p_const.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 0.0f);
-            p_const.metallic_factor = material.metallic_factor;
-            p_const.roughness_factor = material.roughness_factor;
-            p_const.occlusion_strength = 1.0f;
-            p_const.specular_factor = 0.5f;
-            p_const.specular_color_factor = glm::vec3(1.f);
-            p_const.transmission_factor = 0.0f;
-            p_const.alpha_cutoff = 0.0f;
-            p_const.clearcoat_factor = 0.0f;
-            p_const.clearcoat_roughness_factor = 0.0f;
-            cmd.pushConstants<MaterialPushConstant>(*debug_cube.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
-            for(int i = 0; i < ubo.curr_num_pointlights; i++)
-            {
-                glm::mat4 model_matrix = glm::translate(glm::mat4(1.0f), glm::vec3(ubo.pointlights[i].position));
-                model_matrix = glm::scale(model_matrix, glm::vec3(0.5f));
-                cmd.pushConstants<glm::mat4>(*debug_cube.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, model_matrix);
-                cmd.drawIndexed(debug_cube.o_primitives[0].index_count, 1, debug_cube.o_primitives[0].first_index, 0, 0);
-            }
-            for(int i = 0; i < ubo.curr_num_shadowlights; i++)
-            {
-                glm::mat4 model_matrix = glm::translate(glm::mat4(1.0f), glm::vec3(ubo.shadowlights[i].position));
-                model_matrix = glm::scale(model_matrix, glm::vec3(0.5f));
-                cmd.pushConstants<glm::mat4>(*debug_cube.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, model_matrix);
-                cmd.drawIndexed(debug_cube.o_primitives[0].index_count, 1, debug_cube.o_primitives[0].first_index, 0, 0);
-            }
-        }
-        // --- The if/else for point cloud is REMOVED from here ---
-        
-        cmd.endRendering();
+        // Transition RT Output back to General for next frame
+        transitionImage(cmd, rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
     }
 
-    // --- 7. CONDITIONAL POINT CLOUD PASS ---
-    // (Replaces the Opaque Pass's output if enabled)
+    // --- 5. PASS 3: POINT CLOUD OVERLAY (Raster) ---
     if (render_point_cloud && activate_point_cloud)
     {
-        vk::ClearValue clear_color = vk::ClearColorValue(0.f, 0.f, 0.f, 1.f);
-        vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
+        // Transition Swapchain: TransferDst -> ColorAttachment
+        transition_image_layout(image_index, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eColorAttachmentOptimal,
+                                vk::AccessFlagBits2::eTransferWrite, vk::AccessFlagBits2::eColorAttachmentWrite,
+                                vk::PipelineStageFlagBits2::eTransfer, vk::PipelineStageFlagBits2::eColorAttachmentOutput);
 
-        // Attachment 0: Lit Scene (Overwrite)
-        vk::RenderingAttachmentInfo color_attachment_lit{};
-        color_attachment_lit.imageView = color_image.image_view;
-        color_attachment_lit.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-        color_attachment_lit.loadOp = vk::AttachmentLoadOp::eClear; // CLEAR the opaque scene
-        color_attachment_lit.storeOp = vk::AttachmentStoreOp::eStore;
-        color_attachment_lit.clearValue = clear_color;
+        // LoadOp::eLoad preserves the Ray Traced image we just copied in
+        vk::RenderingAttachmentInfo color_att{};
+        color_att.imageView = swapchain.image_views[image_index];
+        color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+        color_att.loadOp = vk::AttachmentLoadOp::eLoad; 
+        color_att.storeOp = vk::AttachmentStoreOp::eStore;
 
-        // Main depth attachment (Overwrite)
-        vk::RenderingAttachmentInfo depth_attachment_info = {};
-        depth_attachment_info.imageView = depth_image.image_view;
-        depth_attachment_info.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
-        depth_attachment_info.loadOp = vk::AttachmentLoadOp::eClear; // CLEAR the opaque depth
-        depth_attachment_info.storeOp = vk::AttachmentStoreOp::eStore;
-        depth_attachment_info.clearValue = clear_depth;
+        // Depth Attachment (Cleared, used for correct point occlusion)
+        vk::RenderingAttachmentInfo depth_att{};
+        depth_att.imageView = depth_image.image_view;
+        depth_att.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+        depth_att.loadOp = vk::AttachmentLoadOp::eClear;
+        depth_att.storeOp = vk::AttachmentStoreOp::eDontCare;
+        depth_att.clearValue = vk::ClearDepthStencilValue(1.0f, 0);
 
-        vk::RenderingInfo rendering_info;
-        rendering_info.renderArea.offset = vk::Offset2D{0, 0};
-        rendering_info.renderArea.extent = swapchain.extent;
-        rendering_info.layerCount = 1;
-        rendering_info.colorAttachmentCount = 1;
-        rendering_info.pColorAttachments = &color_attachment_lit;
-        rendering_info.pDepthAttachment = &depth_attachment_info;
+        vk::RenderingInfo render_info{};
+        render_info.renderArea.extent = swapchain.extent;
+        render_info.layerCount = 1;
+        render_info.colorAttachmentCount = 1;
+        render_info.pColorAttachments = &color_att;
+        render_info.pDepthAttachment = &depth_att;
 
-        cmd.beginRendering(rendering_info);
+        cmd.beginRendering(render_info);
+        cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)swapchain.extent.width, (float)swapchain.extent.height, 0.f, 1.f));
+        cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapchain.extent));
 
-        cmd.setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain.extent.width), static_cast<float>(swapchain.extent.height), 0.f, 1.f));
-        cmd.setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain.extent));
-        
-        // --- POINT CLOUD DRAW ---
+        // Draw Points
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.pipeline);
-        cmd.setCullMode(vk::CullModeFlagBits::eNone);
-        cmd.bindDescriptorSets(
-            vk::PipelineBindPoint::eGraphics,
-            *point_cloud_pipeline.layout, 0,
-            {*point_cloud_descriptor_sets[current_frame]},
-            {});
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.layout, 0, {*point_cloud_descriptor_sets[current_frame]}, {});
+        
         PC pc_data;
         pc_data.model = torus.model_matrix;
-        pc_data.mode = 0; // 0 = World Space Points
+        pc_data.mode = 0; // World Space
         pc_data.major_radius = torus.getMajorRadius();
         pc_data.minor_radius = torus.getMinorRadius();
         pc_data.height = torus.getHeight();
-
+        
         if(render_final_pointcloud){
             cmd.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data);
             cmd.draw(static_cast<uint32_t>(sampling_points.size()), 1, 0, 0);
         }
 
-        // --- DRAW 2: The Projected Torus (Painted Surface) ---
-        // Only draw this if T is toggled ON
         if (show_projected_torus) {
-            pc_data.mode = 1; // 1 = Project onto Torus
-            
+            pc_data.mode = 1; // Projected onto Torus
             cmd.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data);
             cmd.draw(static_cast<uint32_t>(sampling_points.size()), 1, 0, 0);
         }
-
+        
         cmd.endRendering();
+
+        // Transition for Presentation
+        transition_image_layout(image_index, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::ePresentSrcKHR,
+                                vk::AccessFlagBits2::eColorAttachmentWrite, {},
+                                vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::PipelineStageFlagBits2::eBottomOfPipe);
     }
-
-
-    // --- 3. OIT WRITE PASS ---
-    // (This pass now runs AFTER the Opaque Pass and AFTER the optional Point Cloud Pass)
+    else 
     {
-        cmd.fillBuffer(oit_atomic_counter_buffer.buffer, 0, sizeof(uint32_t), 0);
-        vk::ClearColorValue clear_uint(std::array<uint32_t, 4>{ 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF });
-        vk::ImageSubresourceRange clear_range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
-        cmd.clearColorImage(oit_start_offset_image.image, 
-                            vk::ImageLayout::eGeneral,
-                            clear_uint, clear_range);
-
-        vk::MemoryBarrier2 mem_barrier;
-        mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eTransfer;
-        mem_barrier.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
-        mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
-        mem_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageWrite | vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderRead;
-        vk::DependencyInfo dep_info;
-        dep_info.memoryBarrierCount = 1;
-        dep_info.pMemoryBarriers = &mem_barrier;
-        cmd.pipelineBarrier2(dep_info);
-
-        // Depth attachment (LOAD, don't clear, don't write)
-        vk::RenderingAttachmentInfo depth_attachment_info = {};
-        depth_attachment_info.imageView = depth_image.image_view;
-        depth_attachment_info.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
-        depth_attachment_info.loadOp = vk::AttachmentLoadOp::eLoad; // LOAD depth
-        depth_attachment_info.storeOp = vk::AttachmentStoreOp::eDontCare;
-        
-        vk::RenderingInfo oit_rendering_info;
-        oit_rendering_info.renderArea.offset = vk::Offset2D{0, 0};
-        oit_rendering_info.renderArea.extent = swapchain.extent;
-        oit_rendering_info.layerCount = 1;
-        oit_rendering_info.colorAttachmentCount = 0; // No color attachments
-        oit_rendering_info.pColorAttachments = nullptr;
-        oit_rendering_info.pDepthAttachment = &depth_attachment_info;
-
-        cmd.beginRendering(oit_rendering_info);
-        
-        cmd.setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain.extent.width), static_cast<float>(swapchain.extent.height), 0.f, 1.f));
-        cmd.setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain.extent));
-
-
-        // --- OIT WRITE DRAW LOOP ---
-        if (!transparent_draws.empty()) {
-            Gameobject* last_bound_object = nullptr;
-            PipelineInfo* last_bound_pipeline = nullptr;
-
-            for (const auto& draw : transparent_draws) {
-                // ... (Full draw loop for transparent_draws) ...
-                Gameobject* obj = draw.object;
-                const Primitive& primitive = *draw.primitive;
-                const Material& material = *draw.material;
-                PipelineInfo* pipeline = obj->t_pipeline;
-                if(material.is_doublesided){
-                    cmd.setCullMode(vk::CullModeFlagBits::eNone);
-                }else{
-                    cmd.setCullMode(vk::CullModeFlagBits::eBack);
-                }
-                if (pipeline != last_bound_pipeline) {
-                    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline->pipeline);
-                    last_bound_pipeline = pipeline;
-                }
-                if (obj != last_bound_object) {
-                    cmd.bindVertexBuffers(0, {obj->geometry_buffer.buffer}, {0});
-                    cmd.bindIndexBuffer(obj->geometry_buffer.buffer, obj->index_buffer_offset, vk::IndexType::eUint32);
-                    last_bound_object = obj;
-                }
-                cmd.pushConstants<glm::mat4>(*pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, obj->model_matrix);
-                if (obj != &torus)
-                {
-                    MaterialPushConstant p_const;
-                    p_const.base_color_factor = material.base_color_factor;
-                    p_const.emissive_factor_and_pad = glm::vec4(material.emissive_factor, 0.0f);
-                    p_const.metallic_factor = material.metallic_factor;
-                    p_const.roughness_factor = material.roughness_factor;
-                    p_const.occlusion_strength = material.occlusion_strength;
-    
-                    p_const.specular_factor = material.specular_factor;
-                    p_const.specular_color_factor = material.specular_color_factor;
-                    p_const.transmission_factor = material.transmission_factor;
-                    p_const.alpha_cutoff = material.alpha_cutoff;
-                    p_const.clearcoat_factor = material.clearcoat_factor;
-                    p_const.clearcoat_roughness_factor = material.clearcoat_roughness_factor;
-                    cmd.pushConstants<MaterialPushConstant>(*pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), p_const);
-                }
-                std::array<vk::DescriptorSet, 2> descriptor_sets_to_bind = {
-                    *material.descriptor_sets[current_frame],
-                    *oit_ppll_descriptor_sets[current_frame]
-                };
-                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
-                                     *pipeline->layout, 0,
-                                     descriptor_sets_to_bind,
-                                     {});
-                cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0);
-            }
-        }
-        cmd.endRendering();
+        // If Point Cloud is OFF, transition directly from TransferDst (after Copy) to Present
+        transition_image_layout(image_index, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::ePresentSrcKHR,
+                                vk::AccessFlagBits2::eTransferWrite, {},
+                                vk::PipelineStageFlagBits2::eTransfer, vk::PipelineStageFlagBits2::eBottomOfPipe);
     }
-
-    // --- 4. RESOLVE PASS ---
-    {
-        vk::MemoryBarrier2 mem_barrier;
-        mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
-        mem_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
-        mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
-        mem_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead;
-        vk::DependencyInfo dep_info;
-        dep_info.memoryBarrierCount = 1;
-        dep_info.pMemoryBarriers = &mem_barrier;
-        cmd.pipelineBarrier2(dep_info);
-    }
-
-    // --- 5. COMPOSITE PASS ---
-    {
-        // Main color attachment (LOAD, don't clear)
-        vk::RenderingAttachmentInfo color_attachment_info{};
-        color_attachment_info.imageView = color_image.image_view;
-        color_attachment_info.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-        color_attachment_info.loadOp = vk::AttachmentLoadOp::eLoad; // LOAD scene
-        color_attachment_info.storeOp = vk::AttachmentStoreOp::eDontCare; 
-        
-        color_attachment_info.resolveMode = vk::ResolveModeFlagBits::eAverage;
-        color_attachment_info.resolveImageView = swapchain.image_views[image_index];
-        color_attachment_info.resolveImageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-
-        vk::RenderingInfo composite_rendering_info;
-        composite_rendering_info.renderArea.offset = vk::Offset2D{0, 0};
-        composite_rendering_info.renderArea.extent = swapchain.extent;
-        composite_rendering_info.layerCount = 1;
-        composite_rendering_info.colorAttachmentCount = 1;
-        composite_rendering_info.pColorAttachments = &color_attachment_info;
-        composite_rendering_info.pDepthAttachment = nullptr;
-
-        cmd.beginRendering(composite_rendering_info);
-        
-        cmd.setViewport(0, vk::Viewport(0.f, 0.f, static_cast<float>(swapchain.extent.width), static_cast<float>(swapchain.extent.height), 0.f, 1.f));
-        cmd.setScissor(0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapchain.extent));
-        cmd.setCullMode(vk::CullModeFlagBits::eNone);
-
-        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *oit_composite_pipeline.pipeline);
-        cmd.bindDescriptorSets(
-            vk::PipelineBindPoint::eGraphics,
-            *oit_composite_pipeline.layout, 0,
-            *oit_ppll_descriptor_sets[current_frame],
-            nullptr
-        );
-        
-        cmd.draw(3, 1, 0, 0);
-
-        cmd.endRendering();
-    }
-
-
-    // --- 6. FINAL TRANSITION ---
-    transition_image_layout(
-        image_index,
-        vk::ImageLayout::eColorAttachmentOptimal,
-        vk::ImageLayout::ePresentSrcKHR,
-        vk::AccessFlagBits2::eColorAttachmentWrite,
-        {},
-        vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-        vk::PipelineStageFlagBits2::eBottomOfPipe
-    );
 
     cmd.end();
 }
@@ -2718,21 +1968,22 @@ void Engine::drawFrame(){
 
 void Engine::updateUniformBuffer(uint32_t current_image)
 {
-    // --- 1. Main UBO ---
+    // --- 1. Update Camera Matrices ---
     ubo.view = camera.getViewMatrix();
     ubo.proj = camera.getProjectionMatrix();
+    
     if(camera.getCurrentState().is_toroidal)
         ubo.camera_pos = camera.getCurrentState().t_camera.position;
     else
         ubo.camera_pos = camera.getCurrentState().f_camera.position;
 
-    // --- RESET EVERYTHING ---
+    // --- 2. Reset Light Counters ---
     ubo.curr_num_pointlights = 0;
     ubo.curr_num_shadowlights = 0;
     ubo.panel_shadows_enabled = this->panel_shadows_enabled;
     ubo.shadow_far_plane = this->shadow_light_far_plane;
 
-    // --- 1. Add Panel Lights (if enabled) ---
+    // --- 3. Add Panel Lights (if enabled) ---
     for(int i = 0; i < panel_lights.size(); ++i) {
         if(panel_shadows_enabled){
             if(ubo.curr_num_shadowlights >= MAX_SHADOW_LIGHTS) break;
@@ -2750,7 +2001,7 @@ void Engine::updateUniformBuffer(uint32_t current_image)
         }
     }
 
-    // --- 2. Add Manual Lights ---
+    // --- 4. Add Manual Lights ---
     if (use_manual_lights) {
         if(use_manual_lights_shadows){
             for(int i = 0; i < manual_lights.size(); i++){
@@ -2772,7 +2023,7 @@ void Engine::updateUniformBuffer(uint32_t current_image)
         }
     }
 
-    // --- 3. Add Emissive Lights ---
+    // --- 5. Add Emissive Lights ---
     if (use_emissive_lights) {
         if(use_emissive_lights_shadows){
             for (const auto& light : emissive_lights) {
@@ -2788,26 +2039,10 @@ void Engine::updateUniformBuffer(uint32_t current_image)
         }
     }
 
-    // --- 4. NOW Setup Shadow Maps ---ì
-    for(int i = 0; i < ubo.curr_num_shadowlights; ++i) {
-        
-        // --- Update the corresponding Shadow UBO ---
-        Pointlight& light = ubo.shadowlights[i];
-        shadow_ubo_data.lightPos = light.position;
-        shadow_ubo_data.farPlane = shadow_light_far_plane;
-        
-        shadow_ubo_data.proj = glm::perspective(glm::radians(90.0f), 1.0f, 0.1f, shadow_light_far_plane);
-        glm::vec3 pos = glm::vec3(light.position);
-        shadow_ubo_data.views[0] = glm::lookAt(pos, pos + glm::vec3( 1.0, 0.0, 0.0), glm::vec3(0.0, -1.0, 0.0));
-        shadow_ubo_data.views[1] = glm::lookAt(pos, pos + glm::vec3(-1.0, 0.0, 0.0), glm::vec3(0.0, -1.0, 0.0));
-        shadow_ubo_data.views[2] = glm::lookAt(pos, pos + glm::vec3( 0.0, 1.0, 0.0), glm::vec3(0.0, 0.0, 1.0));
-        shadow_ubo_data.views[3] = glm::lookAt(pos, pos + glm::vec3( 0.0,-1.0, 0.0), glm::vec3(0.0, 0.0,-1.0));
-        shadow_ubo_data.views[4] = glm::lookAt(pos, pos + glm::vec3( 0.0, 0.0, 1.0), glm::vec3(0.0, -1.0, 0.0));
-        shadow_ubo_data.views[5] = glm::lookAt(pos, pos + glm::vec3( 0.0, 0.0,-1.0), glm::vec3(0.0, -1.0, 0.0));
-        
-        memcpy(shadow_ubos_mapped[current_image][i], &shadow_ubo_data, sizeof(ShadowUBO));
-    }
+    // --- REMOVED: Raster Shadow Map Matrix Calculation Loop ---
+    // (Ray tracing calculates shadows directly in the shader)
 
+    // --- 6. Copy Data to GPU ---
     memcpy(uniform_buffers_mapped[current_image], &ubo, sizeof(ubo));
 }
 
@@ -2919,10 +2154,10 @@ void Engine::buildTlas(vk::raii::CommandBuffer& cmd)
     for (auto& obj : scene_objs) {
         gather_instances(obj);
     }
-    /* gather_instances(debug_cube);
+    // gather_instances(debug_cube);
     if (use_rt_box) {
         gather_instances(rt_box);
-    } */
+    }
 
     if (instances.empty()) {
         return; // Nothing to build
@@ -2992,7 +2227,7 @@ void Engine::buildTlas(vk::raii::CommandBuffer& cmd)
  */
 void Engine::createRayTracingDataBuffers()
 {
-    // 1. Generate sample 
+    // --- 1. Generate Samples based on selected method ---
     switch(sampling_methods[current_sampling]){
         case SamplingMethod::HALTON:
             Sampling::generateHaltonSamples(sampling_points, num_rays);
@@ -3012,12 +2247,20 @@ void Engine::createRayTracingDataBuffers()
         case SamplingMethod::IMP_COL:
         case SamplingMethod::IMP_HIT:
             // Fallback to Halton for the FIRST frame of importance sampling
-            // (Since we have no previous data yet)
-            Sampling::generateHaltonSamples(sampling_points, num_rays);
+            // (Since we have no previous data yet to importance-sample from)
+            if (sampling_points.empty()) {
+                Sampling::generateHaltonSamples(sampling_points, num_rays);
+            }
             break;
     }
 
-    // 2. Create Input Buffer 
+    if (sampling_points.empty()) {
+        std::cerr << "Error: No sampling points generated!" << std::endl;
+        return;
+    }
+
+    // --- 2. Create Input Buffer (Ray Samples) ---
+    // This buffer holds the UV coordinates that the RayGen shader uses to spawn rays on the torus.
     vk::DeviceSize sample_size = sizeof(RaySample) * sampling_points.size();
 
     AllocatedBuffer staging_buffer;
@@ -3025,7 +2268,6 @@ void Engine::createRayTracingDataBuffers()
                 vk::BufferUsageFlagBits::eTransferSrc,
                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
                 staging_buffer);
-
 
     void* data;
     vmaMapMemory(vma_allocator, staging_buffer.allocation, &data);
@@ -3040,80 +2282,146 @@ void Engine::createRayTracingDataBuffers()
     copyBuffer(staging_buffer.buffer, sample_data_buffer.buffer, sample_size,
                 command_pool_graphics, &logical_device, graphics_queue);
 
-    // 3. Create Output Buffer (Hit Data)
+    // --- 3. Create Output Buffer (Hit Data) ---
+    // This buffer stores the results (color, position, hit flag) from the Torus Capture RayGen.
     vk::DeviceSize hit_data_size = sizeof(HitDataGPU) * sampling_points.size();
 
     createBuffer(vma_allocator, hit_data_size,
-                 vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress |
-                 vk::BufferUsageFlagBits::eTransferSrc, 
+                 vk::BufferUsageFlagBits::eStorageBuffer | 
+                 vk::BufferUsageFlagBits::eShaderDeviceAddress |
+                 vk::BufferUsageFlagBits::eTransferSrc | 
+                 vk::BufferUsageFlagBits::eTransferDst, // Added TransferDst to allow clearing/filling if needed
                  vk::MemoryPropertyFlagBits::eDeviceLocal,
                  hit_data_buffer);
 }
 
 void Engine::createRayTracingPipeline()
 {
-    // 1. Create Descriptor Set Layout
-    std::vector<vk::DescriptorSetLayoutBinding> bindings = {
-        // Binding 0: Top-Level Acceleration Structure
-        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eAccelerationStructureKHR, 1,
-                                       vk::ShaderStageFlagBits::eRaygenKHR, nullptr),
-        // Binding 1: Input Vertex Buffer
-        vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eStorageBuffer, 1,
-                                       vk::ShaderStageFlagBits::eRaygenKHR, nullptr),
-        // Binding 2: Output Hit Buffer
-        vk::DescriptorSetLayoutBinding(2, vk::DescriptorType::eStorageBuffer, 1,
-                                       vk::ShaderStageFlagBits::eRaygenKHR | vk::ShaderStageFlagBits::eClosestHitKHR | vk::ShaderStageFlagBits::eMissKHR, nullptr),
-        // Binding 3: All Materials Buffer
-        vk::DescriptorSetLayoutBinding(3, vk::DescriptorType::eStorageBuffer, 1,
-                                       vk::ShaderStageFlagBits::eClosestHitKHR, nullptr),
-        // Binding 4: Main UBO (for lights)
-        vk::DescriptorSetLayoutBinding(4, vk::DescriptorType::eUniformBuffer, 1,
-                                       vk::ShaderStageFlagBits::eClosestHitKHR, nullptr),
-        // Binding 5: All Vertices
-        vk::DescriptorSetLayoutBinding(5, vk::DescriptorType::eStorageBuffer, 1,
-                                       vk::ShaderStageFlagBits::eClosestHitKHR, nullptr),
-        // Binding 6: All Indices
-        vk::DescriptorSetLayoutBinding(6, vk::DescriptorType::eStorageBuffer, 1,
-                                       vk::ShaderStageFlagBits::eClosestHitKHR, nullptr),
-        // Binding 7: All MeshInfo
-        vk::DescriptorSetLayoutBinding(7, vk::DescriptorType::eStorageBuffer, 1,
-                                       vk::ShaderStageFlagBits::eClosestHitKHR, nullptr),
-        // Binding 8: Shadow Maps ---
-        vk::DescriptorSetLayoutBinding(8, vk::DescriptorType::eCombinedImageSampler, 
-                                    MAX_SHADOW_LIGHTS, 
-                                    vk::ShaderStageFlagBits::eClosestHitKHR, nullptr),
-        // Binding 9: Global Texture Array
-        vk::DescriptorSetLayoutBinding(9, vk::DescriptorType::eCombinedImageSampler, 
-                                    static_cast<uint32_t>(MAX_BINDLESS_TEXTURES),
-                                    vk::ShaderStageFlagBits::eClosestHitKHR | vk::ShaderStageFlagBits::eAnyHitKHR, 
-                                    nullptr)
-    };
+    // --- 1. DESCRIPTOR SET LAYOUT ---
+    std::vector<vk::DescriptorSetLayoutBinding> bindings;
 
-    std::vector<vk::DescriptorBindingFlags> binding_flags(10);
-    binding_flags[8] = {};
-    binding_flags[9] = vk::DescriptorBindingFlagBits::ePartiallyBound | vk::DescriptorBindingFlagBits::eVariableDescriptorCount;
+    // ... [Bindings 0-7 remain indices 0-7] ...
+    bindings.emplace_back(0, vk::DescriptorType::eAccelerationStructureKHR, 1, vk::ShaderStageFlagBits::eRaygenKHR | vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
+    bindings.emplace_back(1, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eRaygenKHR, nullptr);
+    bindings.emplace_back(2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eRaygenKHR, nullptr);
+    bindings.emplace_back(3, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
+    bindings.emplace_back(4, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eRaygenKHR | vk::ShaderStageFlagBits::eClosestHitKHR | vk::ShaderStageFlagBits::eMissKHR, nullptr);
+    bindings.emplace_back(5, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
+    bindings.emplace_back(6, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
+    bindings.emplace_back(7, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
+
+    // Binding 8 SKIPPED
+
+    // --- SWAP HAPPENS HERE ---
+
+    // Binding 9: Output Image (Was 10) - STANDARD BINDING
+    bindings.emplace_back(9, vk::DescriptorType::eStorageImage, 1, 
+                          vk::ShaderStageFlagBits::eRaygenKHR, nullptr);
+
+    // Binding 10: Global Textures (Was 9) - VARIABLE COUNT (MUST BE LAST)
+    bindings.emplace_back(10, vk::DescriptorType::eCombinedImageSampler, static_cast<uint32_t>(MAX_BINDLESS_TEXTURES), 
+                          vk::ShaderStageFlagBits::eClosestHitKHR | vk::ShaderStageFlagBits::eAnyHitKHR, nullptr);
+
+    // --- Flags ---
+    // We have 10 bindings pushed to the vector (indices 0 to 9).
+    // binding_flags[i] corresponds to bindings[i].
+    
+    std::vector<vk::DescriptorBindingFlags> binding_flags(bindings.size(), vk::DescriptorBindingFlags{});
+    
+    // The last element in the vector (index 9) corresponds to Binding 10 (Textures)
+    binding_flags.back() = vk::DescriptorBindingFlagBits::ePartiallyBound | vk::DescriptorBindingFlagBits::eVariableDescriptorCount;
 
     vk::DescriptorSetLayoutBindingFlagsCreateInfo flags_info;
-    flags_info.bindingCount = bindings.size();
+    flags_info.bindingCount = static_cast<uint32_t>(binding_flags.size());
     flags_info.pBindingFlags = binding_flags.data();
 
     vk::DescriptorSetLayoutCreateInfo layout_info;
-    layout_info.pNext = &flags_info; // Chain the flags
-    layout_info.bindingCount = bindings.size();
+    layout_info.pNext = &flags_info;
+    layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
     layout_info.pBindings = bindings.data();
-    
-    // This layout is shared, so store it on the engine
-    rt_pipeline.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings, layout_info);
 
-    // 2. Create Pipeline
-    // This is a complex function, so we delegate it to the Pipeline namespace
-    rt_pipeline.pipeline = Pipeline::createRayTracingPipeline(
-        *this,
-        &rt_pipeline,
-        rt_rgen_shader,
-        rt_rmiss_shader,
-        rt_rchit_shader
+    rt_pipeline.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings, layout_info);
+    // --- 2. SHADER MODULES ---
+    // We need to load 5 shaders now.
+    
+    // Group 0: RayGen (Torus Capture)
+    vk::raii::ShaderModule rgen_torus = Pipeline::createShaderModule(Pipeline::readFile(rt_rgen_shader), &logical_device);
+    
+    // Group 1: RayGen (Camera View)
+    vk::raii::ShaderModule rgen_camera = Pipeline::createShaderModule(Pipeline::readFile("shaders/rt_datacollect/raygen_camera.rgen.spv"), &logical_device);
+    
+    // Group 2: Miss (Primary - Sky/Background)
+    vk::raii::ShaderModule rmiss_primary = Pipeline::createShaderModule(Pipeline::readFile(rt_rmiss_shader), &logical_device);
+    
+    // Group 3: Miss (Shadow - Visibility)
+    vk::raii::ShaderModule rmiss_shadow = Pipeline::createShaderModule(Pipeline::readFile("shaders/rt_datacollect/shadow.rmiss.spv"), &logical_device);
+    
+    // Group 4: Closest Hit (PBR + Shadows)
+    vk::raii::ShaderModule rchit = Pipeline::createShaderModule(Pipeline::readFile(rt_rchit_shader), &logical_device);
+
+    std::vector<vk::PipelineShaderStageCreateInfo> stages;
+    stages.push_back({{}, vk::ShaderStageFlagBits::eRaygenKHR, *rgen_torus, "main"});      // 0
+    stages.push_back({{}, vk::ShaderStageFlagBits::eRaygenKHR, *rgen_camera, "main"});     // 1
+    stages.push_back({{}, vk::ShaderStageFlagBits::eMissKHR, *rmiss_primary, "main"});     // 2
+    stages.push_back({{}, vk::ShaderStageFlagBits::eMissKHR, *rmiss_shadow, "main"});      // 3
+    stages.push_back({{}, vk::ShaderStageFlagBits::eClosestHitKHR, *rchit, "main"});       // 4
+
+    // --- 3. SHADER GROUPS ---
+    std::vector<vk::RayTracingShaderGroupCreateInfoKHR> groups;
+
+    // Group 0: RayGen Torus
+    groups.push_back({vk::RayTracingShaderGroupTypeKHR::eGeneral, 0, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR});
+    
+    // Group 1: RayGen Camera
+    groups.push_back({vk::RayTracingShaderGroupTypeKHR::eGeneral, 1, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR});
+    
+    // Group 2: Miss Primary
+    groups.push_back({vk::RayTracingShaderGroupTypeKHR::eGeneral, 2, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR});
+    
+    // Group 3: Miss Shadow
+    groups.push_back({vk::RayTracingShaderGroupTypeKHR::eGeneral, 3, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR});
+    
+    // Group 4: Hit Group (Triangle Closest Hit)
+    groups.push_back({vk::RayTracingShaderGroupTypeKHR::eTrianglesHitGroup, VK_SHADER_UNUSED_KHR, 4, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR});
+
+    // --- 4. PIPELINE LAYOUT ---
+    // Push constants needed for Torus Model Matrix & Geometry info
+    vk::PushConstantRange push_constant;
+    push_constant.stageFlags = vk::ShaderStageFlagBits::eRaygenKHR; // Used by both RayGens
+    push_constant.offset = 0;
+    push_constant.size = sizeof(RayPushConstant);
+
+    vk::PipelineLayoutCreateInfo pipeline_layout_info;
+    pipeline_layout_info.setLayoutCount = 1;
+    pipeline_layout_info.pSetLayouts = &*rt_pipeline.descriptor_set_layout;
+    pipeline_layout_info.pushConstantRangeCount = 1;
+    pipeline_layout_info.pPushConstantRanges = &push_constant;
+
+    rt_pipeline.layout = vk::raii::PipelineLayout(logical_device, pipeline_layout_info);
+
+    // --- 5. PIPELINE CREATION ---
+    vk::RayTracingPipelineCreateInfoKHR pipeline_info;
+    pipeline_info.stageCount = static_cast<uint32_t>(stages.size());
+    pipeline_info.pStages = stages.data();
+    pipeline_info.groupCount = static_cast<uint32_t>(groups.size());
+    pipeline_info.pGroups = groups.data();
+    pipeline_info.maxPipelineRayRecursionDepth = 2; // 1 for primary, 2 for reflection/shadow recursion
+    pipeline_info.layout = *rt_pipeline.layout;
+
+    VkPipeline vk_pipeline;
+    VkResult res = vkCreateRayTracingPipelinesKHR(
+        *logical_device,
+        VK_NULL_HANDLE, // Deferred Operation
+        VK_NULL_HANDLE, // Pipeline Cache
+        1, pipeline_info,
+        nullptr, &vk_pipeline
     );
+
+    if (res != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create ray tracing pipeline!");
+    }
+
+    rt_pipeline.pipeline = vk::raii::Pipeline(logical_device, vk_pipeline);
 }
 
 void Engine::createRayTracingDescriptorSets()
@@ -3121,117 +2429,92 @@ void Engine::createRayTracingDescriptorSets()
     rt_descriptor_sets.clear();
 
     std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *rt_pipeline.descriptor_set_layout);
+    
     vk::DescriptorSetAllocateInfo alloc_info(
         *descriptor_pool,
         static_cast<uint32_t>(layouts.size()),
         layouts.data()
     );
+
+    // Variable count applies to the last binding (Binding 10) automatically
     std::vector<uint32_t> variable_counts(MAX_FRAMES_IN_FLIGHT, MAX_BINDLESS_TEXTURES);
     vk::DescriptorSetVariableDescriptorCountAllocateInfo variable_alloc_info;
     variable_alloc_info.descriptorSetCount = static_cast<uint32_t>(layouts.size());
     variable_alloc_info.pDescriptorCounts = variable_counts.data();
+    
     alloc_info.pNext = &variable_alloc_info;
+
     rt_descriptor_sets = logical_device.allocateDescriptorSets(alloc_info);
 
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        // Binding 0: TLAS
+        std::vector<vk::WriteDescriptorSet> writes;
+
+        // ... [Bindings 0-7 setup remains exactly the same] ...
+        // (Include TLAS, Sample, Hit, Material, UBO, Vert, Index, Mesh)
+        // COPY-PASTE your existing logic for Bindings 0-7 here.
+
+        // --- Binding 0: TLAS ---
         vk::WriteDescriptorSetAccelerationStructureKHR as_info;
         as_info.accelerationStructureCount = 1;
-        as_info.pAccelerationStructures = &(*tlas.as); // Pointer to the TLAS handle
-
+        as_info.pAccelerationStructures = &(*tlas.as);
         vk::WriteDescriptorSet as_write;
         as_write.dstSet = *rt_descriptor_sets[i];
         as_write.dstBinding = 0;
         as_write.descriptorType = vk::DescriptorType::eAccelerationStructureKHR;
         as_write.descriptorCount = 1;
-        as_write.pNext = &as_info; // Chain the AS info
+        as_write.pNext = &as_info;
+        writes.push_back(as_write);
 
-        // Binding 1: Input Buffer (Torus Vertices)
-        vk::DescriptorBufferInfo vertex_buffer_info;
-        vertex_buffer_info.buffer = sample_data_buffer.buffer;
-        vertex_buffer_info.offset = 0;
-        vertex_buffer_info.range = VK_WHOLE_SIZE;
+        // --- Bindings 1-7 (Condensed for brevity, use your existing code) ---
+        vk::DescriptorBufferInfo sample_info(sample_data_buffer.buffer, 0, VK_WHOLE_SIZE);
+        writes.push_back(vk::WriteDescriptorSet(*rt_descriptor_sets[i], 1, 0, vk::DescriptorType::eStorageBuffer, {}, sample_info));
 
-        vk::WriteDescriptorSet vertex_write;
-        vertex_write.dstSet = *rt_descriptor_sets[i];
-        vertex_write.dstBinding = 1;
-        vertex_write.descriptorType = vk::DescriptorType::eStorageBuffer;
-        vertex_write.descriptorCount = 1;
-        vertex_write.pBufferInfo = &vertex_buffer_info;
+        vk::DescriptorBufferInfo hit_info(hit_data_buffer.buffer, 0, VK_WHOLE_SIZE);
+        writes.push_back(vk::WriteDescriptorSet(*rt_descriptor_sets[i], 2, 0, vk::DescriptorType::eStorageBuffer, {}, hit_info));
 
-        // Binding 2: Output Buffer (Hit Data)
-        vk::DescriptorBufferInfo hit_buffer_info;
-        hit_buffer_info.buffer = hit_data_buffer.buffer;
-        hit_buffer_info.offset = 0;
-        hit_buffer_info.range = VK_WHOLE_SIZE;
+        vk::DescriptorBufferInfo mat_info(all_materials_buffer.buffer, 0, VK_WHOLE_SIZE);
+        writes.push_back(vk::WriteDescriptorSet(*rt_descriptor_sets[i], 3, 0, vk::DescriptorType::eStorageBuffer, {}, mat_info));
 
-        vk::WriteDescriptorSet hit_write;
-        hit_write.dstSet = *rt_descriptor_sets[i];
-        hit_write.dstBinding = 2;
-        hit_write.descriptorType = vk::DescriptorType::eStorageBuffer;
-        hit_write.descriptorCount = 1;
-        hit_write.pBufferInfo = &hit_buffer_info;
+        vk::DescriptorBufferInfo ubo_info(uniform_buffers[i].buffer, 0, sizeof(UniformBufferObject));
+        writes.push_back(vk::WriteDescriptorSet(*rt_descriptor_sets[i], 4, 0, vk::DescriptorType::eUniformBuffer, {}, ubo_info));
 
-        // Binding 3: All Materials Buffer
-        vk::DescriptorBufferInfo materials_buffer_info;
-        materials_buffer_info.buffer = all_materials_buffer.buffer;
-        materials_buffer_info.offset = 0;
-        materials_buffer_info.range = VK_WHOLE_SIZE;
-        
-        vk::WriteDescriptorSet materials_write;
-        materials_write.dstSet = *rt_descriptor_sets[i];
-        materials_write.dstBinding = 3;
-        materials_write.descriptorType = vk::DescriptorType::eStorageBuffer;
-        materials_write.descriptorCount = 1;
-        materials_write.pBufferInfo = &materials_buffer_info;
+        vk::DescriptorBufferInfo vert_info(all_vertices_buffer.buffer, 0, VK_WHOLE_SIZE);
+        writes.push_back(vk::WriteDescriptorSet(*rt_descriptor_sets[i], 5, 0, vk::DescriptorType::eStorageBuffer, {}, vert_info));
 
-        // Binding 4: Main UBO
-        vk::DescriptorBufferInfo ubo_info;
-        ubo_info.buffer = uniform_buffers[i].buffer;
-        ubo_info.offset = 0;
-        ubo_info.range = sizeof(UniformBufferObject);
+        vk::DescriptorBufferInfo idx_info(all_indices_buffer.buffer, 0, VK_WHOLE_SIZE);
+        writes.push_back(vk::WriteDescriptorSet(*rt_descriptor_sets[i], 6, 0, vk::DescriptorType::eStorageBuffer, {}, idx_info));
 
-        vk::WriteDescriptorSet ubo_write;
-        ubo_write.dstSet = *rt_descriptor_sets[i];
-        ubo_write.dstBinding = 4;
-        ubo_write.descriptorType = vk::DescriptorType::eUniformBuffer;
-        ubo_write.descriptorCount = 1;
-        ubo_write.pBufferInfo = &ubo_info;
-
-        vk::DescriptorBufferInfo vertices_info(all_vertices_buffer.buffer, 0, VK_WHOLE_SIZE);
-        vk::WriteDescriptorSet vertices_write(*rt_descriptor_sets[i], 5, 0,
-            vk::DescriptorType::eStorageBuffer, {}, vertices_info);
-            
-        vk::DescriptorBufferInfo indices_info(all_indices_buffer.buffer, 0, VK_WHOLE_SIZE);
-        vk::WriteDescriptorSet indices_write(*rt_descriptor_sets[i], 6, 0,
-            vk::DescriptorType::eStorageBuffer, {}, indices_info);
-            
         vk::DescriptorBufferInfo mesh_info(all_mesh_info_buffer.buffer, 0, VK_WHOLE_SIZE);
-        vk::WriteDescriptorSet mesh_write(*rt_descriptor_sets[i], 7, 0,
-            vk::DescriptorType::eStorageBuffer, {}, mesh_info);
+        writes.push_back(vk::WriteDescriptorSet(*rt_descriptor_sets[i], 7, 0, vk::DescriptorType::eStorageBuffer, {}, mesh_info));
 
-        std::array<vk::DescriptorImageInfo, MAX_SHADOW_LIGHTS> shadow_map_infos;
-        for(int j = 0; j < MAX_SHADOW_LIGHTS; ++j) {
-            shadow_map_infos[j].sampler = *shadow_sampler;
-            shadow_map_infos[j].imageView = *shadow_maps[j].image_view;
-            shadow_map_infos[j].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+
+        // --- SWAP HAPPENS HERE ---
+
+        // --- Binding 9: Output Image (Was 10) ---
+        vk::DescriptorImageInfo storage_image_info;
+        storage_image_info.imageView = *rt_output_image.image_view;
+        storage_image_info.imageLayout = vk::ImageLayout::eGeneral;
+
+        vk::WriteDescriptorSet output_write;
+        output_write.dstSet = *rt_descriptor_sets[i];
+        output_write.dstBinding = 9; // <--- CHANGED
+        output_write.descriptorType = vk::DescriptorType::eStorageImage;
+        output_write.descriptorCount = 1;
+        output_write.pImageInfo = &storage_image_info;
+        writes.push_back(output_write);
+
+        // --- Binding 10: Global Textures (Was 9) ---
+        if (!global_texture_descriptors.empty()) {
+            vk::WriteDescriptorSet texture_write;
+            texture_write.dstSet = *rt_descriptor_sets[i];
+            texture_write.dstBinding = 10; // <--- CHANGED
+            texture_write.dstArrayElement = 0;
+            texture_write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+            texture_write.descriptorCount = static_cast<uint32_t>(global_texture_descriptors.size());
+            texture_write.pImageInfo = global_texture_descriptors.data();
+            writes.push_back(texture_write);
         }
-        vk::WriteDescriptorSet shadow_write;
-        shadow_write.dstSet = *rt_descriptor_sets[i];
-        shadow_write.dstBinding = 8;
-        shadow_write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
-        shadow_write.descriptorCount = MAX_SHADOW_LIGHTS;
-        shadow_write.pImageInfo = shadow_map_infos.data();
-        
-        vk::WriteDescriptorSet texture_write;
-        texture_write.dstSet = *rt_descriptor_sets[i];
-        texture_write.dstBinding = 9;
-        texture_write.dstArrayElement = 0;
-        texture_write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
-        texture_write.descriptorCount = static_cast<uint32_t>(global_texture_descriptors.size());
-        texture_write.pImageInfo = global_texture_descriptors.data();
 
-        std::array<vk::WriteDescriptorSet, 10> writes = {as_write, vertex_write, hit_write, materials_write, ubo_write, vertices_write, indices_write, mesh_write, shadow_write, texture_write};
         logical_device.updateDescriptorSets(writes, {});
     }
 }
@@ -3250,24 +2533,26 @@ void Engine::createShaderBindingTable()
     // The size of each entry in the SBT must be the handle size, aligned up to the BASE alignment
     uint32_t sbt_entry_size = align_up(handle_size, sbt_entry_alignment);
     
-    // We need 3 groups: RayGen, Miss, ClosestHit
-    // Calculate offsets based on the new, larger entry size
-    uint32_t rgen_offset = 0 * sbt_entry_size;
-    uint32_t miss_offset = 1 * sbt_entry_size;
-    uint32_t chit_offset = 2 * sbt_entry_size;
+    // We have 5 groups total
+    uint32_t group_count = 5;
 
-    // Total SBT size is 3 entries
-    uint32_t sbt_size = chit_offset + sbt_entry_size;
+    // Total SBT size
+    vk::DeviceSize sbt_size = group_count * sbt_entry_size;
 
-    // 2. Get the 3 shader group handles from the pipeline
-    uint32_t handle_count = 3;
-    std::vector<uint8_t> shader_handles(handle_count * handle_size);
+    // 2. Create SBT Buffer (Host Visible)
+    createBuffer(vma_allocator, sbt_size,
+                 vk::BufferUsageFlagBits::eShaderDeviceAddress | vk::BufferUsageFlagBits::eShaderBindingTableKHR,
+                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                 sbt_buffer);
+
+    // 3. Get the shader group handles from the pipeline
+    std::vector<uint8_t> shader_handles(group_count * handle_size);
     
     VkResult res = vkGetRayTracingShaderGroupHandlesKHR(
         *logical_device,
         *rt_pipeline.pipeline,
         0, // firstGroup
-        handle_count, // groupCount
+        group_count, // groupCount
         shader_handles.size(), // dataSize
         shader_handles.data() // pData
     );
@@ -3275,26 +2560,19 @@ void Engine::createShaderBindingTable()
         throw std::runtime_error("Failed to get ray tracing shader group handles!");
     }
 
-    // 3. Create SBT Buffer (Host Visible)
-    createBuffer(vma_allocator, sbt_size,
-                 vk::BufferUsageFlagBits::eShaderDeviceAddress | vk::BufferUsageFlagBits::eShaderBindingTableKHR,
-                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
-                 sbt_buffer);
-
-    // 4. Map and copy handles into the SBT
+    // 4. Map and copy handles into the SBT with padding/alignment
     void* sbt_mapped;
     vmaMapMemory(vma_allocator, sbt_buffer.allocation, &sbt_mapped);
     
     uint8_t* p_data = static_cast<uint8_t*>(sbt_mapped);
     
-    // Copy RayGen handle (Group 0)
-    memcpy(p_data + rgen_offset, shader_handles.data() + 0 * handle_size, handle_size);
-    
-    // Copy Miss handle (Group 1)
-    memcpy(p_data + miss_offset, shader_handles.data() + 1 * handle_size, handle_size);
-    
-    // Copy Hit handle (Group 2)
-    memcpy(p_data + chit_offset, shader_handles.data() + 2 * handle_size, handle_size);
+    for(uint32_t i = 0; i < group_count; i++) {
+        // Source: Packed tightly in shader_handles (stride = handle_size)
+        // Dest: Aligned in SBT buffer (stride = sbt_entry_size)
+        memcpy(p_data + (i * sbt_entry_size), 
+               shader_handles.data() + (i * handle_size), 
+               handle_size);
+    }
     
     vmaUnmapMemory(vma_allocator, sbt_buffer.allocation);
 }
@@ -3302,6 +2580,8 @@ void Engine::createShaderBindingTable()
 void Engine::recreateSwapChain(){
     int width = 0, height = 0;
     glfwGetFramebufferSize(window, &width, &height);
+    
+    // Pause while minimized
     while (width == 0 || height == 0){
         glfwGetFramebufferSize(window, &width, &height);
         glfwWaitEvents();
@@ -3309,54 +2589,32 @@ void Engine::recreateSwapChain(){
 
     logical_device.waitIdle();
 
+    // 1. Recreate Swapchain
     swapchain.image_views.clear();
-    swapchain.swapchain = nullptr;
-    
-
+    swapchain.swapchain = nullptr; // Release old swapchain
     swapchain = Swapchain::createSwapChain(*this);
 
-    // vkDestroyImageView(*logical_device, depth_image.image_view, nullptr);
-    vmaDestroyImage(vma_allocator, depth_image.image, depth_image.allocation);
+    // 2. Recreate Depth Image (Used by Point Cloud overlay)
+    // Destroy old depth image
+    if (depth_image.image) {
+        vmaDestroyImage(vma_allocator, depth_image.image, depth_image.allocation);
+    }
     Image::createDepthResources(physical_device, depth_image, swapchain.extent.width, swapchain.extent.height, *this);
 
-    vmaDestroyImage(vma_allocator, color_image.image, color_image.allocation);
-    color_image = Image::createImage(swapchain.extent.width, swapchain.extent.height,
-                        1, mssa_samples, swapchain.format, vk::ImageTiling::eOptimal,
-                    vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc, 
-                vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
-    color_image.image_view = Image::createImageView(color_image, *this);
-    
+    // 3. Recreate Ray Tracing Output Image
+    // This helper (defined earlier) destroys the old image and creates a new one 
+    // with the new swapchain dimensions.
+    createRTOutputImage();
 
-    vmaDestroyImage(vma_allocator, capture_resolve_image.image, capture_resolve_image.allocation);
-    capture_resolve_image = Image::createImage(swapchain.extent.width, swapchain.extent.height,
-                        1, vk::SampleCountFlagBits::e1, swapchain.format, vk::ImageTiling::eOptimal,
-                        vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst, 
-                        vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
-    capture_resolve_image.image_view = Image::createImageView(capture_resolve_image, *this);
+    // 4. Update Descriptor Sets
+    // The RT Descriptor Set (Binding 10) holds the 'rt_output_image' view.
+    // Since the view has changed, we must update the descriptors.
+    createDescriptorSets();
 
-    vk::raii::CommandBuffer cmd_resolve_init = beginSingleTimeCommands(command_pool_graphics, &logical_device);
-
-    // Transition from Undefined -> Color Attachment Optimal
-    transitionImage(cmd_resolve_init, 
-                    capture_resolve_image.image, 
-                    vk::ImageLayout::eUndefined, 
-                    vk::ImageLayout::eColorAttachmentOptimal, 
-                    vk::ImageAspectFlagBits::eColor);
-
-    endSingleTimeCommands(cmd_resolve_init, graphics_queue);
-
-
-    vmaDestroyBuffer(vma_allocator, oit_atomic_counter_buffer.buffer, oit_atomic_counter_buffer.allocation);
-    vmaDestroyBuffer(vma_allocator, oit_fragment_list_buffer.buffer, oit_fragment_list_buffer.allocation);
-    vmaDestroyImage(vma_allocator, oit_start_offset_image.image, oit_start_offset_image.allocation);
-    createOITResources();
-    createOITDescriptorSets();
-
+    // 5. Update Camera
     camera.modAspectRatio(swapchain.extent.width * 1.0 / swapchain.extent.height);
 
-    std::cout << "Memory After Swapchain Recreation" << std::endl;
-    printGpuMemoryUsage();
-
+    std::cout << "Swapchain recreated: " << swapchain.extent.width << "x" << swapchain.extent.height << std::endl;
 }
 
 // ------ Closing functions
@@ -3373,19 +2631,12 @@ void Engine::cleanup(){
     command_pool_graphics = nullptr;
     command_pool_transfer = nullptr;
 
-    // Destroying uniform buffers objects
-    /* for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
-        vmaUnmapMemory(vma_allocator, uniform_buffers[i].allocation);
-        // vmaDestroyBuffer(vma_allocator,uniform_buffers[i].buffer, uniform_buffers[i].allocation);
-
-        descriptor_sets[i] = nullptr;
+    if (rt_output_image.image) {
+         vmaDestroyImage(vma_allocator, rt_output_image.image, rt_output_image.allocation);
     }
-    descriptor_pool = nullptr; */
-
-    // Destroying vertex/index data
-    // vmaDestroyBuffer(vma_allocator,data_buffer.buffer, data_buffer.allocation);
-
-    // Delete pipeline objs
+    if (capture_resolve_image.image) {
+         vmaDestroyImage(vma_allocator, capture_resolve_image.image, capture_resolve_image.allocation);
+    }
     
 
     // Delete swapchain
@@ -3489,383 +2740,184 @@ ImageReadbackData Engine::readImageToCPU(vk::Image image, VkFormat format, uint3
 }
 
 void Engine::captureSceneData() {
-    std::cout << "\n--- Starting Scene Data Capture (" << NUM_CAPTURE_POSITIONS << " pairs) ---" << std::endl;
+    std::cout << "\n--- Starting Scene Data Capture (" << NUM_CAPTURE_POSITIONS << " frames) ---" << std::endl;
     std::vector<FrameData> recorded_frames;
     std::vector<FrameData> test_frames;
 
     logical_device.waitIdle();
 
-    bool original_rt_state = render_point_cloud;
-    bool original_proj_state = show_projected_torus;
-    CameraState original_camera_state = camera.getCurrentState();
+    // Save state
+    bool original_cloud_state = activate_point_cloud;
+    activate_point_cloud = true; // Force ON to ensure data buffers are populated
 
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_real_distribution<> alpha_dist(0.0f, 360.0f);
-    std::uniform_real_distribution<> beta_dist(.0f, 360.0f);
+    std::uniform_real_distribution<> beta_dist(0.0f, 360.0f);
 
-    // --- LAMBDA: Synchronous Rendering ---
+    // --- LAMBDA: Synchronous Ray Tracing ---
     auto renderSync = [&](vk::raii::CommandBuffer& cmd) {
         
-        // --- A. SHADOW PASS ---
-        for (int i = 0; i < ubo.curr_num_shadowlights; ++i) {
-            transitionImage(cmd, shadow_maps[i].image, vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageAspectFlagBits::eDepth);
-            vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
-            vk::RenderingAttachmentInfo depth_att{}; depth_att.imageView = *shadow_maps[i].image_view; 
-            depth_att.imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal; 
-            depth_att.loadOp = vk::AttachmentLoadOp::eClear; 
-            depth_att.storeOp = vk::AttachmentStoreOp::eStore; 
-            depth_att.clearValue = clear_depth;
-
-            vk::RenderingInfo shadow_info{}; 
-            shadow_info.renderArea.extent = vk::Extent2D{SHADOW_MAP_DIM, SHADOW_MAP_DIM}; 
-            shadow_info.layerCount = 6; shadow_info.viewMask = 0b00111111; 
-            shadow_info.pDepthAttachment = &depth_att;
-            cmd.beginRendering(shadow_info); 
-            cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)SHADOW_MAP_DIM, (float)SHADOW_MAP_DIM, 0.f, 1.f)); 
-            cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), {SHADOW_MAP_DIM, SHADOW_MAP_DIM})); 
-            cmd.setCullMode(vk::CullModeFlagBits::eFront);
-            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.pipeline); 
-            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shadow_pipeline.layout, 0, {*shadow_descriptor_sets[current_frame][i]}, {});
-            for(auto& obj : scene_objs) { 
-                if (obj.o_primitives.empty()) continue; 
-                cmd.bindVertexBuffers(0, {obj.geometry_buffer.buffer}, {0}); 
-                cmd.bindIndexBuffer(obj.geometry_buffer.buffer, obj.index_buffer_offset, vk::IndexType::eUint32); 
-                cmd.pushConstants<glm::mat4>(*shadow_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix); 
-                for(auto& primitive : obj.o_primitives) { 
-                    cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0); 
-                } 
-            }
-            // if (use_rt_box && rt_box.o_pipeline && !rt_box.o_primitives.empty()) { cmd.bindVertexBuffers(0, {rt_box.geometry_buffer.buffer}, {0}); cmd.bindIndexBuffer(rt_box.geometry_buffer.buffer, rt_box.index_buffer_offset, vk::IndexType::eUint32); cmd.pushConstants<glm::mat4>(*shadow_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, rt_box.model_matrix); for(auto& primitive : rt_box.o_primitives) { cmd.drawIndexed(primitive.index_count, 1, primitive.first_index, 0, 0); } }
-            cmd.endRendering(); 
-            transitionImage(cmd, shadow_maps[i].image, vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageAspectFlagBits::eDepth);
-        }
-
-        // --- B. TLAS ---
+        // 1. Build TLAS
         buildTlas(cmd);
 
-        // --- C. RT ---
+        // 2. Bind Pipeline & Descriptors
+        cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline);
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.layout, 0, {*rt_descriptor_sets[current_frame]}, {});
+
+        // 3. Push Constants
+        RayPushConstant p_const;
+        p_const.model = torus.model_matrix;
+        p_const.major_radius = torus.getMajorRadius();
+        p_const.minor_radius = torus.getMinorRadius();
+        p_const.height = torus.getHeight();
+        cmd.pushConstants<RayPushConstant>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, p_const);
+
+        // 4. SBT Setup
+        auto align_up = [&](uint32_t size, uint32_t alignment) { return (size + alignment - 1) & ~(alignment - 1); };
+        uint32_t handle_size = rt_props.pipeline_props.shaderGroupHandleSize;
+        uint32_t sbt_entry_size = align_up(handle_size, rt_props.pipeline_props.shaderGroupBaseAlignment);
+        uint64_t sbt_address = getBufferDeviceAddress(sbt_buffer.buffer);
+
+        vk::StridedDeviceAddressRegionKHR rmiss_region{sbt_address + 2 * sbt_entry_size, sbt_entry_size, 2 * sbt_entry_size};
+        vk::StridedDeviceAddressRegionKHR rhit_region{sbt_address + 4 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
+        vk::StridedDeviceAddressRegionKHR callable_region{};
+
+        // --- PASS 1: TORUS DATA COLLECTION ---
+        // (Necessary to update the hit buffer for PLY export)
         {
-            auto align_up = [&](uint32_t size, uint32_t alignment) { return (size + alignment - 1) & ~(alignment - 1); };
-            cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline); 
-            cmd.bindDescriptorSets(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.layout, 0, {*rt_descriptor_sets[current_frame]}, {});
+            vk::StridedDeviceAddressRegionKHR rgen_torus{sbt_address + 0 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
+            uint32_t side = static_cast<uint32_t>(std::ceil(std::sqrt(sampling_points.size())));
             
-            RayPushConstant p_const;
-            p_const.model = torus.model_matrix;
-            p_const.major_radius = torus.getMajorRadius();
-            p_const.minor_radius = torus.getMinorRadius();
-            p_const.height = torus.getHeight();
+            vkCmdTraceRaysKHR(*cmd, 
+                reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rgen_torus),
+                reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rmiss_region),
+                reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rhit_region),
+                reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&callable_region),
+                side, side, 1);
 
-            cmd.pushConstants<RayPushConstant>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, p_const);
-            uint32_t handle_size = rt_props.pipeline_props.shaderGroupHandleSize; 
-            uint32_t sbt_entry_size = align_up(handle_size, rt_props.pipeline_props.shaderGroupBaseAlignment); 
-            uint64_t sbt_address = getBufferDeviceAddress(sbt_buffer.buffer);
-            vk::StridedDeviceAddressRegionKHR rgen{sbt_address, sbt_entry_size, sbt_entry_size}; 
-            vk::StridedDeviceAddressRegionKHR rmiss{sbt_address + sbt_entry_size, sbt_entry_size, sbt_entry_size}; 
-            vk::StridedDeviceAddressRegionKHR rchit{sbt_address + 2 * sbt_entry_size, sbt_entry_size, sbt_entry_size}; 
-            vk::StridedDeviceAddressRegionKHR callable{};
-            // Calculate square dimensions
-            uint32_t total_rays = static_cast<uint32_t>(sampling_points.size());
-            
-            // We calculate a square side that covers at least 'total_rays'
-            // ceil(sqrt(total_rays))
-            uint32_t side = static_cast<uint32_t>(std::ceil(std::sqrt(total_rays)));
-            vkCmdTraceRaysKHR(*cmd, reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rgen), reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rmiss), 
-                        reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rchit), reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&callable), 
-                        side, side, 1);
-            vk::MemoryBarrier2 mem_barrier{};
-            mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR; 
-            mem_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite; 
-            mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eVertexShader; 
-            mem_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead; 
-            vk::DependencyInfo dep_info{}; 
-            dep_info.memoryBarrierCount = 1; 
-            dep_info.pMemoryBarriers = &mem_barrier; 
-            cmd.pipelineBarrier2(dep_info);
+            // Barrier: Wait for buffer writes
+            vk::MemoryBarrier2 mem_barrier;
+            mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
+            mem_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
+            mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eTransfer; // Future reads
+            mem_barrier.dstAccessMask = vk::AccessFlagBits2::eTransferRead;
+            vk::DependencyInfo dep{ {}, 1, &mem_barrier, 0, nullptr, 0, nullptr };
+            cmd.pipelineBarrier2(dep);
         }
 
-        // --- GATHER TRANSPARENTS ---
-        transparent_draws.clear();
-        for(auto& obj : scene_objs){ 
-            if (!obj.t_primitives.empty()) { 
-                for(const auto& primitive : obj.t_primitives) { 
-                    const Material& material = obj.materials[primitive.material_index]; 
-                    transparent_draws.push_back({&obj, &primitive, &material, 0.0f}); 
-                } 
-            } 
-        }
-        
-        // --- D. OPAQUE ---
+        // --- PASS 2: CAMERA IMAGE CAPTURE ---
         {
-            vk::ClearValue clear_color = vk::ClearColorValue(0.f, 0.f, 0.f, 1.f); vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
-            vk::RenderingAttachmentInfo color_att{}; color_att.imageView = color_image.image_view; color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal; color_att.loadOp = vk::AttachmentLoadOp::eClear; color_att.storeOp = vk::AttachmentStoreOp::eStore; color_att.clearValue = clear_color;
-            vk::RenderingAttachmentInfo depth_att{}; depth_att.imageView = depth_image.image_view; depth_att.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal; depth_att.loadOp = vk::AttachmentLoadOp::eClear; depth_att.storeOp = vk::AttachmentStoreOp::eStore; depth_att.clearValue = clear_depth;
-            vk::RenderingInfo render_info{}; render_info.renderArea.extent = swapchain.extent; render_info.layerCount = 1; render_info.colorAttachmentCount = 1; render_info.pColorAttachments = &color_att; render_info.pDepthAttachment = &depth_att;
-            cmd.beginRendering(render_info); cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)swapchain.extent.width, (float)swapchain.extent.height, 0.f, 1.f)); cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapchain.extent));
-            PipelineInfo* last_pipe = nullptr; Gameobject* last_obj = nullptr;
-            for(auto& obj : scene_objs){ if (obj.o_primitives.empty()) continue; if (obj.o_pipeline != last_pipe) { cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *obj.o_pipeline->pipeline); last_pipe = obj.o_pipeline; } if (&obj != last_obj) { cmd.bindVertexBuffers(0, {obj.geometry_buffer.buffer}, {0}); cmd.bindIndexBuffer(obj.geometry_buffer.buffer, obj.index_buffer_offset, vk::IndexType::eUint32); last_obj = &obj; } cmd.pushConstants<glm::mat4>(*obj.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, obj.model_matrix); for(auto& prim : obj.o_primitives) { const Material& mat = obj.materials[prim.material_index]; cmd.setCullMode(mat.is_doublesided ? vk::CullModeFlagBits::eNone : vk::CullModeFlagBits::eBack); MaterialPushConstant pc; pc.base_color_factor = mat.base_color_factor; pc.emissive_factor_and_pad = glm::vec4(mat.emissive_factor, 0.0f); pc.metallic_factor = mat.metallic_factor; pc.roughness_factor = mat.roughness_factor; pc.occlusion_strength = mat.occlusion_strength; pc.specular_factor = mat.specular_factor; pc.specular_color_factor = mat.specular_color_factor; pc.transmission_factor = mat.transmission_factor; pc.alpha_cutoff = mat.alpha_cutoff; pc.clearcoat_factor = mat.clearcoat_factor; pc.clearcoat_roughness_factor = mat.clearcoat_roughness_factor; cmd.pushConstants<MaterialPushConstant>(*obj.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), pc); cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *obj.o_pipeline->layout, 0, {*mat.descriptor_sets[current_frame]}, {}); cmd.drawIndexed(prim.index_count, 1, prim.first_index, 0, 0); } }
-            // if (use_rt_box && rt_box.o_pipeline && !rt_box.o_primitives.empty()) { cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *rt_box.o_pipeline->pipeline); cmd.bindVertexBuffers(0, {rt_box.geometry_buffer.buffer}, {0}); cmd.bindIndexBuffer(rt_box.geometry_buffer.buffer, rt_box.index_buffer_offset, vk::IndexType::eUint32); cmd.pushConstants<glm::mat4>(*rt_box.o_pipeline->layout, vk::ShaderStageFlagBits::eVertex, 0, rt_box.model_matrix); cmd.setCullMode(vk::CullModeFlagBits::eBack); for(auto& prim : rt_box.o_primitives) { const Material& mat = rt_box.materials[prim.material_index]; cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *rt_box.o_pipeline->layout, 0, {*mat.descriptor_sets[current_frame]}, {}); MaterialPushConstant pc; pc.base_color_factor = mat.base_color_factor; pc.metallic_factor = mat.metallic_factor; pc.roughness_factor = mat.roughness_factor; pc.occlusion_strength = mat.occlusion_strength; cmd.pushConstants<MaterialPushConstant>(*rt_box.o_pipeline->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), pc); cmd.drawIndexed(prim.index_count, 1, prim.first_index, 0, 0); } }
-            cmd.endRendering();
-        }
-        // --- E. POINT CLOUD ---
-        if (render_point_cloud) {
-            vk::ClearValue clear_color = vk::ClearColorValue(0.f, 0.f, 0.f, 1.f); vk::ClearValue clear_depth = vk::ClearDepthStencilValue(1.0f, 0);
-            vk::RenderingAttachmentInfo color_att{}; color_att.imageView = color_image.image_view; color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal; color_att.loadOp = vk::AttachmentLoadOp::eClear; color_att.storeOp = vk::AttachmentStoreOp::eStore; color_att.clearValue = clear_color;
-            vk::RenderingAttachmentInfo depth_att{}; depth_att.imageView = depth_image.image_view; depth_att.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal; depth_att.loadOp = vk::AttachmentLoadOp::eClear; depth_att.storeOp = vk::AttachmentStoreOp::eStore; depth_att.clearValue = clear_depth;
-            vk::RenderingInfo pc_info{}; pc_info.renderArea.extent = swapchain.extent; pc_info.layerCount = 1; pc_info.colorAttachmentCount = 1; pc_info.pColorAttachments = &color_att; pc_info.pDepthAttachment = &depth_att;
-            cmd.beginRendering(pc_info); cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)swapchain.extent.width, (float)swapchain.extent.height, 0.f, 1.f)); cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapchain.extent));
-            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.pipeline); cmd.setCullMode(vk::CullModeFlagBits::eNone); cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.layout, 0, {*point_cloud_descriptor_sets[current_frame]}, {});
-            PC pc_data; 
-            pc_data.model = torus.model_matrix; 
-            pc_data.mode = 0; 
-            pc_data.major_radius = torus.getMajorRadius();
-            pc_data.minor_radius = torus.getMinorRadius();
-            pc_data.height = torus.getHeight();
-            cmd.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data); 
-            cmd.draw(static_cast<uint32_t>(sampling_points.size()), 1, 0, 0);
-            cmd.endRendering();
-        }
-        // --- F. OIT PASSES ---
-        {
-            cmd.fillBuffer(oit_atomic_counter_buffer.buffer, 0, sizeof(uint32_t), 0); vk::ClearColorValue clear_uint(std::array<uint32_t, 4>{ 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF }); vk::ImageSubresourceRange clear_range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1); cmd.clearColorImage(oit_start_offset_image.image, vk::ImageLayout::eGeneral, clear_uint, clear_range);
-            vk::MemoryBarrier2 barrier{}; barrier.srcStageMask = vk::PipelineStageFlagBits2::eTransfer; barrier.srcAccessMask = vk::AccessFlagBits2::eTransferWrite; barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader; barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageWrite | vk::AccessFlagBits2::eShaderRead; vk::DependencyInfo dep{}; dep.memoryBarrierCount = 1; dep.pMemoryBarriers = &barrier; cmd.pipelineBarrier2(dep);
-            vk::RenderingAttachmentInfo depth_att{}; depth_att.imageView = depth_image.image_view; depth_att.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal; depth_att.loadOp = vk::AttachmentLoadOp::eLoad; depth_att.storeOp = vk::AttachmentStoreOp::eDontCare;
-            vk::RenderingInfo oit_info{}; oit_info.renderArea.extent = swapchain.extent; oit_info.layerCount = 1; oit_info.pDepthAttachment = &depth_att;
-            cmd.beginRendering(oit_info); cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)swapchain.extent.width, (float)swapchain.extent.height, 0.f, 1.f)); cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapchain.extent));
-            PipelineInfo* last_p = nullptr; Gameobject* last_o = nullptr;
+            vk::StridedDeviceAddressRegionKHR rgen_camera{sbt_address + 1 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
             
-            // --- DRAW TRANSPARENTS LOOP ---
-            for (const auto& draw : transparent_draws) { 
-                Gameobject* obj = draw.object; PipelineInfo* pipe = obj->t_pipeline; 
-                if (pipe != last_p) { cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipe->pipeline); last_p = pipe; } 
-                if (obj != last_o) { cmd.bindVertexBuffers(0, {obj->geometry_buffer.buffer}, {0}); cmd.bindIndexBuffer(obj->geometry_buffer.buffer, obj->index_buffer_offset, vk::IndexType::eUint32); last_o = obj; } 
-                cmd.pushConstants<glm::mat4>(*pipe->layout, vk::ShaderStageFlagBits::eVertex, 0, obj->model_matrix); 
-                if(obj != &torus) { 
-                    const Material& mat = *draw.material; MaterialPushConstant pc; pc.base_color_factor = mat.base_color_factor; pc.metallic_factor = mat.metallic_factor; cmd.pushConstants<MaterialPushConstant>(*pipe->layout, vk::ShaderStageFlagBits::eFragment, sizeof(glm::mat4), pc); 
-                } 
-                std::array<vk::DescriptorSet, 2> sets = {*draw.material->descriptor_sets[current_frame], *oit_ppll_descriptor_sets[current_frame]}; 
-                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipe->layout, 0, sets, {}); 
-                
-                // FIX: FORCE CULL MODE NONE FOR CAPTURE
-                // This guarantees windows are drawn even if back-facing relative to the capture camera
-                cmd.setCullMode(vk::CullModeFlagBits::eNone); 
+            vkCmdTraceRaysKHR(*cmd, 
+                reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rgen_camera),
+                reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rmiss_region),
+                reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rhit_region),
+                reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&callable_region),
+                swapchain.extent.width, swapchain.extent.height, 1);
 
-                cmd.drawIndexed(draw.primitive->index_count, 1, draw.primitive->first_index, 0, 0); 
-            }
-            // ------------------------------
-
-            cmd.endRendering();
-            vk::MemoryBarrier2 comp_barrier{}; comp_barrier.srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader; comp_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite; comp_barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader; comp_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead; vk::DependencyInfo comp_dep{}; comp_dep.memoryBarrierCount = 1; comp_dep.pMemoryBarriers = &comp_barrier; cmd.pipelineBarrier2(comp_dep);
-            vk::RenderingAttachmentInfo color_att{}; color_att.imageView = color_image.image_view; color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal; color_att.loadOp = vk::AttachmentLoadOp::eLoad; color_att.storeOp = vk::AttachmentStoreOp::eStore;
-            vk::RenderingInfo comp_info{}; comp_info.renderArea.extent = swapchain.extent; comp_info.layerCount = 1; comp_info.colorAttachmentCount = 1; comp_info.pColorAttachments = &color_att;
-            cmd.beginRendering(comp_info); cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *oit_composite_pipeline.pipeline); cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *oit_composite_pipeline.layout, 0, *oit_ppll_descriptor_sets[current_frame], nullptr); cmd.draw(3, 1, 0, 0);
-            cmd.endRendering();
+            // Barrier: Wait for Image Write
+            vk::ImageMemoryBarrier2 img_barrier;
+            img_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
+            img_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
+            img_barrier.dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
+            img_barrier.dstAccessMask = vk::AccessFlagBits2::eTransferRead;
+            img_barrier.oldLayout = vk::ImageLayout::eGeneral;
+            img_barrier.newLayout = vk::ImageLayout::eTransferSrcOptimal;
+            img_barrier.image = rt_output_image.image;
+            img_barrier.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
+            
+            vk::DependencyInfo dep{ {}, 0, nullptr, 0, nullptr, 1, &img_barrier };
+            cmd.pipelineBarrier2(dep);
         }
     };
 
-    // 4. Execution Loop
+    // --- CAPTURE LOOP ---
     for (int i = 0; i < NUM_CAPTURE_POSITIONS; ++i) {
         float alpha = alpha_dist(gen);
         float beta = beta_dist(gen);
         
-        std::cout << "Capturing pair " << i + 1 << "/" << NUM_CAPTURE_POSITIONS << "..." << std::endl;
+        // 1. Move Camera
         camera.updateToroidalAngles(alpha, beta, torus.getMajorRadius(), torus.getHeight());
         updateUniformBuffer(current_frame); 
 
-        // --- 1. RASTER CAPTURE ---
-        render_point_cloud = false;
-        show_projected_torus = false;
+        vk::raii::CommandBuffer cmd_sync = beginSingleTimeCommands(command_pool_graphics, &logical_device);
 
-        {
-            vk::raii::CommandBuffer cmd_sync = beginSingleTimeCommands(command_pool_graphics, &logical_device);
-            
-            // Ensure start state is Color Attachment
-            transitionImage(cmd_sync, color_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageAspectFlagBits::eColor);
-            transitionImage(cmd_sync, depth_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthAttachmentOptimal, vk::ImageAspectFlagBits::eDepth);
+        // 2. Render Scene via Ray Tracing
+        renderSync(cmd_sync);
 
-            renderSync(cmd_sync);
+        // 3. Copy RT Output -> Resolve Image (Staging for CPU read)
+        // Transition resolve image to Dst
+        transitionImage(cmd_sync, capture_resolve_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, vk::ImageAspectFlagBits::eColor);
 
-            // Transition Color Image to Transfer Src
-            transitionImage(cmd_sync, color_image.image, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
-            
-            // Transition Resolve Image to Transfer Dst
-            transitionImage(cmd_sync, capture_resolve_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, vk::ImageAspectFlagBits::eColor);
-            
-            // Resolve
-            Image::resolveImage(cmd_sync, color_image, capture_resolve_image, swapchain.extent);
-            
-            // Transition Resolve Image to Transfer Src (for readback)
-            transitionImage(cmd_sync, capture_resolve_image.image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
-            
-            endSingleTimeCommands(cmd_sync, graphics_queue);
+        vk::ImageCopy copyRegion;
+        copyRegion.srcSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
+        copyRegion.dstSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
+        copyRegion.extent = vk::Extent3D{ swapchain.extent.width, swapchain.extent.height, 1 };
+        
+        cmd_sync.copyImage(rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, 
+                           capture_resolve_image.image, vk::ImageLayout::eTransferDstOptimal, 
+                           {copyRegion});
 
-            // Readback
-            ImageReadbackData data = readImageToCPU(capture_resolve_image.image, capture_resolve_image.image_format, swapchain.extent.width, swapchain.extent.height);
-            
-            uint32_t target_w = data.width / 2;
-            uint32_t target_h = data.height / 2;
+        // Transition RT image back to General for next frame usage
+        transitionImage(cmd_sync, rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
+        
+        // Transition Resolve image to Src for Readback
+        transitionImage(cmd_sync, capture_resolve_image.image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
 
-            std::vector<uint8_t> resized_pixels(target_w * target_h * 4);
+        endSingleTimeCommands(cmd_sync, graphics_queue);
 
-            for (uint32_t y = 0; y < target_h; ++y) {
-                for (uint32_t x = 0; x < target_w; ++x) {
-                    // Sample the pixel at (x*2, y*2)
-                    uint32_t src_idx = ((y * 2) * data.width + (x * 2)) * 4;
-                    uint32_t dst_idx = (y * target_w + x) * 4;
+        // 4. Readback to CPU
+        ImageReadbackData data = readImageToCPU(capture_resolve_image.image, capture_resolve_image.image_format, swapchain.extent.width, swapchain.extent.height);
+        
+        // 5. Downscale (Optional, keeping your logic)
+        uint32_t target_w = data.width / 2;
+        uint32_t target_h = data.height / 2;
+        std::vector<uint8_t> resized_pixels(target_w * target_h * 4);
 
-                    resized_pixels[dst_idx + 0] = data.data[src_idx + 0]; // R
-                    resized_pixels[dst_idx + 1] = data.data[src_idx + 1]; // G
-                    resized_pixels[dst_idx + 2] = data.data[src_idx + 2]; // B
-                    resized_pixels[dst_idx + 3] = 255;                    // A (Force Opaque)
-                }
+        for (uint32_t y = 0; y < target_h; ++y) {
+            for (uint32_t x = 0; x < target_w; ++x) {
+                uint32_t src_idx = ((y * 2) * data.width + (x * 2)) * 4;
+                uint32_t dst_idx = (y * target_w + x) * 4;
+                resized_pixels[dst_idx + 0] = data.data[src_idx + 0]; 
+                resized_pixels[dst_idx + 1] = data.data[src_idx + 1]; 
+                resized_pixels[dst_idx + 2] = data.data[src_idx + 2]; 
+                resized_pixels[dst_idx + 3] = 255; 
             }
-
-            // Update data structure with new size
-            data.width = target_w;
-            data.height = target_h;
-            data.data = resized_pixels;
-
-            // JSON path: NO extension
-            std::string relative_path_json = "./train/r_" + std::to_string(i);
-            // File path: JPG extension
-            std::string full_save_path = "dataset/train/r_" + std::to_string(i) + ".jpg";
-
-            saveJPG(full_save_path, data);
-
-            FrameData frame_data;
-            frame_data.file_path = relative_path_json; 
-            // CRITICAL: Invert View Matrix to get Camera-to-World
-            frame_data.transform_matrix = glm::inverse(camera.getViewMatrix()); 
-            if (i % 4 == 0) {
-            test_frames.push_back(frame_data);
-            } else {
-                recorded_frames.push_back(frame_data);
-            }
-            std::cout << "Captured frame " << i << std::endl;
-
-            // Cleanup: Transition color_image BACK to Transfer Src (wait, it already is) or Undefined is fine for next loop
-            // But to avoid validation warnings on next frame's initial transition, let's leave it.
         }
+        data.width = target_w;
+        data.height = target_h;
+        data.data = resized_pixels;
 
-        // --- 2. POINT CLOUD CAPTURE ---
-        render_point_cloud = true;
-        show_projected_torus = false;
+        // 6. Save File
+        std::string relative_path_json = "./train/r_" + std::to_string(i);
+        std::string full_save_path = "dataset/train/r_" + std::to_string(i) + ".jpg";
+        saveJPG(full_save_path, data);
 
-        {
-            vk::raii::CommandBuffer cmd_sync = beginSingleTimeCommands(command_pool_graphics, &logical_device);
-            
-            // Transition Color Image BACK to Color Attachment (from Transfer Src)
-            transitionImage(cmd_sync, color_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageAspectFlagBits::eColor);
-            
-            renderSync(cmd_sync);
+        // 7. Record Metadata
+        FrameData frame_data;
+        frame_data.file_path = relative_path_json; 
+        frame_data.transform_matrix = glm::inverse(camera.getViewMatrix()); 
+        if (i % 4 == 0) test_frames.push_back(frame_data);
+        else recorded_frames.push_back(frame_data);
 
-            // Transition to Transfer Src
-            transitionImage(cmd_sync, color_image.image, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
-            
-            // Transition Resolve Image to Transfer Dst
-            transitionImage(cmd_sync, capture_resolve_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eTransferDstOptimal, vk::ImageAspectFlagBits::eColor);
-            
-            // Resolve
-            Image::resolveImage(cmd_sync, color_image, capture_resolve_image, swapchain.extent);
-
-            // Transition Resolve to Transfer Src
-            transitionImage(cmd_sync, capture_resolve_image.image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
-
-            endSingleTimeCommands(cmd_sync, graphics_queue);
-
-            ImageReadbackData data = readImageToCPU(capture_resolve_image.image, capture_resolve_image.image_format, swapchain.extent.width, swapchain.extent.height);
-            
-            // FIX: Force Alpha to 255
-            for (size_t j = 3; j < data.data.size(); j += 4) {
-                data.data[j] = 255;
-            }
-
-            savePNG("resources/dataset/capture_pointcloud_" + std::to_string(i + 1) + ".png", data);
-            
-            // Final Cleanup for loop: Transition color_image back to Transfer Src (it is) 
-            // or prepare for next loop (which starts with transition Undefined -> Color Attachment)
-        }
+        std::cout << "Captured frame " << i + 1 << "/" << NUM_CAPTURE_POSITIONS << "\r" << std::flush;
     }
+    std::cout << std::endl;
 
-    // 2. Export Transforms JSON
+    // 8. Export JSONs
     saveTransformsJson("dataset/transforms_train.json", recorded_frames);
     saveTransformsJson("dataset/transforms_test.json", test_frames);
 
-    // 3. Export Point Cloud (Just once!)
-    // We can just run one ray-trace pass now to get a valid cloud
-    // (Since your loop moved the camera, the last hit buffer contains valid world-space points)
+    // 9. Export Point Cloud (PLY)
+    // The last loop iteration populated the 'hit_data_buffer' on the GPU.
     savePly("dataset/points3d.ply");
 
+    // Restore state
+    activate_point_cloud = original_cloud_state;
     is_capturing = false;
     std::cout << "--- Dataset Generation Complete ---" << std::endl;
-}
-
-// 1. Helper to read any buffer to CPU
-void Engine::readBuffer(vk::Buffer buffer, vk::DeviceSize size, void* dst_ptr) {
-    AllocatedBuffer staging_buffer;
-    createBuffer(vma_allocator, size, vk::BufferUsageFlagBits::eTransferDst,
-                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
-                 staging_buffer);
-
-    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device);
-    vk::BufferCopy copy_region(0, 0, size);
-    cmd.copyBuffer(buffer, staging_buffer.buffer, copy_region);
-    endSingleTimeCommands(cmd, graphics_queue);
-
-    void* data;
-    vmaMapMemory(vma_allocator, staging_buffer.allocation, &data);
-    memcpy(dst_ptr, data, (size_t)size);
-    vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
-}
-
-// 2. The main Importance Sampling Logic
-void Engine::updateImportanceSampling() {
-    std::cout << "Calculating Importance Samples..." << std::endl;
-
-    // A. Read back Hit Data
-    size_t num_hits = sampling_points.size();
-    vk::DeviceSize buffer_size = sizeof(HitDataGPU) * num_hits;
-    std::vector<HitDataGPU> raw_hits(num_hits);
-    readBuffer(hit_data_buffer.buffer, buffer_size, raw_hits.data());
-
-    SamplingMethod method = sampling_methods[current_sampling];
-
-    if (method == SamplingMethod::IMP_COL) {
-        // Extract Colors
-        std::vector<glm::vec4> prev_colors;
-        prev_colors.reserve(num_hits);
-        for(const auto& hit : raw_hits) {
-            prev_colors.push_back(glm::vec4(hit.r, hit.g, hit.b, hit.a));
-        }
-        // Generate based on Color Gradients
-        Sampling::generateImportanceSamples(sampling_points, num_rays, sampling_points, prev_colors);
-    } 
-    else if (method == SamplingMethod::IMP_HIT) {
-        // Extract Flags
-        std::vector<float> prev_flags;
-        prev_flags.reserve(num_hits);
-        for(const auto& hit : raw_hits) {
-            prev_flags.push_back(hit.flag);
-        }
-        // Generate based on Hit/Miss
-        Sampling::generateHitBasedImportanceSamples(sampling_points, num_rays, sampling_points, prev_flags);
-    }
-
-    // D. Upload NEW samples to GPU
-    vk::DeviceSize sample_size = sizeof(RaySample) * sampling_points.size();
-    AllocatedBuffer staging_buffer;
-    createBuffer(vma_allocator, sample_size, vk::BufferUsageFlagBits::eTransferSrc,
-                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, staging_buffer);
-    
-    void* data;
-    vmaMapMemory(vma_allocator, staging_buffer.allocation, &data);
-    memcpy(data, sampling_points.data(), (size_t)sample_size);
-    vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
-
-    copyBuffer(staging_buffer.buffer, sample_data_buffer.buffer, sample_size,
-               command_pool_graphics, &logical_device, graphics_queue);
-               
-    // Staging buffer is destroyed automatically
 }
 
 void Engine::saveTransformsJson(const std::string& filename, const std::vector<FrameData>& frames) {

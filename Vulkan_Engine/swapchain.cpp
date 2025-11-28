@@ -54,7 +54,7 @@ SwapChainBundle Swapchain::createSwapChain(Engine &engine){
     swapchain_create_info.imageColorSpace = vk::ColorSpaceKHR::eSrgbNonlinear;
     swapchain_create_info.imageExtent = swapchain.extent;
     swapchain_create_info.imageArrayLayers = 1;
-    swapchain_create_info.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
+    swapchain_create_info.imageUsage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst;
     swapchain_create_info.preTransform = surface_capabilities.currentTransform;
     swapchain_create_info.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
     swapchain_create_info.presentMode = chooseSwapPresentMode(engine.physical_device.getSurfacePresentModesKHR(engine.surface));

@@ -521,13 +521,20 @@ const std::array<SamplingMethod, 8> sampling_methods = {
     SamplingMethod::IMP_HIT,
 };
 
-struct HitDataGPU { // Matches shader struct layout
-        float px, py, pz;
-        float flag;
-        float r, g, b, a;
-        float nx, ny, nz;
-        float padding;
-    };
+struct HitDataGPU { // Must match 'struct HitData' in raytracing.glsl
+    // vec3 hit_pos
+    float px, py, pz;
+    // float hit_flag
+    float flag;
+    
+    // vec4 color
+    float r, g, b, a;
+    
+    // vec3 normal
+    float nx, ny, nz;
+    // float padding
+    float padding;
+};
 
 struct FrameData {
     std::string file_path;

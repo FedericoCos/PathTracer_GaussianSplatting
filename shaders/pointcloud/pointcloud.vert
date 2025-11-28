@@ -1,28 +1,31 @@
 #version 460
 #extension GL_EXT_scalar_block_layout : require
-#extension GL_EXT_nonuniform_qualifier : require
 
+// Include the shared definition
 #include "../rt_datacollect/raytracing.glsl" 
 
+// Binding 0: Uniform Buffer (View/Proj)
 layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 view;
     mat4 proj;
+    vec3 cameraPos;
+    float padding; // Alignment
 } ubo;
 
+// Binding 1: The Hit Data (Written by RayGen)
 layout(set = 0, binding = 1, scalar) buffer readonly HitDataBuffer {
    HitData hits[];
 } hit_buffer;
 
-// CHANGED: Binding 2 is Samples
+// Binding 2: The Ray Samples (UVs on Torus)
 layout(set = 0, binding = 2, scalar) buffer readonly SampleBuffer {
    RaySample samples[];
 } sample_buffer;
 
-// CHANGED: Added radii to PC
 layout(push_constant) uniform PushConstants {
     mat4 model;
-    int mode;
-    float major_radius;
+    int mode; // 0 = World Hit, 1 = Projected on Torus
+    float major_radius; 
     float minor_radius;
     float height;
 } pc;
@@ -33,16 +36,21 @@ const float PI = 3.14159265359;
 
 void main() {
     uint index = gl_VertexIndex;
+    
+    // Read the hit result
     HitData hit = hit_buffer.hits[index];
+    
+    // Pass color to fragment shader
+    // We pack hit_flag into alpha for simple discard logic in frag
     out_color_and_flag = vec4(hit.color.rgb, hit.hit_flag);
 
     if (hit.hit_flag > 0.0) {
         vec3 final_pos;
 
         if (pc.mode == 1) {
-            // MODE 1: PROJECTED (Snap back to torus surface)
+            // --- MODE 1: PROJECTED (Reconstruct Torus Surface) ---
+            // This verifies that your UV -> Position math is correct
             vec2 uv = sample_buffer.samples[index].uv;
-            
             float u = uv.x * 2.0 * PI;
             float v = uv.y * 2.0 * PI;
             
@@ -50,7 +58,6 @@ void main() {
             float r = pc.minor_radius;
             float h = pc.height;
 
-            // Reconstruct position
             vec3 local_pos;
             local_pos.x = (R + r * cos(v)) * cos(u);
             local_pos.y = r * sin(v) + h;
@@ -58,13 +65,15 @@ void main() {
 
             final_pos = (pc.model * vec4(local_pos, 1.0)).xyz;
         } else {
-            // MODE 0: POINT CLOUD (World Hit)
+            // --- MODE 0: POINT CLOUD (Actual Hit Position) ---
+            // This shows the scene geometry as seen by the torus
             final_pos = hit.hit_pos;
         }
 
         gl_Position = ubo.proj * ubo.view * vec4(final_pos, 1.0);
         gl_PointSize = 2.0;
     } else {
-        gl_Position = vec4(2.0, 2.0, 2.0, 1.0); // Clip
+        // Ray missed: Move vertex behind camera or to infinity
+        gl_Position = vec4(0.0, 0.0, 2.0, 1.0); 
     }
 }

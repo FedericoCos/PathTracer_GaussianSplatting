@@ -2,13 +2,9 @@
 #extension GL_EXT_samplerless_texture_functions : require
 
 // This must have the *exact* same layout as your RT shaders
+#define RAY_TRACING
 #include "../rt_datacollect/raytracing.glsl" 
 
-// SET 0, BINDING 0: Main scene UBO
-layout(set = 0, binding = 0) uniform UniformBufferObject {
-    mat4 view;
-    mat4 proj;
-} ubo;
 
 // SET 0, BINDING 1: Our ray tracing results (READ/WRITE)
 layout(set = 0, binding = 1, scalar) buffer HitDataBuffer {

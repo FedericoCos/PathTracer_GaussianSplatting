@@ -108,8 +108,6 @@ public:
         }
     }
 
-    void createMaterialDescriptorSets(Engine& engine) override;
-
     float &getHeight(){
         return height;
     }

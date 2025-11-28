@@ -6,14 +6,15 @@ class Engine; // Forward declaration
 
 namespace Pipeline{
     vk::raii::Pipeline createGraphicsPipeline(Engine &engine, PipelineInfo *p_info, std::string v_shader, std::string f_shader, TransparencyMode mode, vk::CullModeFlagBits cull_mode);
+    
     vk::raii::ShaderModule createShaderModule(const std::vector<char>& code, vk::raii::Device * logical_device);
+    
     vk::raii::DescriptorSetLayout createDescriptorSetLayout(Engine &engine, std::vector<vk::DescriptorSetLayoutBinding> &bindings);
     vk::raii::DescriptorSetLayout createDescriptorSetLayout(Engine &engine, std::vector<vk::DescriptorSetLayoutBinding> &bindings, vk::DescriptorSetLayoutCreateInfo& layout_info);
 
     std::vector<char> readFile(const std::string& filename);
 
-    vk::raii::Pipeline createShadowPipeline(Engine &engine, PipelineInfo *p_info, std::string v_shader, std::string f_shader);
+    // Removed createShadowPipeline (Raster shadows are deleted)
+
     vk::raii::Pipeline createRayTracingPipeline(Engine& engine, PipelineInfo* p_info, const std::string &rt_rgen_shader, const std::string &rt_rmiss_shader, const std::string &rt_rchit_shader);
 };
-
-

@@ -292,6 +292,8 @@ struct UniformBufferObject {
 
     int panel_shadows_enabled = 0; 
     float shadow_far_plane = 100.0f;
+    uint32_t frame_count = 0;
+    float total_scene_flux = 0.0f;
     // Maps a light index (0-99) to a shadow map index (0-4)
     // -1 means no shadow.
 };
@@ -539,6 +541,28 @@ struct HitDataGPU { // Must match 'struct HitData' in raytracing.glsl
 struct FrameData {
     std::string file_path;
     glm::mat4 transform_matrix; // Camera-to-World
+};
+
+struct EmissiveTriangle {
+    // Indices into the object's index buffer
+    uint32_t index0;
+    uint32_t index1;
+    uint32_t index2;
+    // Material index (to get emission color/strength)
+    uint32_t material_index;
+    // Area (pre-calculated on CPU for importance sampling)
+    float area;
+};
+
+struct LightTriangle {
+    uint32_t v0, v1, v2;
+    uint32_t material_index; 
+};
+
+struct LightCDF {
+    float cumulative_probability; // [0.0 to 1.0]
+    uint32_t triangle_index;      // Index into LightTriangle buffer
+    float padding[2];
 };
 
 // ------ Helper Functions

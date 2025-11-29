@@ -295,6 +295,10 @@ glm::mat4 Gameobject::getNodeTransform(const tinygltf::Node& node) const {
 
 void Gameobject::loadPrimitive(const tinygltf::Primitive& primitive, const tinygltf::Model& model, const glm::mat4& transform, std::unordered_map<Vertex, uint32_t>& unique_vertices) {
     int material_index = (primitive.material >= 0) ? primitive.material : 0; 
+
+    // Emissive extraction
+    const Material& mat = materials[material_index];
+    bool is_emissive = (glm::length(mat.emissive_factor) > 0.001f);
     
     // --- Attribute Accessors (Condensed) ---
     const tinygltf::Accessor& index_accessor = model.accessors[primitive.indices]; 
@@ -399,31 +403,44 @@ void Gameobject::loadPrimitive(const tinygltf::Primitive& primitive, const tinyg
     }
     new_primitive.center = 0.5f * (bbMin + bbMax);
 
-    // Emissive extraction
-    const Material& mat = materials[material_index];
-    if (glm::length(mat.emissive_factor) > 0.001f) {
-        emissive_primitives.push_back({new_primitive.center, mat.emissive_factor});
+    for (size_t k = 0; k < local_indices.size(); k += 3) {
+        uint32_t idx0 = local_indices[k];
+        uint32_t idx1 = local_indices[k+1];
+        uint32_t idx2 = local_indices[k+2];
+
+        // Add to main index buffer
+        indices.push_back(idx0);
+        indices.push_back(idx1);
+        indices.push_back(idx2);
+
+        // Update Bounding Box
+        const auto& p0 = vertices[idx0].pos;
+        const auto& p1 = vertices[idx1].pos;
+        const auto& p2 = vertices[idx2].pos;
+        
+        bbMin = glm::min(bbMin, p0); bbMin = glm::min(bbMin, p1); bbMin = glm::min(bbMin, p2);
+        bbMax = glm::max(bbMax, p0); bbMax = glm::max(bbMax, p1); bbMax = glm::max(bbMax, p2);
+
+        // --- NEW: NEE Data Collection ---
+        if (is_emissive) {
+            // Calculate Area (Vertices are already World Space)
+            float area = 0.5f * glm::length(glm::cross(p1 - p0, p2 - p0));
+            
+            if (area > 1e-6f) { // Ignore degenerate triangles
+                EmissiveTriangle tri;
+                tri.index0 = idx0;
+                tri.index1 = idx1;
+                tri.index2 = idx2;
+                tri.material_index = material_index;
+                tri.area = area;
+                
+                emissive_triangles.push_back(tri);
+            }
+        }
     }
 
     // --- CRITICAL CHANGE: Push EVERYTHING to o_primitives ---
     // The BLAS builder only iterates o_primitives. We want transparent objects
     // to be in the BLAS so the Ray Tracer hits them.
     o_primitives.push_back(new_primitive);
-}
-
-std::vector<Pointlight> Gameobject::createEmissiveLights(float intensity_multiplier) {
-    std::vector<Pointlight> lights;
-    if (emissive_primitives.empty()) return lights;
-
-    for (const auto& emissive_prim : emissive_primitives) {
-        const glm::vec3& local_center = emissive_prim.first;
-        const glm::vec3& emissive_color_and_strength = emissive_prim.second;
-        glm::vec4 world_center = model_matrix * glm::vec4(local_center, 1.0f);
-
-        Pointlight new_light;
-        new_light.position = world_center;
-        new_light.color = glm::vec4(emissive_color_and_strength, intensity_multiplier);
-        lights.push_back(new_light);
-    }
-    return lights;
 }

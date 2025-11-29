@@ -275,6 +275,13 @@ private:
     int current_sampling = 0;
     bool invalid_sampling = true;
 
+    // For emission light
+    AllocatedBuffer light_triangle_buffer;
+    AllocatedBuffer light_cdf_buffer;
+    uint32_t num_light_triangles = 0;
+    float total_scene_flux = 0.0f;
+    uint32_t accumulation_frame = 0;
+
     // --- Ray Tracing Function Pointers ---
     PFN_vkGetAccelerationStructureBuildSizesKHR vkGetAccelerationStructureBuildSizesKHR = nullptr;
     PFN_vkCreateAccelerationStructureKHR vkCreateAccelerationStructureKHR = nullptr;

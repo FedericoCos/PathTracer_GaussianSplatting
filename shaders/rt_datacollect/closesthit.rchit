@@ -38,21 +38,103 @@ float traceShadow(vec3 origin, vec3 lightPos) {
     vec3 L = lightPos - origin;
     float dist = length(L);
     L = normalize(L);
-    vec3 originOffset = origin + L * 0.01;
+    
+    // 1. Increase Offset bias (0.01 -> 0.05) to clear self-intersection
+    vec3 originOffset = origin + L * 0.05; 
+    
     shadowPayload.isHit = true; 
     
-    // CURRENT FLAGS:
-    // gl_RayFlagsOpaqueEXT -> Treats EVERYTHING as opaque. Stops at glass.
+    // 2. Add gl_RayFlagsCullFrontFacingTrianglesEXT ???
+    // If we assume lights are always 'outside', maybe cull front faces? No, risky.
     
-    // THE FIX IS COMPLEX without C++ AnyHit shaders.
-    // For now, stick with the "Shadow Ignore Factor" logic I gave you in the previous message.
-    // Ensure this logic is present in your main() function:
-    
+    // Standard Opaque Flags
     uint rayFlags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT;
-    traceRayEXT(tlas, rayFlags, 0xFF, 0, 0, 1, originOffset, 0.0, L, dist, 1);
+    
+    // Decrease max distance slightly to avoid hitting the light itself
+    traceRayEXT(tlas, rayFlags, 0xFF, 0, 0, 1, originOffset, 0.0, L, dist - 0.05, 1);
     
     if (shadowPayload.isHit) return 0.0;
     return 1.0;
+}
+
+// --- NEW: NEE Sampling ---
+// Removed dependency on global 'mat'. Uses passed 'roughness'.
+void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, float metallic, float transmission, inout vec3 Lo) 
+{
+    uint num_lights = light_cdf.entries.length();
+    // Safety check
+    if (num_lights == 0) return;
+
+    float r1 = rnd(payload.seed);
+    
+    // Binary Search (Protected)
+    uint left = 0;
+    uint right = num_lights - 1;
+    uint idx = 0;
+    
+    // Limit iterations to prevent infinite loops in case of corrupt data
+    for(int i=0; i<32; i++) {
+        if(left > right) break;
+        uint mid = (left + right) / 2;
+        if (light_cdf.entries[mid].cumulative_probability < r1) {
+            left = mid + 1;
+        } else {
+            idx = mid;
+            if(mid == 0) break; // Prevent underflow of uint
+            right = mid - 1; 
+        }
+    }
+    
+    // Clamp index just in case
+    idx = min(idx, num_lights - 1);
+    
+    uint tri_idx = light_cdf.entries[idx].triangle_index;
+    LightTriangle tri = light_triangles.tris[tri_idx];
+    
+    vec3 p0 = all_vertices.v[tri.v0].pos;
+    vec3 p1 = all_vertices.v[tri.v1].pos;
+    vec3 p2 = all_vertices.v[tri.v2].pos;
+    
+    float u = rnd(payload.seed);
+    float v = rnd(payload.seed);
+    if (u + v > 1.0) { u = 1.0 - u; v = 1.0 - v; }
+    
+    vec3 light_pos = p0 * (1.0 - u - v) + p1 * u + p2 * v;
+    vec3 light_normal = normalize(cross(p1 - p0, p2 - p0));
+    
+    vec3 L = light_pos - hit_pos;
+    float dist_sq = dot(L, L);
+    float dist = sqrt(dist_sq);
+    L /= dist;
+    
+    float NdotL = max(dot(N, L), 0.0);
+    float LdotN_light = dot(-L, light_normal); 
+    
+    if (NdotL > 0.0 && LdotN_light > 0.0) {
+        float visibility = traceShadow(hit_pos, light_pos);
+        if (visibility > 0.0) {
+            MaterialData l_mat = all_materials.materials[tri.material_index];
+            vec3 Le = l_mat.emissive_factor_and_pad.rgb;
+            
+            float geometry_term = LdotN_light / dist_sq;
+            
+            vec3 H = normalize(V + L);
+            vec3 F0 = mix(vec3(0.04), albedo, metallic);
+            
+            float NDF = D_GGX(N, H, roughness);
+            float Vis = V_SmithGGXCorrelatedFast(dot(N,V), NdotL, roughness); 
+            vec3 F = F_Schlick(dot(H, V), F0);
+            
+            vec3 kS = F;
+            vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
+            vec3 specular = NDF * Vis * F;
+            vec3 diffuse = (kD * albedo / PI) * (1.0 - transmission);
+            
+            vec3 brdf = diffuse + specular;
+            float weight = ubo.totalSceneFlux; // Use the real total flux
+            Lo += brdf * Le * NdotL * geometry_term * weight * visibility;
+        }
+    }
 }
 
 hitAttributeEXT vec2 hitAttrib;
@@ -100,21 +182,15 @@ void main()
     payload.hit_pos = hit_pos;
     payload.normal = N;
 
+    // NOTE: Seed init moved to RayGen!
+
     if (alpha < mat.alpha_cutoff) {
         payload.hit_flag = -1.0; 
         payload.color = vec3(0.0);
         return; 
     }
 
-    // --- DETERMINE MATERIAL TYPE (MOVED UP) ---
-    float transmission = mat.transmission_factor; 
-    bool is_glass = (transmission > 0.001);
-    bool is_alpha_transparent = (alpha < 0.999 && !is_glass);
-
-    // Calculate how much we ignore shadows. 
-    // If fully transparent (1.0), we ignore shadows (1.0).
-    float shadow_ignore_factor = is_glass ? transmission : (1.0 - alpha);
-
+    float transmission = max(mat.transmission_factor, 1.0 - alpha);
     float metallic = mat.metallic_factor;
     float roughness = mat.roughness_factor;
     if (mat.mr_id >= 0) {
@@ -132,66 +208,61 @@ void main()
     float NdotV = max(dot(N, V), 0.0);
 
     // --- LIGHTING ---
-    for(int i = 0; i < ubo.cur_num_pointlights; i++) {
-        vec3 L = normalize(ubo.pointlights[i].position.xyz - hit_pos);
-        vec3 H = normalize(V + L);
-        float NdotL = max(dot(N, L), 0.0);
-        float dist = length(ubo.pointlights[i].position.xyz - hit_pos);
-        float atten = 1.0 / (dist * dist);
-        vec3 radiance = ubo.pointlights[i].color.rgb * ubo.pointlights[i].color.a * atten;
-        
-        float shadow = traceShadow(hit_pos, ubo.pointlights[i].position.xyz);
-        
-        // FIX: If object is transparent, blend shadow towards 1.0 (unshadowed)
-        shadow = max(shadow, shadow_ignore_factor);
+    // (Existing Point Light Loop skipped for brevity - Insert here if you want Hybrid)
+    
+    // --- NEE SAMPLING ---
+    sampleLights(hit_pos, N, V, albedo, roughness, metallic, transmission, Lo);
 
-        float NDF = D_GGX(N, H, roughness);
-        float Vis = V_SmithGGXCorrelatedFast(NdotV, NdotL, roughness);
-        vec3 F = F_Schlick(dot(H, V), F0);
-        vec3 kS = F;
-        vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
-        vec3 specular = NDF * Vis * F;
-        
-        // Scale diffuse by opaque factor so we don't double-count light (surface + transmit)
-        vec3 diffuse = (kD * albedo / PI) * (1.0 - shadow_ignore_factor);
-        
-        Lo += (diffuse + specular) * radiance * NdotL * shadow;
-    }
-    // (You can apply the same shadow logic to shadowLights loop if needed)
-
-    vec3 ambient = ubo.ambientLight.xyz * ubo.ambientLight.w * albedo * ao * (1.0 - shadow_ignore_factor);
+    vec3 ambient = ubo.ambientLight.xyz * ubo.ambientLight.w * albedo * ao * (1.0 - transmission);
     payload.color = ambient + Lo + emissive;
 
-    // --- NEXT RAY SETUP ---
+    // --- NEXT RAY ---
     payload.hit_flag = 1.0; 
     payload.weight = vec3(0.0);
 
-    if (is_alpha_transparent) {
-        payload.next_ray_origin = hit_pos + gl_WorldRayDirectionEXT * 0.001; 
-        payload.next_ray_dir = gl_WorldRayDirectionEXT;
-        payload.weight = vec3(1.0 - alpha); 
-        payload.hit_flag = 2.0; 
-    }
-    else if (is_glass) {
+    // GLASS / DIELECTRIC TRANSMISSION
+    if (transmission > 0.0) {
         float eta = is_back_face ? (1.5 / 1.0) : (1.0 / 1.5);
         vec3 N_refr = is_back_face ? -N : N; 
-        vec3 refractDir = refract(gl_WorldRayDirectionEXT, N_refr, eta);
-
-        if (length(refractDir) > 0.0) {
-            payload.next_ray_origin = hit_pos - N_geo * 0.001; 
-            payload.next_ray_dir = refractDir;
-            payload.weight = vec3(transmission); 
-            payload.hit_flag = 2.0; 
-        } else {
-            // TIR
+        
+        // Calculate Fresnel for probability
+        vec3 F_val = F_Schlick(abs(dot(N, V)), F0);
+        float prob_reflect = max(max(F_val.r, F_val.g), F_val.b);
+        
+        // Stochastic Choice: Reflect or Refract?
+        if (rnd(payload.seed) < prob_reflect) {
+            // REFLECTION
             vec3 reflectDir = reflect(-V, N);
             payload.next_ray_origin = hit_pos + N_geo * 0.001;
             payload.next_ray_dir = reflectDir;
-            payload.weight = vec3(transmission); 
-            payload.hit_flag = 2.0; 
+            // Weight = Color * (1 / PDF)
+            // Color ~ F, PDF ~ F -> Weight ~ 1.0
+            payload.weight = vec3(1.0); 
+            payload.hit_flag = 2.0;
+        } else {
+            // REFRACTION
+            vec3 refractDir = refract(gl_WorldRayDirectionEXT, N_refr, eta);
+            if (length(refractDir) > 0.0) {
+                payload.next_ray_origin = hit_pos - N_geo * 0.001;
+                payload.next_ray_dir = refractDir;
+                // Weight = TransmissionColor * (1 / PDF)
+                // PDF ~ (1 - F) -> Weight ~ Transmission
+                payload.weight = vec3(transmission); // * albedo if colored glass
+                payload.hit_flag = 2.0;
+            } else {
+                // TIR (Total Internal Reflection) -> Force Reflect
+                vec3 reflectDir = reflect(-V, N);
+                payload.next_ray_origin = hit_pos + N_geo * 0.001;
+                payload.next_ray_dir = reflectDir;
+                payload.weight = vec3(1.0);
+                payload.hit_flag = 2.0;
+            }
         }
     }
-    else if (metallic > 0.1 || roughness < 0.2) {
+
+    // ... (Refl/Refr Logic - SAME) ...
+    // Note: Use 'metallic' and 'roughness' (locals), not 'mat.*'
+    if (metallic > 0.1 || roughness < 0.2) {
         vec3 reflectDir = reflect(-V, N);
         vec3 F = F_Schlick(NdotV, F0);
         payload.next_ray_origin = hit_pos + N_geo * 0.001;

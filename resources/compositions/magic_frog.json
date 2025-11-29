@@ -1,8 +1,8 @@
 {
   "settings": {
     "lights_file": "resources/a_library/lights.json",
-    "use_manual_lights": true,
-    "use_manual_lights_shadows": true,
+    "use_manual_lights": false,
+    "use_manual_lights_shadows": false,
     "use_emissive_lights": false,
     "use_emissive_lights_shadows": false,
     "emissive_intensity_multiplier": 1.0,

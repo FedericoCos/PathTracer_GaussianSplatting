@@ -18,8 +18,8 @@ public:
 
     // We store all primitives here so the BLAS builder sees everything
     std::vector<Primitive> o_primitives; 
+    std::vector<EmissiveTriangle> emissive_triangles;
     
-    std::vector<std::pair<glm::vec3, glm::vec3>> emissive_primitives;
     std::vector<Material> materials;
     std::vector<AllocatedImage> textures;
     vk::raii::Sampler default_sampler = nullptr;
@@ -63,7 +63,6 @@ public:
     // Creates a 1x1 pixel texture (used for white/default textures)
     void createDefaultTexture(Engine& engine, AllocatedImage& texture, glm::vec4 color);
 
-    std::vector<Pointlight> createEmissiveLights(float intensity);
     
 
 protected:

@@ -1279,13 +1279,13 @@ void Engine::loadScene(const std::string &scene_path)
         }
 
         // --- 4. Load Emissive Lights (if enabled) ---
-        if (use_emissive_lights) {
+        /* if (use_emissive_lights) {
             if(!obj_def.contains("use_emissive_lights")){
                 auto new_lights = new_object.createEmissiveLights(emissive_multiplier);
                 // Append new lights to our master list
                 emissive_lights.insert(emissive_lights.end(), new_lights.begin(), new_lights.end());
             }
-        }
+        } */
 
         if (this->use_rt_box && !rtbox_path.empty()) {
             createRTBox(rtbox_path);
@@ -1550,17 +1550,11 @@ void Engine::createGlobalBindlessBuffers()
     std::vector<uint32_t> global_scene_indices;
     std::vector<MeshInfo> global_mesh_info;
 
+    // --- NEW: Light Sampling Vectors ---
+    std::vector<LightTriangle> global_light_triangles;
+    std::vector<float> light_triangle_fluxes; // Temp storage for CDF build
+
     global_texture_descriptors.clear();
-
-
-    // Helper to add textures and return the GLOBAL index
-    auto append_textures = [&](Gameobject& obj, int local_index) -> int {
-        if(local_index < 0 || local_index >= obj.textures.size()) return 0;
-
-        int global_offset = static_cast<int>(global_texture_descriptors.size());
-
-        return -1;
-    };
 
     int current_texture_offset = 0;
     
@@ -1568,14 +1562,14 @@ void Engine::createGlobalBindlessBuffers()
     auto aggregate_object = [&](Gameobject& obj) {
         if (obj.vertices.empty()) return;
         
-        // Get the base offsets for this object's data
+        // Base offsets for this object
         uint32_t vertex_offset = static_cast<uint32_t>(global_scene_vertices.size());
         uint32_t index_offset = static_cast<uint32_t>(global_scene_indices.size());
         uint32_t material_offset = static_cast<uint32_t>(global_materials_data.size());
         
-        // This is the key: store the offset to the *first* MeshInfo entry for this object
         obj.mesh_info_offset = static_cast<uint32_t>(global_mesh_info.size());
 
+        // Process Textures
         for(auto& tex: obj.textures){
             vk::DescriptorImageInfo image_info;
             image_info.sampler = *obj.default_sampler;
@@ -1584,13 +1578,14 @@ void Engine::createGlobalBindlessBuffers()
             global_texture_descriptors.push_back(image_info);
         }
         
-        // Append this object's data to the global vectors
+        // Append Geometry
         global_scene_vertices.insert(global_scene_vertices.end(), obj.vertices.begin(), obj.vertices.end());
         global_scene_indices.insert(global_scene_indices.end(), obj.indices.begin(), obj.indices.end());
 
-        // Append materials
+        // Append Materials
         for (const auto& mat : obj.materials) {
             MaterialPushConstant p_const = {};
+            // ... [Copy Material Properties - Exact same as before] ...
             p_const.base_color_factor = mat.base_color_factor;
             p_const.emissive_factor_and_pad = glm::vec4(mat.emissive_factor, 0.0f);
             p_const.metallic_factor = mat.metallic_factor;
@@ -1610,17 +1605,40 @@ void Engine::createGlobalBindlessBuffers()
             global_materials_data.push_back(p_const);
         }
 
-        current_texture_offset += obj.textures.size();
-        
-        // Append a MeshInfo struct for *each primitive*
-        // IMPORTANT: We only add OPAQUE primitives to the ray tracing scene
+        // Append MeshInfo
         for (const auto& prim : obj.o_primitives) {
             global_mesh_info.push_back({
-                material_offset + prim.material_index, // Global material index
-                vertex_offset,                         // Global vertex offset for this *object*
-                index_offset + prim.first_index        // Global index offset for this *primitive*
+                material_offset + prim.material_index,
+                vertex_offset,
+                index_offset + prim.first_index
             });
         }
+
+        // --- NEW: Collect Emissive Triangles ---
+        // We convert local indices to Global Absolute Indices using 'vertex_offset'
+        for (const auto& tri : obj.emissive_triangles) {
+            LightTriangle l_tri;
+            l_tri.v0 = vertex_offset + tri.index0;
+            l_tri.v1 = vertex_offset + tri.index1;
+            l_tri.v2 = vertex_offset + tri.index2;
+            l_tri.material_index = material_offset + tri.material_index;
+            
+            global_light_triangles.push_back(l_tri);
+
+            // Calculate Flux (Power) = Area * Emission Strength (Length of color vector)
+            // Note: We use the max component or length of emissive factor.
+            // Ideally, we should look up the texture if it exists, but for CDF building, 
+            // base factor is usually a good enough approximation for probability.
+            const Material& mat = obj.materials[tri.material_index];
+            float emission_strength = glm::length(mat.emissive_factor);
+            
+            // Flux = Area * Radiance (Approximation)
+            // We assume Lambertian emission over the hemisphere (PI factor usually involved but cancels out in PDF)
+            float flux = tri.area * emission_strength;
+            light_triangle_fluxes.push_back(flux);
+        }
+
+        current_texture_offset += obj.textures.size();
     };
 
     // --- 2. Aggregate all objects ---
@@ -1631,13 +1649,39 @@ void Engine::createGlobalBindlessBuffers()
     if (use_rt_box) {
         aggregate_object(rt_box);
     }
-    // We do NOT aggregate the torus, as it is not part of the hit-scene
 
-    // --- 3. Upload all 4 buffers to the GPU ---
-    
-    // Helper lambda to upload a single buffer
+    // --- 3. Build CDF ---
+    std::vector<LightCDF> global_light_cdf;
+    num_light_triangles = static_cast<uint32_t>(global_light_triangles.size());
+    total_scene_flux = 0.0f;
+
+    if (num_light_triangles > 0) {
+        // Calculate total flux
+        for (float f : light_triangle_fluxes) total_scene_flux += f;
+
+        // Build CDF
+        float running_sum = 0.0f;
+        for (size_t i = 0; i < num_light_triangles; i++) {
+            running_sum += light_triangle_fluxes[i];
+            
+            LightCDF cdf_entry;
+            cdf_entry.cumulative_probability = (total_scene_flux > 0.0f) ? (running_sum / total_scene_flux) : 0.0f;
+            cdf_entry.triangle_index = static_cast<uint32_t>(i);
+            cdf_entry.padding[0] = 0.0f; cdf_entry.padding[1] = 0.0f;
+            
+            global_light_cdf.push_back(cdf_entry);
+        }
+        // Force last entry to 1.0 to prevent precision errors
+        global_light_cdf.back().cumulative_probability = 1.0f;
+    } else {
+        // Dummy entry to prevent binding errors if no lights exist
+        global_light_triangles.push_back({0, 0, 0, 0});
+        global_light_cdf.push_back({1.0f, 0, {0.0f, 0.0f}});
+    }
+
+    // --- 4. Upload Buffers ---
     auto upload_buffer = [&](AllocatedBuffer& buffer, vk::DeviceSize data_size, const void* data) {
-        if (data_size == 0) return; // Don't upload empty buffers
+        if (data_size == 0) return;
         
         AllocatedBuffer staging_buffer;
         createBuffer(vma_allocator, data_size, vk::BufferUsageFlagBits::eTransferSrc,
@@ -1659,6 +1703,12 @@ void Engine::createGlobalBindlessBuffers()
     upload_buffer(all_indices_buffer, sizeof(uint32_t) * global_scene_indices.size(), global_scene_indices.data());
     upload_buffer(all_materials_buffer, sizeof(MaterialPushConstant) * global_materials_data.size(), global_materials_data.data());
     upload_buffer(all_mesh_info_buffer, sizeof(MeshInfo) * global_mesh_info.size(), global_mesh_info.data());
+
+    // --- NEW: Upload Light Buffers ---
+    upload_buffer(light_triangle_buffer, sizeof(LightTriangle) * global_light_triangles.size(), global_light_triangles.data());
+    upload_buffer(light_cdf_buffer, sizeof(LightCDF) * global_light_cdf.size(), global_light_cdf.data());
+    
+    std::cout << "Built Light CDF: " << num_light_triangles << " emissive triangles. Total Flux: " << total_scene_flux << std::endl;
 }
 
 
@@ -1914,6 +1964,11 @@ void Engine::drawFrame(){
         createModel(torus); // TODO 0001 -> maybe there is a better way to manage this
         updateTorusRTBuffer();
     }
+    if (input.move != glm::vec2(0) || input.look_x != 0 || input.look_y != 0 || changed) {
+        accumulation_frame = 0;
+    } else {
+        accumulation_frame++;
+    }
     camera.update(time, input, torus.getMajorRadius(), torus.getHeight());
 
     updateUniformBuffer(current_frame);
@@ -2039,8 +2094,8 @@ void Engine::updateUniformBuffer(uint32_t current_image)
         }
     }
 
-    // --- REMOVED: Raster Shadow Map Matrix Calculation Loop ---
-    // (Ray tracing calculates shadows directly in the shader)
+    ubo.total_scene_flux = total_scene_flux;
+    ubo.frame_count = accumulation_frame;
 
     // --- 6. Copy Data to GPU ---
     memcpy(uniform_buffers_mapped[current_image], &ubo, sizeof(ubo));
@@ -2310,25 +2365,21 @@ void Engine::createRayTracingPipeline()
     bindings.emplace_back(6, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
     bindings.emplace_back(7, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
 
-    // Binding 8 SKIPPED
+    // Binding 8: Light Triangles
+    bindings.emplace_back(8, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
+    // Binding 9: Light CDF
+    bindings.emplace_back(9, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
 
-    // --- SWAP HAPPENS HERE ---
-
-    // Binding 9: Output Image (Was 10) - STANDARD BINDING
-    bindings.emplace_back(9, vk::DescriptorType::eStorageImage, 1, 
-                          vk::ShaderStageFlagBits::eRaygenKHR, nullptr);
-
-    // Binding 10: Global Textures (Was 9) - VARIABLE COUNT (MUST BE LAST)
-    bindings.emplace_back(10, vk::DescriptorType::eCombinedImageSampler, static_cast<uint32_t>(MAX_BINDLESS_TEXTURES), 
+    // --- SHIFTED BINDINGS ---
+    // Binding 10: Output Image
+    bindings.emplace_back(10, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eRaygenKHR, nullptr);
+    // Binding 11: Textures (Must be LAST)
+    bindings.emplace_back(11, vk::DescriptorType::eCombinedImageSampler, static_cast<uint32_t>(MAX_BINDLESS_TEXTURES), 
                           vk::ShaderStageFlagBits::eClosestHitKHR | vk::ShaderStageFlagBits::eAnyHitKHR, nullptr);
 
-    // --- Flags ---
-    // We have 10 bindings pushed to the vector (indices 0 to 9).
-    // binding_flags[i] corresponds to bindings[i].
-    
+    // --- FLAGS ---
+    // Size is now 12 (Indices 0 to 11)
     std::vector<vk::DescriptorBindingFlags> binding_flags(bindings.size(), vk::DescriptorBindingFlags{});
-    
-    // The last element in the vector (index 9) corresponds to Binding 10 (Textures)
     binding_flags.back() = vk::DescriptorBindingFlagBits::ePartiallyBound | vk::DescriptorBindingFlagBits::eVariableDescriptorCount;
 
     vk::DescriptorSetLayoutBindingFlagsCreateInfo flags_info;
@@ -2436,7 +2487,7 @@ void Engine::createRayTracingDescriptorSets()
         layouts.data()
     );
 
-    // Variable count applies to the last binding (Binding 10) automatically
+    // Variable count applies to the last binding (Binding 11) automatically
     std::vector<uint32_t> variable_counts(MAX_FRAMES_IN_FLIGHT, MAX_BINDLESS_TEXTURES);
     vk::DescriptorSetVariableDescriptorCountAllocateInfo variable_alloc_info;
     variable_alloc_info.descriptorSetCount = static_cast<uint32_t>(layouts.size());
@@ -2449,72 +2500,145 @@ void Engine::createRayTracingDescriptorSets()
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         std::vector<vk::WriteDescriptorSet> writes;
 
-        // ... [Bindings 0-7 setup remains exactly the same] ...
-        // (Include TLAS, Sample, Hit, Material, UBO, Vert, Index, Mesh)
-        // COPY-PASTE your existing logic for Bindings 0-7 here.
-
         // --- Binding 0: TLAS ---
         vk::WriteDescriptorSetAccelerationStructureKHR as_info;
         as_info.accelerationStructureCount = 1;
         as_info.pAccelerationStructures = &(*tlas.as);
+
         vk::WriteDescriptorSet as_write;
         as_write.dstSet = *rt_descriptor_sets[i];
         as_write.dstBinding = 0;
+        as_write.dstArrayElement = 0;
         as_write.descriptorType = vk::DescriptorType::eAccelerationStructureKHR;
         as_write.descriptorCount = 1;
         as_write.pNext = &as_info;
         writes.push_back(as_write);
 
-        // --- Bindings 1-7 (Condensed for brevity, use your existing code) ---
+        // --- Binding 1: Sample Buffer ---
         vk::DescriptorBufferInfo sample_info(sample_data_buffer.buffer, 0, VK_WHOLE_SIZE);
-        writes.push_back(vk::WriteDescriptorSet(*rt_descriptor_sets[i], 1, 0, vk::DescriptorType::eStorageBuffer, {}, sample_info));
+        vk::WriteDescriptorSet sample_write;
+        sample_write.dstSet = *rt_descriptor_sets[i];
+        sample_write.dstBinding = 1;
+        sample_write.dstArrayElement = 0;
+        sample_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+        sample_write.descriptorCount = 1;
+        sample_write.pBufferInfo = &sample_info;
+        writes.push_back(sample_write);
 
+        // --- Binding 2: Hit Buffer ---
         vk::DescriptorBufferInfo hit_info(hit_data_buffer.buffer, 0, VK_WHOLE_SIZE);
-        writes.push_back(vk::WriteDescriptorSet(*rt_descriptor_sets[i], 2, 0, vk::DescriptorType::eStorageBuffer, {}, hit_info));
+        vk::WriteDescriptorSet hit_write;
+        hit_write.dstSet = *rt_descriptor_sets[i];
+        hit_write.dstBinding = 2;
+        hit_write.dstArrayElement = 0;
+        hit_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+        hit_write.descriptorCount = 1;
+        hit_write.pBufferInfo = &hit_info;
+        writes.push_back(hit_write);
 
+        // --- Binding 3: Materials Buffer ---
         vk::DescriptorBufferInfo mat_info(all_materials_buffer.buffer, 0, VK_WHOLE_SIZE);
-        writes.push_back(vk::WriteDescriptorSet(*rt_descriptor_sets[i], 3, 0, vk::DescriptorType::eStorageBuffer, {}, mat_info));
+        vk::WriteDescriptorSet mat_write;
+        mat_write.dstSet = *rt_descriptor_sets[i];
+        mat_write.dstBinding = 3;
+        mat_write.dstArrayElement = 0;
+        mat_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+        mat_write.descriptorCount = 1;
+        mat_write.pBufferInfo = &mat_info;
+        writes.push_back(mat_write);
 
+        // --- Binding 4: Uniform Buffer ---
         vk::DescriptorBufferInfo ubo_info(uniform_buffers[i].buffer, 0, sizeof(UniformBufferObject));
-        writes.push_back(vk::WriteDescriptorSet(*rt_descriptor_sets[i], 4, 0, vk::DescriptorType::eUniformBuffer, {}, ubo_info));
+        vk::WriteDescriptorSet ubo_write;
+        ubo_write.dstSet = *rt_descriptor_sets[i];
+        ubo_write.dstBinding = 4;
+        ubo_write.dstArrayElement = 0;
+        ubo_write.descriptorType = vk::DescriptorType::eUniformBuffer;
+        ubo_write.descriptorCount = 1;
+        ubo_write.pBufferInfo = &ubo_info;
+        writes.push_back(ubo_write);
 
+        // --- Binding 5: Vertices ---
         vk::DescriptorBufferInfo vert_info(all_vertices_buffer.buffer, 0, VK_WHOLE_SIZE);
-        writes.push_back(vk::WriteDescriptorSet(*rt_descriptor_sets[i], 5, 0, vk::DescriptorType::eStorageBuffer, {}, vert_info));
+        vk::WriteDescriptorSet vert_write;
+        vert_write.dstSet = *rt_descriptor_sets[i];
+        vert_write.dstBinding = 5;
+        vert_write.dstArrayElement = 0;
+        vert_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+        vert_write.descriptorCount = 1;
+        vert_write.pBufferInfo = &vert_info;
+        writes.push_back(vert_write);
 
+        // --- Binding 6: Indices ---
         vk::DescriptorBufferInfo idx_info(all_indices_buffer.buffer, 0, VK_WHOLE_SIZE);
-        writes.push_back(vk::WriteDescriptorSet(*rt_descriptor_sets[i], 6, 0, vk::DescriptorType::eStorageBuffer, {}, idx_info));
+        vk::WriteDescriptorSet idx_write;
+        idx_write.dstSet = *rt_descriptor_sets[i];
+        idx_write.dstBinding = 6;
+        idx_write.dstArrayElement = 0;
+        idx_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+        idx_write.descriptorCount = 1;
+        idx_write.pBufferInfo = &idx_info;
+        writes.push_back(idx_write);
 
+        // --- Binding 7: Mesh Info ---
         vk::DescriptorBufferInfo mesh_info(all_mesh_info_buffer.buffer, 0, VK_WHOLE_SIZE);
-        writes.push_back(vk::WriteDescriptorSet(*rt_descriptor_sets[i], 7, 0, vk::DescriptorType::eStorageBuffer, {}, mesh_info));
+        vk::WriteDescriptorSet mesh_write;
+        mesh_write.dstSet = *rt_descriptor_sets[i];
+        mesh_write.dstBinding = 7;
+        mesh_write.dstArrayElement = 0;
+        mesh_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+        mesh_write.descriptorCount = 1;
+        mesh_write.pBufferInfo = &mesh_info;
+        writes.push_back(mesh_write);
 
+        // --- Binding 8: Light Triangles ---
+        vk::DescriptorBufferInfo l_tri_info(light_triangle_buffer.buffer, 0, VK_WHOLE_SIZE);
+        vk::WriteDescriptorSet l_tri_write;
+        l_tri_write.dstSet = *rt_descriptor_sets[i];
+        l_tri_write.dstBinding = 8;
+        l_tri_write.dstArrayElement = 0;
+        l_tri_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+        l_tri_write.descriptorCount = 1;
+        l_tri_write.pBufferInfo = &l_tri_info;
+        writes.push_back(l_tri_write);
 
-        // --- SWAP HAPPENS HERE ---
+        // --- Binding 9: Light CDF ---
+        vk::DescriptorBufferInfo l_cdf_info(light_cdf_buffer.buffer, 0, VK_WHOLE_SIZE);
+        vk::WriteDescriptorSet l_cdf_write;
+        l_cdf_write.dstSet = *rt_descriptor_sets[i];
+        l_cdf_write.dstBinding = 9;
+        l_cdf_write.dstArrayElement = 0;
+        l_cdf_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+        l_cdf_write.descriptorCount = 1;
+        l_cdf_write.pBufferInfo = &l_cdf_info;
+        writes.push_back(l_cdf_write);
 
-        // --- Binding 9: Output Image (Was 10) ---
+        // --- Binding 10: Output Image (Shifted) ---
         vk::DescriptorImageInfo storage_image_info;
         storage_image_info.imageView = *rt_output_image.image_view;
         storage_image_info.imageLayout = vk::ImageLayout::eGeneral;
 
         vk::WriteDescriptorSet output_write;
         output_write.dstSet = *rt_descriptor_sets[i];
-        output_write.dstBinding = 9; // <--- CHANGED
+        output_write.dstBinding = 10;
+        output_write.dstArrayElement = 0;
         output_write.descriptorType = vk::DescriptorType::eStorageImage;
         output_write.descriptorCount = 1;
-        output_write.pImageInfo = &storage_image_info;
+        output_write.pImageInfo = &storage_image_info; // Pointer to info
         writes.push_back(output_write);
 
-        // --- Binding 10: Global Textures (Was 9) ---
+        // --- Binding 11: Global Textures (Last) ---
         if (!global_texture_descriptors.empty()) {
             vk::WriteDescriptorSet texture_write;
             texture_write.dstSet = *rt_descriptor_sets[i];
-            texture_write.dstBinding = 10; // <--- CHANGED
+            texture_write.dstBinding = 11;
             texture_write.dstArrayElement = 0;
             texture_write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
             texture_write.descriptorCount = static_cast<uint32_t>(global_texture_descriptors.size());
             texture_write.pImageInfo = global_texture_descriptors.data();
             writes.push_back(texture_write);
         }
-
+        
         logical_device.updateDescriptorSets(writes, {});
     }
 }

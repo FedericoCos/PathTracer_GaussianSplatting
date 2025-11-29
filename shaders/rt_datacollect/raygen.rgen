@@ -33,6 +33,8 @@ void main()
     local_normal = normalize(local_normal);
     vec3 ray_origin = (pc.model * vec4(local_pos, 1.0)).xyz;
     vec3 ray_dir = normalize((pc.model * vec4(local_normal, 0.0)).xyz);
+    // Init Seed for RNG
+    payload.seed = index + ubo.frameCount * 719393;
 
     // --- LOOP ---
     vec3 accumulated_color = vec3(0.0);

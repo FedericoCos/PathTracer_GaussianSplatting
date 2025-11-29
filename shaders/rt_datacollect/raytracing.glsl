@@ -34,6 +34,18 @@ struct MaterialData {
     int occlusion_id;
 };
 
+// --- NEW: LIGHT DATA STRUCTURES ---
+struct LightTriangle {
+    uint v0, v1, v2;
+    uint material_index;
+};
+
+struct LightCDF {
+    float cumulative_probability;
+    uint triangle_index;
+    vec2 padding;
+};
+
 struct PointLight {
     vec4 position;
     vec4 color;
@@ -59,20 +71,18 @@ struct HitData {
     float padding;
 };
 
-// --- 4. PAYLOADS (THE FIX) ---
+// --- 4. PAYLOADS ---
 struct RayPayload {
-    // A. Lighting Result
     vec3 color;
-    
-    // B. Next Ray State (For Iterative Loop)
     vec3 next_ray_origin;
     vec3 next_ray_dir;
-    float hit_flag; // -1=Miss, 1=Stop, 2=Bounce
-    vec3 weight;    // Color attenuation for next bounce
-    
-    // C. Geometry Capture (For Point Cloud)
+    float hit_flag; 
+    vec3 weight;    
     vec3 hit_pos;
     vec3 normal;
+    
+    // Random State (Passed between bounces)
+    uint seed; 
 };
 
 struct ShadowPayload {
@@ -89,20 +99,35 @@ layout(set = 0, binding = 4) uniform UniformBufferObject {
     mat4 proj;
     vec3 cameraPos;
     vec4 ambientLight;
+    // (Legacy PointLights kept for hybrid fallback if needed)
     PointLight pointlights[150];
     PointLight shadowLights[150];
     int cur_num_pointlights;
     int cur_num_shadowlights;
     int panelShadowsEnabled;
     float shadowFarPlane;
+    uint frameCount; // Added for temporal noise
+    float totalSceneFlux;
 } ubo;
 layout(set = 0, binding = 5, scalar) buffer readonly AllVertices { InputVertex v[]; } all_vertices;
 layout(set = 0, binding = 6, scalar) buffer readonly AllIndices { uint i[]; } all_indices;
 layout(set = 0, binding = 7, scalar) buffer readonly AllMeshInfo { MeshInfo info[]; } all_mesh_info;
 
-// Binding 9: Output Image
-layout(set = 0, binding = 9, rgba8) uniform image2D rt_output_image;
-// Binding 10: Textures
-layout(set = 0, binding = 10) uniform sampler2D global_textures[];
+// --- NEW BINDINGS (8 & 9) ---
+layout(set = 0, binding = 8, scalar) buffer readonly LightTriBuffer { LightTriangle tris[]; } light_triangles;
+layout(set = 0, binding = 9, scalar) buffer readonly LightCDFBuffer { LightCDF entries[]; } light_cdf;
+
+// --- SHIFTED BINDINGS ---
+layout(set = 0, binding = 10, rgba8) uniform image2D rt_output_image;
+layout(set = 0, binding = 11) uniform sampler2D global_textures[];
+
+// --- 6. RANDOM NUMBER GENERATOR (PCG Hash) ---
+// Returns a random float [0, 1] and updates state
+float rnd(inout uint state) {
+    uint prev = state;
+    state = prev * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return float((word >> 22u) ^ word) / 4294967296.0;
+}
 
 #endif

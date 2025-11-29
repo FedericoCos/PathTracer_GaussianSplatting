@@ -9,7 +9,12 @@ layout(location = 0) rayPayloadEXT RayPayload payload;
 
 void main()
 {
-    const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
+    uint index = gl_LaunchIDEXT.y * gl_LaunchSizeEXT.x + gl_LaunchIDEXT.x;
+    uint seed = index + ubo.frameCount * 719393; // Local seed for raygen setup
+    float rX = rnd(seed);
+    float rY = rnd(seed);
+
+    const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(rX, rY);
     const vec2 inUV = pixelCenter / vec2(gl_LaunchSizeEXT.xy);
     vec2 d = inUV * 2.0 - 1.0;
     vec4 origin = inverse(ubo.view) * vec4(0, 0, 0, 1);
@@ -20,8 +25,11 @@ void main()
 
     vec3 accumulated_color = vec3(0.0);
     vec3 throughput = vec3(1.0);
+    // Init Seed for RNG
+    payload.seed = seed;
 
-    for (int depth = 0; depth < 8; depth++) { 
+
+    for (int depth = 0; depth < 16; depth++) { 
         traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, ray_origin, 0.001, ray_dir, 10000.0, 0);
 
         accumulated_color += payload.color * throughput;
@@ -35,6 +43,20 @@ void main()
         if (length(throughput) < 0.01) break;
     }
 
-    vec3 finalColor = pow(accumulated_color, vec3(1.0 / 2.2));
-    imageStore(rt_output_image, ivec2(gl_LaunchIDEXT.xy), vec4(finalColor, 1.0));
+    vec3 current_color = pow(accumulated_color, vec3(1.0 / 2.2)); // Gamma correction for current frame
+
+    // --- TEMPORAL ACCUMULATION ---
+    if (ubo.frameCount > 0) {
+        // Read previous frame from image
+        vec3 prev_color = imageLoad(rt_output_image, ivec2(gl_LaunchIDEXT.xy)).rgb;
+        
+        // Blend factor reduces over time (1/N) to converge to the true mean.
+        // Clamp to prevent ghosting if you don't reset frameCount on movement.
+        float blend = 1.0 / float(ubo.frameCount + 1); 
+        // blend = max(blend, 0.05); // Keep at least 5% new data (for moving objects)
+        
+        current_color = mix(prev_color, current_color, blend);
+    }
+
+    imageStore(rt_output_image, ivec2(gl_LaunchIDEXT.xy), vec4(current_color, 1.0));
 }

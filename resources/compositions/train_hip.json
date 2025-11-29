@@ -20,15 +20,14 @@
         "num_rays": 500000
     },
 
-    "ambient_light": [0.8, 0.8, 0.8, 0.05]
+    "ambient_light": [0.8, 0.8, 0.8, 0.00]
   },
   "objects": [
     {
       "model": "resources/train/scene.gltf",
       "position": [0.0, 0.0, 60.0],
       "scale": [0.1, 0.1, 0.1],
-      "rotation": [0.0, 0.0, 0.0],
-      "use_emissive_lights": false
+      "rotation": [0.0, 0.0, 0.0]
     },
     {
       "model": "resources/chappie/scene.gltf",

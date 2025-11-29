@@ -3,7 +3,7 @@
     "lights_file": "resources/lights.json",
     "use_manual_lights": false,
     "use_manual_lights_shadows": false,
-    "use_emissive_lights": true,
+    "use_emissive_lights": false,
     "use_emissive_lights_shadows": false,
     "emissive_intensity_multiplier": 1.0,
 
@@ -24,7 +24,7 @@
   },
   "objects": [
     {
-      "model": "resources/obelisk/scene.gltf",
+      "model": "resources/crypt_location/scene.gltf",
       "position": [0, 0, 0],
       "scale": [1, 1, 1],
       "rotation": [0.0, 0.0, 0.0]

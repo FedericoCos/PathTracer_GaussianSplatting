@@ -60,7 +60,8 @@ void main()
         ray_origin = payload.next_ray_origin;
         ray_dir = payload.next_ray_dir;
         
-        if (length(throughput) < 0.01) break;
+        if(depth >= 4)
+            if (length(throughput) < 0.0001) break;
     }
 
     vec3 final_color = pow(accumulated_color, vec3(1.0 / 2.2)); // Gamma

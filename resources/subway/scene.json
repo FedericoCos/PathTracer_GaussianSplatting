@@ -14,7 +14,7 @@
     "rt_box_file": "resources/subway/rtbox.json",
     "panel_shadows_enabled": false,
 
-    "ambient_light": [0.8, 0.8, 0.8, 0.00]
+    "ambient_light": [0.8, 0.8, 0.8, 0.01]
   },
   "objects": [
     {

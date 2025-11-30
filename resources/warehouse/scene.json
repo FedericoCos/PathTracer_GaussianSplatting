@@ -1,7 +1,7 @@
 {
   "settings": {
     "lights_file": "resources/warehouse/lights.json",
-    "use_manual_lights": true,
+    "use_manual_lights": false,
     "use_manual_lights_shadows": true,
     "use_emissive_lights": false,
     "use_emissive_lights_shadows": false,
@@ -12,20 +12,20 @@
     "rt_box_file": "resources/warehouse/rtbox.json",
     "panel_shadows_enabled": false,
     "torus_settings": {
-        "major_radius": 16.0,
+        "major_radius": 1.0,
         "minor_radius": 1.0,
-        "height": 8.0,
-        "major_segments": 500,
-        "minor_segments": 500,
+        "height": 1.0,
+        "major_segments": 100,
+        "minor_segments": 100,
         "num_rays": 1000000
     },
 
-    "ambient_light": [1, 1, 1, 0.1]
+    "ambient_light": [1, 1, 1, 0.0]
   },
   "objects": [
     {
       "model": "resources/warehouse/scene.gltf",
-      "position": [0.0, 0.0, 0.0],
+      "position": [-8.0, 0.0, 25.0],
       "scale": [1, 1, 1],
       "rotation": [0.0, 0.0, 0.0]
     }

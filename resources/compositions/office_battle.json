@@ -31,7 +31,7 @@
     },
     {
       "model": "resources/battle/scene.gltf",
-      "position": [0, 0, 0],
+      "position": [0, 0.0, 0],
       "scale": [1, 1, 1],
       "rotation": [0, 0, 0]
     }

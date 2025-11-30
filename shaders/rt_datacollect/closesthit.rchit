@@ -151,7 +151,7 @@ void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, fl
             vec3 brdf = diffuse + specular;
             
             // Add Contribution
-            Lo += brdf * Le * NdotL * geometry_term * ubo.totalSceneFlux * visibility;
+            Lo += brdf * Le * NdotL * geometry_term * ubo.totalSceneFlux * 10 * visibility;
         }
     }
 }

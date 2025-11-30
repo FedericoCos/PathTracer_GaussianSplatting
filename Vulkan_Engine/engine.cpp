@@ -768,7 +768,7 @@ void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action,
         case Action::HEIGHT_UP: input.height_up = pressed; break;
         case Action::HEIGHT_DOWN: input.height_down = pressed; break;
         case Action::RESET: input.reset = pressed; break;
-        case Action::SWITCH: input.change = pressed; break;
+        case Action::SWITCH: input.change = pressed; engine -> accumulation_frame = 0; break;
 
         case Action::MAJ_RAD_UP: input.maj_rad_up = pressed; break;
         case Action::MAJ_RAD_DOWN: input.maj_rad_down = pressed; break;
@@ -811,8 +811,10 @@ void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action,
             break;
 
         case Action::POINTCLOUD:
-            if (action == GLFW_PRESS)
+            if (action == GLFW_PRESS){
                 engine->render_point_cloud = !engine->render_point_cloud;
+                engine -> accumulation_frame = 0;
+            }
             break;
         case Action::F_POINTCLOUD:
             if (action == GLFW_PRESS)
@@ -833,6 +835,7 @@ void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action,
         
         case Action::SAMPLING_METHOD: 
             if (action == GLFW_PRESS){
+                engine -> accumulation_frame = 0;
                 engine->current_sampling = (engine->current_sampling + 1) % sampling_methods.size();
                 engine->logical_device.waitIdle();
 
@@ -992,6 +995,7 @@ bool Engine::initVulkan(int mssa_val){
     default:
         break;
     }
+    mssa_samples = vk::SampleCountFlagBits::e1;
     logical_device = Device::createLogicalDevice(*this, queue_indices); 
     graphics_queue = Device::getQueue(*this, queue_indices.graphics_family.value());
     present_queue = Device::getQueue(*this, queue_indices.present_family.value());
@@ -1246,6 +1250,7 @@ void Engine::loadScene(const std::string &scene_path)
     }
 
     // Iterate over each object definition in the JSON
+    // Iterate over each object definition in the JSON
     emissive_lights.clear();
     for (const auto& obj_def : scene_data["objects"]) {
         P_object new_object;
@@ -1253,9 +1258,7 @@ void Engine::loadScene(const std::string &scene_path)
         std::string model_path = obj_def["model"];
         new_object.loadModel(model_path, *this);
         
-        createModel(new_object);
-
-        // Set the object's transform from the JSON data
+        // --- STEP 1: Apply JSON Transforms to generate the Model Matrix ---
         if (obj_def.contains("position")) {
             new_object.changePosition({
                 obj_def["position"][0],
@@ -1278,18 +1281,46 @@ void Engine::loadScene(const std::string &scene_path)
             });
         }
 
-        // --- 4. Load Emissive Lights (if enabled) ---
-        /* if (use_emissive_lights) {
-            if(!obj_def.contains("use_emissive_lights")){
-                auto new_lights = new_object.createEmissiveLights(emissive_multiplier);
-                // Append new lights to our master list
-                emissive_lights.insert(emissive_lights.end(), new_lights.begin(), new_lights.end());
-            }
-        } */
+        // --- STEP 2: Bake Transform into Vertices (Fixes "Obscured" / BLAS issues) ---
+        // We permanently modify the vertices to be in World Space.
+        glm::mat4 transform = new_object.model_matrix;
+        glm::mat3 normal_matrix = glm::transpose(glm::inverse(glm::mat3(transform)));
+
+        for(auto& v : new_object.vertices) {
+            // Transform Position
+            v.pos = glm::vec3(transform * glm::vec4(v.pos, 1.0f));
+            
+            // Transform Normal
+            v.normal = glm::normalize(normal_matrix * v.normal);
+            
+            // Transform Tangent (keep w component)
+            glm::vec3 t = glm::vec3(v.tangent);
+            t = glm::normalize(normal_matrix * t);
+            v.tangent = glm::vec4(t, v.tangent.w);
+        }
+
+        // --- STEP 3: Re-calculate Emissive Areas (Crucial for Lighting) ---
+        // Since we potentially scaled the mesh, the pre-calculated triangle areas are wrong.
+        for(auto& tri : new_object.emissive_triangles) {
+            const auto& p0 = new_object.vertices[tri.index0].pos;
+            const auto& p1 = new_object.vertices[tri.index1].pos;
+            const auto& p2 = new_object.vertices[tri.index2].pos;
+            tri.area = 0.5f * glm::length(glm::cross(p1 - p0, p2 - p0));
+        }
+
+        // --- STEP 4: Reset Object Transform ---
+        // The vertices are now at the final position. We must reset the object's
+        // container transform to Identity, otherwise the TLAS will move them AGAIN.
+        new_object.changePosition(glm::vec3(0.0f));
+        new_object.changeRotation(glm::vec3(0.0f));
+        new_object.changeScale(glm::vec3(1.0f));
+
+        // --- STEP 5: Create Model (Uploads Baked World-Space Vertices) ---
+        // Now the BLAS is built using the exact world coordinates.
+        createModel(new_object);
 
         if (this->use_rt_box && !rtbox_path.empty()) {
             createRTBox(rtbox_path);
-            
         } else if (this->use_rt_box && rtbox_path.empty()) {
             std::cerr << "Warning: 'use_rt_box' is true but no 'rt_box_file' was specified." << std::endl;
         }
@@ -1732,19 +1763,20 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     auto& cmd = graphics_command_buffer[current_frame];
     cmd.begin({});
 
-    // --- 1. BUILD TLAS (Required for all RT passes) ---
-    buildTlas(cmd);
+    // 1. Always Build TLAS (Required for ray queries in both modes)
+    buildTlas(cmd); 
 
-    // --- 2. COMMON RT SETUP ---
+    // --- Common SBT Setup ---
     auto align_up = [&](uint32_t size, uint32_t alignment) { return (size + alignment - 1) & ~(alignment - 1); };
     uint32_t handle_size = rt_props.pipeline_props.shaderGroupHandleSize;
     uint32_t sbt_entry_size = align_up(handle_size, rt_props.pipeline_props.shaderGroupBaseAlignment);
     uint64_t sbt_address = getBufferDeviceAddress(sbt_buffer.buffer);
 
+    // Bind RT Pipeline & Descriptors (Shared by both modes)
     cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline);
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.layout, 0, {*rt_descriptor_sets[current_frame]}, {});
-
-    // Push Constants (Used by both RayGen shaders)
+    
+    // Push Constants (Shared)
     RayPushConstant p_const;
     p_const.model = torus.model_matrix;
     p_const.major_radius = torus.getMajorRadius();
@@ -1752,126 +1784,46 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     p_const.height = torus.getHeight();
     cmd.pushConstants<RayPushConstant>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, p_const);
 
-    // Define Common SBT Regions
-    // Miss Group starts at Index 2, contains 2 shaders (Primary, Shadow)
-    vk::StridedDeviceAddressRegionKHR rmiss_region;
-    rmiss_region.deviceAddress = sbt_address + 2 * sbt_entry_size;
-    rmiss_region.stride = sbt_entry_size;
-    rmiss_region.size = 2 * sbt_entry_size;
-
-    // Hit Group starts at Index 4, contains 1 shader group
-    vk::StridedDeviceAddressRegionKHR rhit_region;
-    rhit_region.deviceAddress = sbt_address + 4 * sbt_entry_size;
-    rhit_region.stride = sbt_entry_size;
-    rhit_region.size = sbt_entry_size; // Only 1 hit group type
-
+    vk::StridedDeviceAddressRegionKHR rmiss_region{sbt_address + 2 * sbt_entry_size, sbt_entry_size, 2 * sbt_entry_size};
+    vk::StridedDeviceAddressRegionKHR rhit_region{sbt_address + 4 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
     vk::StridedDeviceAddressRegionKHR callable_region{};
 
-    // --- 3. PASS 1: TORUS CAPTURE (Data Collection) ---
-    if(activate_point_cloud)
-    {
-        // RayGen Index 0: Torus Capture
-        vk::StridedDeviceAddressRegionKHR rgen_torus;
-        rgen_torus.deviceAddress = sbt_address + 0 * sbt_entry_size;
-        rgen_torus.stride = sbt_entry_size;
-        rgen_torus.size = sbt_entry_size;
 
+    // =========================================================
+    // MODE A: POINT CLOUD ANALYSIS (Pressed 'P')
+    // =========================================================
+    if(render_point_cloud)
+    {
+        // 1. Run Data Capture Pass (RayGen 0: Torus -> Scene)
+        // This calculates positions and colors using the updated raygen.rgen
+        vk::StridedDeviceAddressRegionKHR rgen_torus{sbt_address + 0 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
         uint32_t side = static_cast<uint32_t>(std::ceil(std::sqrt(sampling_points.size())));
         
-        vkCmdTraceRaysKHR(*cmd, 
-            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rgen_torus),
-            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rmiss_region),
-            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rhit_region),
-            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&callable_region),
-            side, side, 1);
+        vkCmdTraceRaysKHR(*cmd, rgen_torus, rmiss_region, rhit_region, callable_region, side, side, 1);
         
-        // Barrier: Wait for writes to hit_data_buffer (Storage Buffer)
-        // This ensures the Vertex Shader in Pass 3 reads valid data
+        // Barrier: Ensure RT is done writing to hit_buffer before Vertex Shader reads it
         vk::MemoryBarrier2 mem_barrier;
         mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
         mem_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
         mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eVertexShader; 
         mem_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead;
-        
         vk::DependencyInfo dep_info;
         dep_info.memoryBarrierCount = 1;
         dep_info.pMemoryBarriers = &mem_barrier;
         cmd.pipelineBarrier2(dep_info);
-    }
 
-    // --- 4. PASS 2: CAMERA VIEW (Main Render) ---
-    {
-        // RayGen Index 1: Camera View
-        vk::StridedDeviceAddressRegionKHR rgen_camera;
-        rgen_camera.deviceAddress = sbt_address + 1 * sbt_entry_size;
-        rgen_camera.stride = sbt_entry_size;
-        rgen_camera.size = sbt_entry_size;
+        // 2. Prepare Swapchain for Rasterization (Clear Screen)
+        transition_image_layout(image_index, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal,
+                                {}, vk::AccessFlagBits2::eColorAttachmentWrite,
+                                vk::PipelineStageFlagBits2::eTopOfPipe, vk::PipelineStageFlagBits2::eColorAttachmentOutput);
 
-        // Trace rays filling the screen dimensions
-        vkCmdTraceRaysKHR(*cmd, 
-            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rgen_camera),
-            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rmiss_region),
-            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rhit_region),
-            reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&callable_region),
-            swapchain.extent.width, swapchain.extent.height, 1);
-            
-        // Barrier: Wait for RayGen to finish writing to rt_output_image
-        vk::ImageMemoryBarrier2 image_barrier;
-        image_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
-        image_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
-        image_barrier.dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
-        image_barrier.dstAccessMask = vk::AccessFlagBits2::eTransferRead;
-        image_barrier.oldLayout = vk::ImageLayout::eGeneral;
-        image_barrier.newLayout = vk::ImageLayout::eTransferSrcOptimal;
-        image_barrier.image = rt_output_image.image;
-        image_barrier.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
-        
-        // Barrier: Prepare Swapchain to receive the copy
-        vk::ImageMemoryBarrier2 swap_barrier;
-        swap_barrier.srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe;
-        swap_barrier.srcAccessMask = {};
-        swap_barrier.dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
-        swap_barrier.dstAccessMask = vk::AccessFlagBits2::eTransferWrite;
-        swap_barrier.oldLayout = vk::ImageLayout::eUndefined;
-        swap_barrier.newLayout = vk::ImageLayout::eTransferDstOptimal;
-        swap_barrier.image = swapchain.images[image_index];
-        swap_barrier.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
-
-        vk::ImageMemoryBarrier2 barriers[] = {image_barrier, swap_barrier};
-        vk::DependencyInfo dep_info;
-        dep_info.imageMemoryBarrierCount = 2;
-        dep_info.pImageMemoryBarriers = barriers;
-        cmd.pipelineBarrier2(dep_info);
-
-        // Copy RT Result -> Swapchain
-        vk::ImageCopy copyRegion;
-        copyRegion.srcSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
-        copyRegion.dstSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
-        copyRegion.extent = vk::Extent3D{ swapchain.extent.width, swapchain.extent.height, 1 };
-        cmd.copyImage(rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, 
-                      swapchain.images[image_index], vk::ImageLayout::eTransferDstOptimal, 
-                      {copyRegion});
-
-        // Transition RT Output back to General for next frame
-        transitionImage(cmd, rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
-    }
-
-    // --- 5. PASS 3: POINT CLOUD OVERLAY (Raster) ---
-    if (render_point_cloud && activate_point_cloud)
-    {
-        // Transition Swapchain: TransferDst -> ColorAttachment
-        transition_image_layout(image_index, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eColorAttachmentOptimal,
-                                vk::AccessFlagBits2::eTransferWrite, vk::AccessFlagBits2::eColorAttachmentWrite,
-                                vk::PipelineStageFlagBits2::eTransfer, vk::PipelineStageFlagBits2::eColorAttachmentOutput);
-
-        // LoadOp::eLoad preserves the Ray Traced image we just copied in
         vk::RenderingAttachmentInfo color_att{};
         color_att.imageView = swapchain.image_views[image_index];
         color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-        color_att.loadOp = vk::AttachmentLoadOp::eLoad; 
+        color_att.loadOp = vk::AttachmentLoadOp::eClear; // Clear previous frame
         color_att.storeOp = vk::AttachmentStoreOp::eStore;
+        color_att.clearValue = vk::ClearColorValue{std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}}; // Black Background
 
-        // Depth Attachment (Cleared, used for correct point occlusion)
         vk::RenderingAttachmentInfo depth_att{};
         depth_att.imageView = depth_image.image_view;
         depth_att.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
@@ -1889,39 +1841,87 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         cmd.beginRendering(render_info);
         cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)swapchain.extent.width, (float)swapchain.extent.height, 0.f, 1.f));
         cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapchain.extent));
+        cmd.setCullMode(vk::CullModeFlagBits::eNone); // Required for dynamic state
 
-        // Draw Points
+        // Draw Point Cloud
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.pipeline);
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.layout, 0, {*point_cloud_descriptor_sets[current_frame]}, {});
         
         PC pc_data;
         pc_data.model = torus.model_matrix;
-        pc_data.mode = 0; // World Space
         pc_data.major_radius = torus.getMajorRadius();
         pc_data.minor_radius = torus.getMinorRadius();
         pc_data.height = torus.getHeight();
-        
-        if(render_final_pointcloud){
+
+        // --- Toggle 'O': Show Scene Point Cloud ---
+        if (render_final_pointcloud) {
+            pc_data.mode = 0; // World Hit
             cmd.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data);
             cmd.draw(static_cast<uint32_t>(sampling_points.size()), 1, 0, 0);
         }
 
+        // --- Toggle 'T': Show Projected Torus Surface ---
         if (show_projected_torus) {
-            pc_data.mode = 1; // Projected onto Torus
+            pc_data.mode = 1; // Torus UV Surface
             cmd.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data);
             cmd.draw(static_cast<uint32_t>(sampling_points.size()), 1, 0, 0);
         }
-        
+
         cmd.endRendering();
 
-        // Transition for Presentation
+        // Transition to Present
         transition_image_layout(image_index, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::ePresentSrcKHR,
                                 vk::AccessFlagBits2::eColorAttachmentWrite, {},
                                 vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::PipelineStageFlagBits2::eBottomOfPipe);
     }
+    // =========================================================
+    // MODE B: STANDARD RENDER (Normal View)
+    // =========================================================
     else 
     {
-        // If Point Cloud is OFF, transition directly from TransferDst (after Copy) to Present
+        // 1. Run Camera View Pass (RayGen 1: Camera -> Scene)
+        vk::StridedDeviceAddressRegionKHR rgen_camera{sbt_address + 1 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
+        vkCmdTraceRaysKHR(*cmd, rgen_camera, rmiss_region, rhit_region, callable_region, swapchain.extent.width, swapchain.extent.height, 1);
+        
+        // 2. Transition & Copy to Swapchain
+        vk::ImageMemoryBarrier2 image_barrier;
+        image_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
+        image_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
+        image_barrier.dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
+        image_barrier.dstAccessMask = vk::AccessFlagBits2::eTransferRead;
+        image_barrier.oldLayout = vk::ImageLayout::eGeneral;
+        image_barrier.newLayout = vk::ImageLayout::eTransferSrcOptimal;
+        image_barrier.image = rt_output_image.image;
+        image_barrier.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
+
+        vk::ImageMemoryBarrier2 swap_barrier;
+        swap_barrier.srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe;
+        swap_barrier.srcAccessMask = {};
+        swap_barrier.dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
+        swap_barrier.dstAccessMask = vk::AccessFlagBits2::eTransferWrite;
+        swap_barrier.oldLayout = vk::ImageLayout::eUndefined;
+        swap_barrier.newLayout = vk::ImageLayout::eTransferDstOptimal;
+        swap_barrier.image = swapchain.images[image_index];
+        swap_barrier.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
+
+        vk::ImageMemoryBarrier2 barriers[] = {image_barrier, swap_barrier};
+        vk::DependencyInfo dep_info;
+        dep_info.imageMemoryBarrierCount = 2;
+        dep_info.pImageMemoryBarriers = barriers;
+        cmd.pipelineBarrier2(dep_info);
+
+        vk::ImageCopy copyRegion;
+        copyRegion.srcSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
+        copyRegion.dstSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
+        copyRegion.extent = vk::Extent3D{ swapchain.extent.width, swapchain.extent.height, 1 };
+        cmd.copyImage(rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, 
+                      swapchain.images[image_index], vk::ImageLayout::eTransferDstOptimal, 
+                      {copyRegion});
+
+        // Restore RT Image Layout
+        transitionImage(cmd, rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
+
+        // Transition Swapchain to Present
         transition_image_layout(image_index, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::ePresentSrcKHR,
                                 vk::AccessFlagBits2::eTransferWrite, {},
                                 vk::PipelineStageFlagBits2::eTransfer, vk::PipelineStageFlagBits2::eBottomOfPipe);
@@ -1967,6 +1967,7 @@ void Engine::drawFrame(){
         createModel(torus); // TODO 0001 -> maybe there is a better way to manage this
         updateTorusRTBuffer();
     }
+    // Normal Camera Mode accumulation logic
     if (input.move != glm::vec2(0) || input.look_x != 0 || input.look_y != 0 || changed) {
         accumulation_frame = 0;
     } else {

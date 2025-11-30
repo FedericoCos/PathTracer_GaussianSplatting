@@ -490,6 +490,7 @@ struct RaySample {
 
 struct RayPushConstant {
     glm::mat4 model;
+    int mode;
     float major_radius; 
     float minor_radius;
     float height;

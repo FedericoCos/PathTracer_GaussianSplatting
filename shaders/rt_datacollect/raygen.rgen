@@ -6,69 +6,119 @@
 #include "raytracing.glsl"
 
 layout(set = 0, binding = 1, scalar) buffer readonly SampleBuffer { RaySample samples[]; } sample_buffer;
-layout(set = 0, binding = 2, scalar) buffer writeonly OutputHitBuffer { HitData hits[]; } output_buffer;
-layout(push_constant) uniform PushConstants { mat4 model; float major_radius; float minor_radius; float height; } pc;
+// Note: We remove 'readonly' from hit_buffer because we need to Read-Modify-Write for accumulation
+layout(set = 0, binding = 2, scalar) buffer HitDataBuffer { HitData hits[]; } hit_buffer;
+
 layout(location = 0) rayPayloadEXT RayPayload payload;
 
+layout(push_constant) uniform PushConstants {
+    mat4 model;
+    int mode; 
+    float major_radius;
+    float minor_radius;
+    float height;
+} pc;
+
 const float PI = 3.14159265359;
+const float CLAMP_MAX = 10.0;
 
 void main()
 {
     uint index = gl_LaunchIDEXT.y * gl_LaunchSizeEXT.x + gl_LaunchIDEXT.x;
-    if (index >= sample_buffer.samples.length()) return;
-
-    // Torus logic
-    vec2 uv = sample_buffer.samples[index].uv;
-    float u = uv.x * 2.0 * PI;
-    float v = uv.y * 2.0 * PI;
-    float R = pc.major_radius; float r = pc.minor_radius; float h = pc.height;
-    vec3 local_pos;
-    local_pos.x = (R + r * cos(v)) * cos(u);
-    local_pos.y = r * sin(v) + h;
-    local_pos.z = (R + r * cos(v)) * sin(u);
-    vec3 local_normal;
-    local_normal.x = cos(v) * cos(u);
-    local_normal.y = sin(v);
-    local_normal.z = cos(v) * sin(u);
-    local_normal = normalize(local_normal);
-    vec3 ray_origin = (pc.model * vec4(local_pos, 1.0)).xyz;
-    vec3 ray_dir = normalize((pc.model * vec4(local_normal, 0.0)).xyz);
-    // Init Seed for RNG
-    payload.seed = index + ubo.frameCount * 719393;
-
-    // --- LOOP ---
-    vec3 accumulated_color = vec3(0.0);
-    vec3 throughput = vec3(1.0);
-    vec3 primary_hit_pos = vec3(0.0);
-    vec3 primary_normal = vec3(0.0);
-    float primary_flag = -1.0;
-
-    for (int depth = 0; depth < 8; depth++) { 
-        traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, ray_origin, 0.001, ray_dir, 10000.0, 0);
-
-        accumulated_color += payload.color * throughput;
-
-        if (depth == 0) {
-            primary_hit_pos = payload.hit_pos;
-            primary_flag = payload.hit_flag;
-            primary_normal = (payload.hit_flag < 0.0) ? -ray_dir : payload.normal;
-        }
-
-        if (payload.hit_flag < 1.5) break; // Stop if Miss (-1) or Stop (1)
-
-        throughput *= payload.weight;
-        ray_origin = payload.next_ray_origin;
-        ray_dir = payload.next_ray_dir;
-        
-        if(depth >= 4)
-            if (length(throughput) < 0.0001) break;
+    if (index >= sample_buffer.samples.length()) {
+        return;
     }
 
-    vec3 final_color = pow(accumulated_color, vec3(1.0 / 2.2)); // Gamma
+    // --- 1. SEPARATE SEEDS ---
+    // Seed A: GEOMETRY (Frozen). Keeps points completely still.
+    uint geo_seed = index; 
+    
+    // Seed B: LIGHTING (Varying). Allows PBR to converge.
+    // We use ubo.frameCount to jitter the lighting calculations.
+    uint light_seed = index + ubo.frameCount * 719393;
 
-    output_buffer.hits[index].hit_pos = primary_hit_pos;
-    output_buffer.hits[index].hit_flag = primary_flag;
-    output_buffer.hits[index].color = vec4(final_color, 1.0);
-    output_buffer.hits[index].normal = primary_normal;
-    output_buffer.hits[index].padding = 0.0;
+    // --- 2. GEOMETRY CALCULATION (Using Geo Seed) ---
+    vec2 uv = sample_buffer.samples[index].uv;
+    
+    // V-Flip for correct projection
+    float u = uv.x * 2.0 * PI;
+    float v = (1.0 - uv.y) * 2.0 * PI; 
+
+    float R = pc.major_radius;
+    float r = pc.minor_radius;
+    float h = pc.height;
+
+    // Local Pos
+    vec3 local_pos;
+    local_pos.x = (R + r * cos(v)) * cos(u);
+    local_pos.y = r * sin(v) + h; 
+    local_pos.z = (R + r * cos(v)) * sin(u);
+
+    // Local Normal
+    vec3 local_norm;
+    local_norm.x = cos(v) * cos(u);
+    local_norm.y = sin(v);
+    local_norm.z = cos(v) * sin(u);
+    
+    // World Space
+    vec3 world_origin = (pc.model * vec4(local_pos, 1.0)).xyz;
+    vec3 world_norm = normalize((pc.model * vec4(local_norm, 0.0)).xyz);
+    
+    // Ray Setup: Shoot Outwards
+    vec3 ray_dir = world_norm; 
+    vec3 safe_origin = world_origin + (ray_dir * 0.05); 
+
+    // --- 3. TRACE (Using Light Seed for bounces) ---
+    vec3 accumulated_color = vec3(0.0);
+    vec3 throughput = vec3(1.0);
+    
+    // Initialize payload with the Time-Varying seed
+    payload.seed = light_seed;
+
+    traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, safe_origin, 0.0, ray_dir, 10000.0, 0);
+
+    vec3 final_hit_pos = payload.hit_pos;
+    float final_hit_flag = payload.hit_flag;
+    vec3 final_normal = payload.normal;
+
+    // Lighting Loop (Depth 4 for quality)
+    if (payload.hit_flag > 0.5) {
+        accumulated_color += payload.color * throughput;
+        for (int depth = 1; depth < 4; depth++) { 
+             throughput *= payload.weight;
+             
+             if(depth >= 2) {
+                 float p = max(max(throughput.r, throughput.g), throughput.b);
+                 if (rnd(payload.seed) > p) break;
+                 throughput /= p;
+             }
+
+             traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, payload.next_ray_origin, 0.001, payload.next_ray_dir, 10000.0, 0);
+             accumulated_color += payload.color * throughput;
+             if (payload.hit_flag < 1.5) break;
+        }
+    }
+
+    // Clamp to prevent fireflies exploding the average
+    accumulated_color = min(accumulated_color, vec3(CLAMP_MAX));
+
+    // --- 4. TEMPORAL ACCUMULATION ---
+    vec3 final_color = accumulated_color;
+
+    // If this is NOT the first frame, blend with previous result
+    if (ubo.frameCount > 0) {
+        // Read previous color from buffer
+        vec3 prev_color = hit_buffer.hits[index].color.rgb;
+        
+        // Calculate moving average: New = Mix(Old, New, 1/FrameCount)
+        float blend_factor = 1.0 / float(ubo.frameCount + 1);
+        final_color = mix(prev_color, accumulated_color, blend_factor);
+    }
+    
+    // --- 5. STORE RESULTS ---
+    hit_buffer.hits[index].hit_pos = final_hit_pos;
+    hit_buffer.hits[index].hit_flag = final_hit_flag;
+    hit_buffer.hits[index].normal = final_normal;
+    // Store the ACCUMULATED color
+    hit_buffer.hits[index].color = vec4(final_color, 1.0);
 }

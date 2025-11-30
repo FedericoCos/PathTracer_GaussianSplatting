@@ -1603,6 +1603,8 @@ void Engine::createGlobalBindlessBuffers()
             p_const.emissive_texture_index = current_texture_offset + mat.emissive_texture_index;
             p_const.occlusion_texture_index = current_texture_offset + mat.occlusion_texture_index;
             p_const.pad = mat.is_transparent ? 1.0f : 0.0f;
+            p_const.clearcoat_texture_index = current_texture_offset + mat.clearcoat_texture_index;
+            p_const.clearcoat_roughness_texture_index = current_texture_offset + mat.clearcoat_roughness_texture_index;
             global_materials_data.push_back(p_const);
         }
 

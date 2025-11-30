@@ -247,8 +247,9 @@ struct MaterialPushConstant {
     int normal_texture_index;
     int metallic_roughness_texture_index;
     int emissive_texture_index;
-
     int occlusion_texture_index;
+    int clearcoat_texture_index;
+    int clearcoat_roughness_texture_index;
 };
 
 struct Primitive {

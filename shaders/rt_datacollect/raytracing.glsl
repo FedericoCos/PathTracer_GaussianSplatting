@@ -32,6 +32,8 @@ struct MaterialData {
     int mr_id;
     int emissive_id;
     int occlusion_id;
+    int clearcoat_id;
+    int clearcoat_roughness_id;
 };
 
 // --- NEW: LIGHT DATA STRUCTURES ---

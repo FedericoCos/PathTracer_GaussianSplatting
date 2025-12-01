@@ -64,8 +64,11 @@ enum class TransparencyMode{
 
 struct Vertex{
     glm::vec3 pos;
+    float pad1;
     glm::vec3 normal;
+    float pad2;
     glm::vec3 color;
+    float pad3;
     glm::vec4 tangent;
     glm::vec2 tex_coord;
     glm::vec2 tex_coord_1;

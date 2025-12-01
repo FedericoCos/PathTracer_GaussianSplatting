@@ -6,8 +6,11 @@
 // --- 1. GEOMETRY INPUTS ---
 struct InputVertex {
     vec3 pos;
+    float pad1;
     vec3 normal;
+    float pad2;
     vec3 color;
+    float pad3;
     vec4 tangent;
     vec2 tex_coord;
     vec2 tex_coord_1;

@@ -1295,7 +1295,7 @@ void Engine::loadScene(const std::string &scene_path)
             
             // Transform Tangent (keep w component)
             glm::vec3 t = glm::vec3(v.tangent);
-            t = glm::normalize(normal_matrix * t);
+            t = glm::normalize(glm::mat3(transform) * t);
             v.tangent = glm::vec4(t, v.tangent.w);
         }
 

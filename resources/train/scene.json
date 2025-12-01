@@ -1,13 +1,13 @@
 {
   "settings": {
     "lights_file": "resources/train/lights.json",
-    "use_manual_lights": true,
-    "use_manual_lights_shadows": true,
+    "use_manual_lights": false,
+    "use_manual_lights_shadows": false,
     "use_emissive_lights": false,
     "use_emissive_lights_shadows": false,
     "emissive_intensity_multiplier": 300.0,
 
-    "use_rt_box": true,
+    "use_rt_box": false,
     "rt_box_file": "resources/train/rtbox.json",
     "panel_shadows_enabled": false,
 
@@ -20,7 +20,7 @@
         "num_rays": 1000000
     },
 
-    "ambient_light": [0.8, 0.8, 0.8, 0.05]
+    "ambient_light": [0.8, 0.8, 0.8, 0.00]
   },
   "objects": [
     {

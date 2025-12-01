@@ -17,7 +17,7 @@
         "height": 1.0,
         "major_segments": 100,
         "minor_segments": 100,
-        "num_rays": 1000000
+        "num_rays": 10000000
     },
 
     "ambient_light": [1, 1, 1, 0.0]

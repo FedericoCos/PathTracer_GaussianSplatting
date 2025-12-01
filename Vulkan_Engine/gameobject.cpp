@@ -378,6 +378,13 @@ void Gameobject::loadPrimitive(const tinygltf::Primitive& primitive, const tinyg
         glm::mat3 normal_matrix = glm::transpose(glm::inverse(glm::mat3(transform)));
         vertex.normal = glm::normalize(normal_matrix * vertex.normal);
 
+        if (vertex.tangent.w != 0.0f) {
+             glm::vec3 t = glm::vec3(vertex.tangent);
+             // Use the standard transform (rotation), NOT the inverse-transpose (which is for Normals)
+             t = glm::normalize(glm::mat3(transform) * t);
+             vertex.tangent = glm::vec4(t, vertex.tangent.w);
+        }
+
         // Deduplication
         if (!unique_vertices.contains(vertex)) {
             unique_vertices[vertex] = static_cast<uint32_t>(vertices.size());

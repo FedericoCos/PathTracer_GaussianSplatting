@@ -1,9 +1,19 @@
 #version 460
 #extension GL_EXT_scalar_block_layout : require
 
-#include "../rt_datacollect/raytracing.glsl" 
+// Manually define structs to avoid binding conflicts
+struct HitData {
+    vec3 hit_pos;
+    float hit_flag; 
+    vec4 color;
+    vec3 normal;
+    float padding;
+};
 
-// Binding 0: Uniform Buffer (View/Proj) - Now correctly uses Binding 0
+struct RaySample {
+    vec2 uv;
+};
+
 layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 view;
     mat4 proj;
@@ -11,12 +21,10 @@ layout(set = 0, binding = 0) uniform UniformBufferObject {
     float padding; 
 } ubo;
 
-// Binding 1: The Hit Data (Written by RayGen)
 layout(set = 0, binding = 1, scalar) buffer readonly HitDataBuffer {
    HitData hits[];
 } hit_buffer;
 
-// Binding 2: The Ray Samples (UVs on Torus)
 layout(set = 0, binding = 2, scalar) buffer readonly SampleBuffer {
    RaySample samples[];
 } sample_buffer;
@@ -39,17 +47,16 @@ void main() {
 
     out_color_and_flag = vec4(hit.color.rgb, hit.hit_flag);
 
-    // Only draw if we actually hit something (flag > 0)
     if (hit.hit_flag > 0.0) {
         vec3 final_pos;
         
         if (pc.mode == 1) {
-            // MODE 1: REPROJECTION ON TORUS SURFACE
+            // MODE 1: REPROJECTION
             vec2 uv = sample_buffer.samples[index].uv;
             
-            // Flip V to match RayGen logic
+            // REMOVED V-FLIP to match RayGen and C++
             float u = uv.x * 2.0 * PI;
-            float v = (1.0 - uv.y) * 2.0 * PI; 
+            float v = uv.y * 2.0 * PI; 
             
             float R = pc.major_radius;
             float r = pc.minor_radius;
@@ -60,16 +67,24 @@ void main() {
             local_pos.y = r * sin(v) + h; 
             local_pos.z = (R + r * cos(v)) * sin(u);
 
+            // Calculate Normal for offset
+            vec3 local_norm;
+            local_norm.x = cos(v) * cos(u);
+            local_norm.y = sin(v);
+            local_norm.z = cos(v) * sin(u);
+
+            // Offset to prevent Z-fighting
+            local_pos += local_norm * 0.01; 
+
             final_pos = (pc.model * vec4(local_pos, 1.0)).xyz;
         } else {
-            // MODE 0: ORIGINAL POINT CLOUD
+            // MODE 0: ORIGINAL HIT POSITION
             final_pos = hit.hit_pos;
         }
 
         gl_Position = ubo.proj * ubo.view * vec4(final_pos, 1.0);
         gl_PointSize = 2.0;
     } else {
-        // Move invalid points behind camera to cull them
         gl_Position = vec4(0.0, 0.0, -2.0, 1.0); 
     }
 }

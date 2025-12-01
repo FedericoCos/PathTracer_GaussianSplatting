@@ -151,7 +151,7 @@ void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, fl
             vec3 brdf = diffuse + specular;
             
             // Add Contribution
-            Lo += brdf * Le * NdotL * geometry_term * ubo.totalSceneFlux * 10 * visibility;
+            Lo += brdf * Le * NdotL * geometry_term * ubo.totalSceneFlux * visibility;
         }
     }
 }
@@ -197,8 +197,8 @@ void main()
     vec3 N = N_geo;
 
     if (abs(tangent_obj.w) > 0.001 && mat.normal_id >= 0) { 
-        vec3 normal_map = sampleTexture(mat.normal_id, tex_coord).rgb * 2.0 - 1.0;
-        N = normalize(TBN * normal_map); 
+        vec3 normal_map = sampleTexture(mat.normal_id, tex_coord).xyz * 2.0 - 1.0;
+        N = normalize(TBN * normal_map);
     }
     
     // --- 3. MATERIAL PROPERTIES ---
@@ -281,7 +281,9 @@ void main()
     if (mat.occlusion_id >= 0) ao *= sampleTexture(mat.occlusion_id, tex_coord).r;
     
     vec3 emissive = mat.emissive_factor_and_pad.xyz;
-    if (mat.emissive_id >= 0) emissive *= sampleTexture(mat.emissive_id, tex_coord).rgb; 
+    if (mat.emissive_id >= 0){ 
+        emissive *= sampleTexture(mat.emissive_id, tex_coord).rgb; 
+    }
 
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
     
@@ -381,7 +383,7 @@ void main()
         } else {
             // Diffuse Reflection
             vec3 L = sampleCosineHemisphere(N, payload.seed);
-            if (dot(L, N_geo) <= 0.0) L = N_geo;
+            if (dot(L, N_geo) <= 0.0) payload.weight = vec3(0.0);
             
             payload.next_ray_dir = L;
             vec3 diffuseColor = albedo * (1.0 - metallic);

@@ -15,7 +15,7 @@ void main()
     float t = 0.5 * (dir.y + 1.0);
     // vec3 sky = mix(vec3(1.0), vec3(0.5, 0.7, 1.0), t); // White to Blue
     // vec3 sky = vec3(0.015, 0.02, 0.12);
-    vec3 sky = vec3(0.0);
+    vec3 sky = vec3(0.1);
     
     // Boost intensity so glass looks bright
     payload.color = sky * 2.0; 

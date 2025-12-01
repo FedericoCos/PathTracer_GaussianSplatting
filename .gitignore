@@ -1,3 +1,4 @@
 *.o
 Engine
 resources/dataset/*.png
+dataset/train/*.jpg

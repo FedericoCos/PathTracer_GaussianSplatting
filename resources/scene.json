@@ -24,8 +24,14 @@
   },
   "objects": [
     {
-      "model": "resources/crypt_location/scene.gltf",
+      "model": "resources/mecha/scene.gltf",
       "position": [0, 0, 0],
+      "scale": [1, 1, 1],
+      "rotation": [0.0, 0.0, 0.0]
+    },
+    {
+      "model": "resources/warehouse/scene.gltf",
+      "position": [-8, 0, 25],
       "scale": [1, 1, 1],
       "rotation": [0.0, 0.0, 0.0]
     }

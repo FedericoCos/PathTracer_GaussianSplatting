@@ -73,9 +73,9 @@ void main()
 
     if (payload.hit_flag > 0.5) {
         accumulated_color += payload.color * throughput;
-        for (int depth = 1; depth < 4; depth++) { 
+        for (int depth = 1; depth < 12; depth++) { 
              throughput *= payload.weight;
-             if(depth >= 2) {
+             if(depth >= 4) {
                  float p = max(max(throughput.r, throughput.g), throughput.b);
                  if (rnd(payload.seed) > p) break;
                  throughput /= p;
@@ -89,23 +89,20 @@ void main()
     // --- 3. ACCUMULATION (MATCHING CAMERA LOGIC) ---
     
     // A. Clamp Fireflies (Linear)
-    accumulated_color = min(accumulated_color, vec3(CLAMP_MAX));
+    vec3 current_linear = accumulated_color;
 
-    // B. Convert to Gamma Space *BEFORE* Accumulation
-    // This is the key step to matching brightness.
-    vec3 current_gamma = pow(accumulated_color, vec3(1.0 / 2.2));
-
-    // C. Accumulate in Gamma Space
     if (ubo.frameCount > 0) {
-        // Read previous color (already Gamma)
-        vec3 prev_gamma = hit_buffer.hits[index].color.rgb;
+        // Read previous color (It is now Linear)
+        vec3 prev_linear = hit_buffer.hits[index].color.rgb;
+
         float blend_factor = 1.0 / float(ubo.frameCount + 1);
-        current_gamma = mix(prev_gamma, current_gamma, blend_factor);
+        current_linear = mix(prev_linear, current_linear, blend_factor);
     }
     
-    // D. Store Final Gamma Color
+    // B. Store Final LINEAR Color
     hit_buffer.hits[index].hit_pos = final_hit_pos;
     hit_buffer.hits[index].hit_flag = final_hit_flag;
     hit_buffer.hits[index].normal = final_normal;
-    hit_buffer.hits[index].color = vec4(current_gamma, 1.0);
+    // Store as Linear. The Fragment Shader or Swapchain will handle Gamma.
+    hit_buffer.hits[index].color = vec4(current_linear, 1.0);
 }

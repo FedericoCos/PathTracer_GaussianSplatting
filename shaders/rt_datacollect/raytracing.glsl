@@ -123,7 +123,7 @@ layout(set = 0, binding = 8, scalar) buffer readonly LightTriBuffer { LightTrian
 layout(set = 0, binding = 9, scalar) buffer readonly LightCDFBuffer { LightCDF entries[]; } light_cdf;
 
 // --- SHIFTED BINDINGS ---
-layout(set = 0, binding = 10, rgba8) uniform image2D rt_output_image;
+layout(set = 0, binding = 10, rgba32f) uniform image2D rt_output_image;
 layout(set = 0, binding = 11) uniform sampler2D global_textures[];
 
 // --- 6. RANDOM NUMBER GENERATOR (PCG Hash) ---

@@ -36,7 +36,7 @@ void main()
     vec3 throughput = vec3(1.0);
     payload.seed = seed;
 
-    for (int depth = 0; depth < 8; depth++) { 
+    for (int depth = 0; depth < 12; depth++) { 
         traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, ray_origin, 0.001, ray_dir, 10000.0, 0);
         accumulated_color += payload.color * throughput;
 
@@ -59,24 +59,18 @@ void main()
     // This allows us to use Gamma accumulation without the noise sticking.
     accumulated_color = min(accumulated_color, vec3(CLAMP_MAX));
 
-    // 5. ACCUMULATION (GAMMA SPACE WORKAROUND)
-    // We convert to Gamma *before* mixing. This preserves the dark Blue channel
-    // in your 8-bit buffer, preventing the "Yellow" death.
-    vec3 current_gamma = pow(accumulated_color, vec3(1.0 / 2.2));
+    // 5. ACCUMULATION
+    vec3 final_color = accumulated_color;
 
     if (ubo.frameCount > 0) {
-        // Load previous frame (already in Gamma space)
-        vec3 prev_gamma = imageLoad(rt_output_image, ivec2(gl_LaunchIDEXT.xy)).rgb;
+        // 1. Load previous frame (Now it is high-precision Linear Float)
+        vec3 prev_color = imageLoad(rt_output_image, ivec2(gl_LaunchIDEXT.xy)).rgb;
         
-        // Standard Moving Average
+        // 2. Linear Mix
         float blend = 1.0 / float(ubo.frameCount + 1);
-        
-        // 8-BIT PRECISION GUARD:
-        // Don't let blend factor drop below 1/255, or updates will stop/quantize.
-        // blend = max(blend, 0.005); 
-        
-        current_gamma = mix(prev_gamma, current_gamma, blend);
+        final_color = mix(prev_color, final_color, blend);
     }
 
-    imageStore(rt_output_image, ivec2(gl_LaunchIDEXT.xy), vec4(current_gamma, 1.0));
+    // 3. Store Linear Float (Ready for next frame)
+    imageStore(rt_output_image, ivec2(gl_LaunchIDEXT.xy), vec4(final_color, 1.0));
 }

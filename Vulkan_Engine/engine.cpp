@@ -906,7 +906,7 @@ void Engine::cursor_position_callback(GLFWwindow *window, double x_pos, double y
 
 void Engine::createRTOutputImage() {
     // Create Image: Storage (for writing) | TransferSrc (for copy/blit) | TransferDst (for clear)
-    vk::Format rt_format = vk::Format::eB8G8R8A8Unorm;
+    vk::Format rt_format = vk::Format::eR32G32B32A32Sfloat;
     
     rt_output_image = Image::createImage(
         swapchain.extent.width, swapchain.extent.height,
@@ -924,7 +924,8 @@ void Engine::createRTOutputImage() {
     capture_resolve_image = Image::createImage(
         swapchain.extent.width, swapchain.extent.height,
         1, vk::SampleCountFlagBits::e1, 
-        vk::Format::eR8G8B8A8Unorm, // Standard format for saving to disk (JPG/PNG)
+        // vk::Format::eR8G8B8A8Unorm, // Standard format for saving to disk (JPG/PNG)
+        vk::Format::eB8G8R8A8Srgb,
         vk::ImageTiling::eOptimal,
         vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc,
         vk::MemoryPropertyFlagBits::eDeviceLocal, 
@@ -1910,13 +1911,23 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         dep_info.pImageMemoryBarriers = barriers;
         cmd.pipelineBarrier2(dep_info);
 
-        vk::ImageCopy copyRegion;
-        copyRegion.srcSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
-        copyRegion.dstSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
-        copyRegion.extent = vk::Extent3D{ swapchain.extent.width, swapchain.extent.height, 1 };
-        cmd.copyImage(rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, 
-                      swapchain.images[image_index], vk::ImageLayout::eTransferDstOptimal, 
-                      {copyRegion});
+        vk::ImageBlit blitRegion;
+        blitRegion.srcOffsets[0] = vk::Offset3D{0, 0, 0};
+        blitRegion.srcOffsets[1] = vk::Offset3D{static_cast<int32_t>(swapchain.extent.width), static_cast<int32_t>(swapchain.extent.height), 1};
+        blitRegion.srcSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
+
+        blitRegion.dstOffsets[0] = vk::Offset3D{0, 0, 0};
+        blitRegion.dstOffsets[1] = vk::Offset3D{static_cast<int32_t>(swapchain.extent.width), static_cast<int32_t>(swapchain.extent.height), 1};
+        blitRegion.dstSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
+
+        cmd.blitImage(
+            rt_output_image.image,            // Source (Float32)
+            vk::ImageLayout::eTransferSrcOptimal,
+            swapchain.images[image_index],    // Dest (Int8 / Swapchain)
+            vk::ImageLayout::eTransferDstOptimal,
+            blitRegion,                       // <--- FIXED: Pass the object directly (implicit ArrayProxy)
+            vk::Filter::eNearest
+        );
 
         // Restore RT Image Layout
         transitionImage(cmd, rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
@@ -2868,142 +2879,125 @@ ImageReadbackData Engine::readImageToCPU(vk::Image image, VkFormat format, uint3
 }
 
 void Engine::captureSceneData() {
-    std::cout << "\n--- Starting Scene Data Capture (" << NUM_CAPTURE_POSITIONS << " frames) ---" << std::endl;
-    std::vector<FrameData> recorded_frames;
-    std::vector<FrameData> test_frames;
+    const int ACCUMULATION_STEPS = 500; 
+    const int TOTAL_POSITIONS = NUM_CAPTURE_POSITIONS; 
+
+    std::cout << "\n--- Starting Dataset Capture ---" << std::endl;
+    std::cout << "1. Capturing " << TOTAL_POSITIONS << " Camera Views (from inside Torus)" << std::endl;
+    std::cout << "2. Generating Point Cloud Data" << std::endl;
 
     logical_device.waitIdle();
 
-    // Save state
+    // --- SETUP ---
+    // Save original state
     bool original_cloud_state = activate_point_cloud;
-    activate_point_cloud = true; // Force ON to ensure data buffers are populated
+    // Turn OFF point cloud rendering for the images. 
+    // We want the "Normal Scene" as seen by a camera inside the torus.
+    activate_point_cloud = false; 
 
+    std::vector<FrameData> recorded_frames;
+    std::vector<FrameData> test_frames;
+    
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_real_distribution<> alpha_dist(0.0f, 360.0f);
     std::uniform_real_distribution<> beta_dist(0.0f, 360.0f);
 
-    // --- LAMBDA: Synchronous Ray Tracing ---
-    auto renderSync = [&](vk::raii::CommandBuffer& cmd) {
-        
-        // 1. Build TLAS
-        buildTlas(cmd);
+    // Common SBT setup
+    auto align_up = [&](uint32_t size, uint32_t alignment) { return (size + alignment - 1) & ~(alignment - 1); };
+    uint32_t handle_size = rt_props.pipeline_props.shaderGroupHandleSize;
+    uint32_t sbt_entry_size = align_up(handle_size, rt_props.pipeline_props.shaderGroupBaseAlignment);
+    uint64_t sbt_address = getBufferDeviceAddress(sbt_buffer.buffer);
 
-        // 2. Bind Pipeline & Descriptors
-        cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline);
-        cmd.bindDescriptorSets(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.layout, 0, {*rt_descriptor_sets[current_frame]}, {});
+    // Shader regions
+    vk::StridedDeviceAddressRegionKHR rmiss_region{sbt_address + 2 * sbt_entry_size, sbt_entry_size, 2 * sbt_entry_size};
+    vk::StridedDeviceAddressRegionKHR rhit_region{sbt_address + 4 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
+    vk::StridedDeviceAddressRegionKHR callable_region{};
 
-        // 3. Push Constants
-        RayPushConstant p_const;
-        p_const.model = torus.model_matrix;
-        p_const.major_radius = torus.getMajorRadius();
-        p_const.minor_radius = torus.getMinorRadius();
-        p_const.height = torus.getHeight();
-        cmd.pushConstants<RayPushConstant>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, p_const);
-
-        // 4. SBT Setup
-        auto align_up = [&](uint32_t size, uint32_t alignment) { return (size + alignment - 1) & ~(alignment - 1); };
-        uint32_t handle_size = rt_props.pipeline_props.shaderGroupHandleSize;
-        uint32_t sbt_entry_size = align_up(handle_size, rt_props.pipeline_props.shaderGroupBaseAlignment);
-        uint64_t sbt_address = getBufferDeviceAddress(sbt_buffer.buffer);
-
-        vk::StridedDeviceAddressRegionKHR rmiss_region{sbt_address + 2 * sbt_entry_size, sbt_entry_size, 2 * sbt_entry_size};
-        vk::StridedDeviceAddressRegionKHR rhit_region{sbt_address + 4 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
-        vk::StridedDeviceAddressRegionKHR callable_region{};
-
-        // --- PASS 1: TORUS DATA COLLECTION ---
-        // (Necessary to update the hit buffer for PLY export)
-        {
-            vk::StridedDeviceAddressRegionKHR rgen_torus{sbt_address + 0 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
-            uint32_t side = static_cast<uint32_t>(std::ceil(std::sqrt(sampling_points.size())));
-            
-            vkCmdTraceRaysKHR(*cmd, 
-                reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rgen_torus),
-                reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rmiss_region),
-                reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rhit_region),
-                reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&callable_region),
-                side, side, 1);
-
-            // Barrier: Wait for buffer writes
-            vk::MemoryBarrier2 mem_barrier;
-            mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
-            mem_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
-            mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eTransfer; // Future reads
-            mem_barrier.dstAccessMask = vk::AccessFlagBits2::eTransferRead;
-            vk::DependencyInfo dep{ {}, 1, &mem_barrier, 0, nullptr, 0, nullptr };
-            cmd.pipelineBarrier2(dep);
-        }
-
-        // --- PASS 2: CAMERA IMAGE CAPTURE ---
-        {
-            vk::StridedDeviceAddressRegionKHR rgen_camera{sbt_address + 1 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
-            
-            vkCmdTraceRaysKHR(*cmd, 
-                reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rgen_camera),
-                reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rmiss_region),
-                reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&rhit_region),
-                reinterpret_cast<const VkStridedDeviceAddressRegionKHR*>(&callable_region),
-                swapchain.extent.width, swapchain.extent.height, 1);
-
-            // Barrier: Wait for Image Write
-            vk::ImageMemoryBarrier2 img_barrier;
-            img_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
-            img_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
-            img_barrier.dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
-            img_barrier.dstAccessMask = vk::AccessFlagBits2::eTransferRead;
-            img_barrier.oldLayout = vk::ImageLayout::eGeneral;
-            img_barrier.newLayout = vk::ImageLayout::eTransferSrcOptimal;
-            img_barrier.image = rt_output_image.image;
-            img_barrier.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
-            
-            vk::DependencyInfo dep{ {}, 0, nullptr, 0, nullptr, 1, &img_barrier };
-            cmd.pipelineBarrier2(dep);
-        }
-    };
-
-    // --- CAPTURE LOOP ---
-    for (int i = 0; i < NUM_CAPTURE_POSITIONS; ++i) {
+    // =========================================================
+    // PHASE 1: CAMERA IMAGES (View from INSIDE Torus)
+    // =========================================================
+    for (int i = 0; i < TOTAL_POSITIONS; ++i) {
         float alpha = alpha_dist(gen);
         float beta = beta_dist(gen);
         
-        // 1. Move Camera
+        // 1. Position Camera INSIDE the torus
+        // This updates the View Matrix in the UBO
         camera.updateToroidalAngles(alpha, beta, torus.getMajorRadius(), torus.getHeight());
-        updateUniformBuffer(current_frame); 
 
-        vk::raii::CommandBuffer cmd_sync = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+        // 2. Accumulate 5000 Frames for this Viewpoint
+        for (int frame = 0; frame < ACCUMULATION_STEPS; ++frame) {
+            
+            // Update UBO (Frame Count is critical for mixing: 1/1, 1/2, 1/3...)
+            accumulation_frame = frame;
+            updateUniformBuffer(current_frame); 
 
-        // 2. Render Scene via Ray Tracing
-        renderSync(cmd_sync);
+            vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device);
 
-        // 3. Copy RT Output -> Resolve Image (Staging for CPU read)
-        // Transition resolve image to Dst
-        transitionImage(cmd_sync, capture_resolve_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, vk::ImageAspectFlagBits::eColor);
+            // Rebuild TLAS (Scene might be dynamic, or just to be safe)
+            if(frame == 0)
+                buildTlas(cmd);
 
-        vk::ImageCopy copyRegion;
-        copyRegion.srcSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
-        copyRegion.dstSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
-        copyRegion.extent = vk::Extent3D{ swapchain.extent.width, swapchain.extent.height, 1 };
-        
-        cmd_sync.copyImage(rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, 
-                           capture_resolve_image.image, vk::ImageLayout::eTransferDstOptimal, 
-                           {copyRegion});
+            // Bind RT Pipeline
+            cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline);
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.layout, 0, {*rt_descriptor_sets[current_frame]}, {});
 
-        // Transition RT image back to General for next frame usage
-        transitionImage(cmd_sync, rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
-        
-        // Transition Resolve image to Src for Readback
-        transitionImage(cmd_sync, capture_resolve_image.image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
+            // Push Constants (Camera/Model transforms)
+            RayPushConstant p_const;
+            p_const.model = torus.model_matrix;
+            p_const.major_radius = torus.getMajorRadius();
+            p_const.minor_radius = torus.getMinorRadius();
+            p_const.height = torus.getHeight();
+            cmd.pushConstants<RayPushConstant>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, p_const);
 
-        endSingleTimeCommands(cmd_sync, graphics_queue);
+            // --- TRACE CAMERA RAYS ONLY ---
+            // RayGen Index 1: "raygen_camera.rgen"
+            vk::StridedDeviceAddressRegionKHR rgen_camera{sbt_address + 1 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
+            
+            vkCmdTraceRaysKHR(*cmd, 
+                rgen_camera, // Use Camera Shader
+                rmiss_region, 
+                rhit_region, 
+                callable_region, 
+                swapchain.extent.width, swapchain.extent.height, 1);
 
-        // 4. Readback to CPU
+            endSingleTimeCommands(cmd, graphics_queue);
+        }
+
+        // 3. Save the Resulting Image
+        // (Float32 Accumulation Buffer -> Int8 Staging Buffer)
+        vk::raii::CommandBuffer cmd_copy = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+
+        transitionImage(cmd_copy, capture_resolve_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, vk::ImageAspectFlagBits::eColor);
+        transitionImage(cmd_copy, rt_output_image.image, vk::ImageLayout::eGeneral, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
+
+        vk::ImageBlit blitRegion;
+        blitRegion.srcOffsets[0] = vk::Offset3D{0, 0, 0};
+        blitRegion.srcOffsets[1] = vk::Offset3D{static_cast<int32_t>(swapchain.extent.width), static_cast<int32_t>(swapchain.extent.height), 1};
+        blitRegion.srcSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
+        blitRegion.dstOffsets[0] = vk::Offset3D{0, 0, 0};
+        blitRegion.dstOffsets[1] = vk::Offset3D{static_cast<int32_t>(swapchain.extent.width), static_cast<int32_t>(swapchain.extent.height), 1};
+        blitRegion.dstSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
+
+        cmd_copy.blitImage(
+            rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal,
+            capture_resolve_image.image, vk::ImageLayout::eTransferDstOptimal,
+            blitRegion, vk::Filter::eNearest
+        );
+
+        // Reset RT Image for next loop (back to General)
+        transitionImage(cmd_copy, rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
+        transitionImage(cmd_copy, capture_resolve_image.image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
+
+        endSingleTimeCommands(cmd_copy, graphics_queue);
+
+        // Readback and Save
         ImageReadbackData data = readImageToCPU(capture_resolve_image.image, capture_resolve_image.image_format, swapchain.extent.width, swapchain.extent.height);
         
-        // 5. Downscale (Optional, keeping your logic)
+        // Downscale loop (same as before)...
         uint32_t target_w = data.width / 2;
         uint32_t target_h = data.height / 2;
         std::vector<uint8_t> resized_pixels(target_w * target_h * 4);
-
         for (uint32_t y = 0; y < target_h; ++y) {
             for (uint32_t x = 0; x < target_w; ++x) {
                 uint32_t src_idx = ((y * 2) * data.width + (x * 2)) * 4;
@@ -3018,36 +3012,74 @@ void Engine::captureSceneData() {
         data.height = target_h;
         data.data = resized_pixels;
 
-        // 6. Save File
-        std::string relative_path_json = "./train/r_" + std::to_string(i);
         std::string full_save_path = "dataset/train/r_" + std::to_string(i) + ".jpg";
         saveJPG(full_save_path, data);
 
-        // 7. Record Metadata
+        // Metadata
         FrameData frame_data;
-        frame_data.file_path = relative_path_json; 
-        frame_data.transform_matrix = glm::inverse(camera.getViewMatrix()); 
+        frame_data.file_path = "./train/r_" + std::to_string(i); 
+        frame_data.transform_matrix = glm::inverse(camera.getViewMatrix()); // Camera-to-World
+        
         if (i % 4 == 0) test_frames.push_back(frame_data);
         else recorded_frames.push_back(frame_data);
 
-        std::cout << "Captured frame " << i + 1 << "/" << NUM_CAPTURE_POSITIONS << "\r" << std::flush;
+        std::cout << "Captured Image " << i + 1 << "/" << TOTAL_POSITIONS << " (" << ACCUMULATION_STEPS << " samples)\r" << std::flush;
+    }
+    std::cout << std::endl << "Images saved. Now generating Point Cloud..." << std::endl;
+
+    // =========================================================
+    // PHASE 2: POINT CLOUD GENERATION (Rays FROM Torus Surface)
+    // =========================================================
+    // We run this ONCE, but accumulate 5000 samples per point to remove noise from the PLY.
+    
+    for (int frame = 0; frame < ACCUMULATION_STEPS; ++frame) {
+        
+        accumulation_frame = frame;
+        updateUniformBuffer(current_frame); 
+
+        vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+
+        if(frame == 0)
+            buildTlas(cmd);
+
+        cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline);
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.layout, 0, {*rt_descriptor_sets[current_frame]}, {});
+
+        RayPushConstant p_const;
+        p_const.model = torus.model_matrix;
+        p_const.major_radius = torus.getMajorRadius();
+        p_const.minor_radius = torus.getMinorRadius();
+        p_const.height = torus.getHeight();
+        cmd.pushConstants<RayPushConstant>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, p_const);
+
+        // --- TRACE TORUS RAYS ONLY ---
+        // RayGen Index 0: "raygen.rgen" (The Torus Surface sampler)
+        vk::StridedDeviceAddressRegionKHR rgen_torus{sbt_address + 0 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
+        uint32_t side = static_cast<uint32_t>(std::ceil(std::sqrt(sampling_points.size())));
+        
+        vkCmdTraceRaysKHR(*cmd, 
+            rgen_torus, // Use Torus Shader
+            rmiss_region, 
+            rhit_region, 
+            callable_region, 
+            side, side, 1);
+            
+        endSingleTimeCommands(cmd, graphics_queue);
+        
+        if (frame % 100 == 0) std::cout << "Accumulating Point Cloud: " << frame << "/" << ACCUMULATION_STEPS << "\r" << std::flush;
     }
     std::cout << std::endl;
 
-    // 8. Export JSONs
+    // 4. Save Metadata & PLY
     saveTransformsJson("dataset/transforms_train.json", recorded_frames);
     saveTransformsJson("dataset/transforms_test.json", test_frames);
-
-    // 9. Export Point Cloud (PLY)
-    // The last loop iteration populated the 'hit_data_buffer' on the GPU.
-    savePly("dataset/points3d.ply");
+    savePly("dataset/points3d.ply"); // Saves data from the filled hit_data_buffer
 
     // Restore state
     activate_point_cloud = original_cloud_state;
     is_capturing = false;
     std::cout << "--- Dataset Generation Complete ---" << std::endl;
 }
-
 void Engine::saveTransformsJson(const std::string& filename, const std::vector<FrameData>& frames) {
     json root;
     

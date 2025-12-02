@@ -567,7 +567,7 @@ void Engine::createModel(Gameobject &obj)
                 command_pool_transfer, &logical_device, transfer_queue);
 
     // We need to exclude the torus, since it casts the rays
-    // For the moment, we are excluding transparent objects
+    // For the moment
     if (&obj != &torus && !obj.o_primitives.empty()) {
         buildBlas(obj);
     }
@@ -2221,8 +2221,9 @@ void Engine::buildTlas(vk::raii::CommandBuffer& cmd)
         instances.push_back(instance);
     };
 
-    for (auto& obj : scene_objs) {
-        gather_instances(obj);
+    for (Gameobject& obj : scene_objs) {
+        if(&obj != &torus)
+            gather_instances(obj);
     }
     // gather_instances(debug_cube);
     if (use_rt_box) {

@@ -105,12 +105,14 @@ layout(set = 0, binding = 4) uniform UniformBufferObject {
     vec3 cameraPos;
     vec4 ambientLight;
     // (Legacy PointLights kept for hybrid fallback if needed)
+    // TO REMOVE START
     PointLight pointlights[150];
     PointLight shadowLights[150];
     int cur_num_pointlights;
     int cur_num_shadowlights;
     int panelShadowsEnabled;
     float shadowFarPlane;
+    // TO REMOVE END
     uint frameCount; // Added for temporal noise
     float totalSceneFlux;
 } ubo;

@@ -151,7 +151,7 @@ void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, fl
             vec3 brdf = diffuse + specular;
             
             // Add Contribution
-            Lo += brdf * Le * NdotL * geometry_term * ubo.totalSceneFlux * visibility;
+            Lo += brdf * Le * NdotL * geometry_term * ubo.totalSceneFlux * ubo.ambientLight.w * visibility;
         }
     }
 }
@@ -190,16 +190,43 @@ void main()
     // Gram-Schmidt Orthogonalization
     T_geo = normalize(T_geo - dot(T_geo, N_geo) * N_geo);
     vec3 B_geo = cross(N_geo, T_geo) * sign(tangent_obj.w); 
-    mat3 TBN = mat3(T_geo, B_geo, N_geo);
+    // mat3 TBN = mat3(T_geo, B_geo, N_geo);
 
     vec3 V = -gl_WorldRayDirectionEXT;
     if (dot(N_geo, V) < 0.0) N_geo = -N_geo; 
-    vec3 N = N_geo;
+    
+    vec3 N = normalize(N_geo);
 
-    if (abs(tangent_obj.w) > 0.001 && mat.normal_id >= 0) { 
+    vec3 T = tangent_obj.xyz;
+    float Tw = tangent_obj.w;
+
+    // 2. Validate tangent
+    bool tangentValid =
+        (abs(Tw) > 0.001) &&         // handedness is meaningful
+        (length(T) > 0.001) &&       // tangent actually present
+        (abs(dot(N, normalize(T))) < 0.99);  // not nearly parallel to N
+
+    // 3. If tangent is invalid, generate fallback tangent
+    if (!tangentValid) {
+        // pick a vector that is not parallel to N
+        vec3 up = (abs(N.y) < 0.999) ? vec3(0.0, 1.0, 0.0)
+                                    : vec3(1.0, 0.0, 0.0);
+
+        T = normalize(cross(up, N));
+    }
+
+    // 4. Bitangent using handedness
+    vec3 B = normalize(cross(N, T));
+
+    // 5. Orthonormal TBN
+    mat3 TBN = mat3(T, B, N);
+
+    // 6. Apply normal map
+    if (abs(Tw) > 0.0001 && mat.normal_id >= 0) {
         vec3 normal_map = sampleTexture(mat.normal_id, tex_coord).xyz * 2.0 - 1.0;
         N = normalize(TBN * normal_map);
     }
+
     
     // --- 3. MATERIAL PROPERTIES ---
     vec3 albedo = mat.base_color_factor.rgb * vertex_color;
@@ -292,9 +319,8 @@ void main()
     if (transmission == 0.0) {
         sampleLights(hit_pos, N, V, albedo, roughness, metallic, transmission, Lo); 
     }
-    
-    vec3 ambient = ubo.ambientLight.xyz * ubo.ambientLight.w * albedo * ao * (1.0 - transmission);
-    payload.color = ambient + Lo + emissive; 
+
+    payload.color = Lo + emissive; 
 
     // --- 6. NEXT RAY GENERATION ---
     payload.hit_flag = 2.0;

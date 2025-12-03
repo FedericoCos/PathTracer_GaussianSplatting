@@ -1,6 +1,6 @@
 {
   "position": [0, 0.0, 0.0],
-  "dimensions": [30, 30, 30],
+  "dimensions": [9000, 9000, 9000],
   "panels": {
     "floor": {
       "material": { "base_color": [0.8, 0.8, 0.8], "metallic": 0.0, "roughness": 1.0 },

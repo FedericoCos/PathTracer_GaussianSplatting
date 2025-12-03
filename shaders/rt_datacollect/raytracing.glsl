@@ -19,24 +19,33 @@ struct InputVertex {
 // --- 2. MATERIAL DATA ---
 struct MaterialData {
     vec4  base_color_factor;
+
     vec4  emissive_factor_and_pad;
+
     float metallic_factor;
     float roughness_factor;
     float occlusion_strength;
     float specular_factor;
+
     vec3  specular_color_factor;
     float alpha_cutoff;
+
     float transmission_factor;
     float clearcoat_factor;
     float clearcoat_roughness_factor;
     float pad;
+
     int albedo_id;
     int normal_id;
     int mr_id;
     int emissive_id;
+
     int occlusion_id;
     int clearcoat_id;
     int clearcoat_roughness_id;
+    int sg_id;        // Specular-Glossiness Texture ID
+    
+    int use_specular_glossiness_workflow; // 0 = Metal/Rough, 1 = Spec/Gloss
 };
 
 // --- NEW: LIGHT DATA STRUCTURES ---

@@ -219,12 +219,11 @@ struct Material {
     float alpha_cutoff = 0.0f;
     float clearcoat_factor = 0.0f;
     float clearcoat_roughness_factor = 0.0f;
+    int specular_glossiness_texture_index = -1;
+    float use_specular_glossiness_workflow = 0.0f;
 
     bool is_transparent = false;
     bool is_doublesided = false;
-
-    // One descriptor set per frame-in-flight
-    std::vector<vk::raii::DescriptorSet> descriptor_sets;
 };
 
 struct MaterialPushConstant {
@@ -253,6 +252,9 @@ struct MaterialPushConstant {
     int occlusion_texture_index;
     int clearcoat_texture_index;
     int clearcoat_roughness_texture_index;
+
+    int sg_id = -1;
+    float use_specular_glossiness_workflow = 0.0f;
 };
 
 struct Primitive {

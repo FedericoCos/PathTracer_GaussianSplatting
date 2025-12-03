@@ -1,0 +1,39 @@
+{
+  "settings": {
+    "lights_file": "resources/train/lights.json",
+    "use_manual_lights": false,
+    "use_manual_lights_shadows": false,
+    "use_emissive_lights": false,
+    "use_emissive_lights_shadows": false,
+    "emissive_intensity_multiplier": 1.0,
+
+    "use_rt_box": false,
+    "rt_box_file": "resources/train/rtbox.json",
+    "panel_shadows_enabled": false,
+
+    "torus_settings": {
+        "major_radius": 11.5,
+        "minor_radius": 2.7,
+        "height": 12.0,
+        "major_segments": 500,
+        "minor_segments": 500,
+        "num_rays": 500000
+    },
+
+    "ambient_light": [0.01, 0.04, 0.09, 1.0]
+  },
+  "objects": [
+    {
+      "model": "resources/train/scene.gltf",
+      "position": [0.0, 0.0, 60.0],
+      "scale": [0.1, 0.1, 0.1],
+      "rotation": [0.0, 0.0, 0.0]
+    },
+    {
+      "model": "resources/chappie/scene.gltf",
+      "position": [0.0, 0.4, 0.0],
+      "scale": [10, 10, 10],
+      "rotation": [0.0, 0.0, 0.0]
+    }
+  ]
+}

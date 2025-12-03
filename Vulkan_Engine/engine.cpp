@@ -1617,7 +1617,6 @@ void Engine::createGlobalBindlessBuffers()
         // Append Materials
         for (const auto& mat : obj.materials) {
             MaterialPushConstant p_const = {};
-            // ... [Copy Material Properties - Exact same as before] ...
             p_const.base_color_factor = mat.base_color_factor;
             p_const.emissive_factor_and_pad = glm::vec4(mat.emissive_factor, 0.0f);
             p_const.metallic_factor = mat.metallic_factor;
@@ -1637,6 +1636,8 @@ void Engine::createGlobalBindlessBuffers()
             p_const.pad = mat.is_transparent ? 1.0f : 0.0f;
             p_const.clearcoat_texture_index = current_texture_offset + mat.clearcoat_texture_index;
             p_const.clearcoat_roughness_texture_index = current_texture_offset + mat.clearcoat_roughness_texture_index;
+            p_const.sg_id = current_texture_offset + mat.specular_glossiness_texture_index;
+            p_const.use_specular_glossiness_workflow = mat.use_specular_glossiness_workflow;
             global_materials_data.push_back(p_const);
         }
 
@@ -1677,8 +1678,9 @@ void Engine::createGlobalBindlessBuffers()
     };
 
     // --- 2. Aggregate all objects ---
-    for (auto& obj : scene_objs) {
-        aggregate_object(obj);
+    for (Gameobject& obj : scene_objs) {
+        if(&obj != &torus)
+            aggregate_object(obj);
     }
     // aggregate_object(debug_cube);
     if (use_rt_box) {
@@ -2902,7 +2904,7 @@ void Engine::captureSceneData() {
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_real_distribution<> alpha_dist(0.0f, 360.0f);
-    std::uniform_real_distribution<> beta_dist(0.0f, 360.0f);
+    std::uniform_real_distribution<> beta_dist(-45.f, 45.f);
 
     // Common SBT setup
     auto align_up = [&](uint32_t size, uint32_t alignment) { return (size + alignment - 1) & ~(alignment - 1); };

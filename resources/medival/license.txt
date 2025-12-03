@@ -1,8 +1,0 @@
-Model Information:
-* title:	Medieval fantasy town
-* source:	https://sketchfab.com/3d-models/medieval-fantasy-town-7fdfcfb0a211468ca470640be56f2d27
-* author:	katydid (https://sketchfab.com/Katydid.)
-
-Model License:
-* license type:	SKETCHFAB Standard (https://sketchfab.com/licenses)
-* requirements:	Under basic restrictions, use worldwide, on all types of media, commercially or not, and in all types of derivative works

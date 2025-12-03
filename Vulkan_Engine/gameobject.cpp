@@ -4,6 +4,7 @@
 #include <map>
 #include <stack> 
 #include <utility>
+#include <typeinfo>
 
 void Gameobject::createDefaultTexture(Engine& engine, AllocatedImage& texture, glm::vec4 color) {
     unsigned char colored_pixel[] = {
@@ -128,6 +129,25 @@ std::map<int, vk::Format> Gameobject::scanTextureFormats(const tinygltf::Model& 
             }
         }
     }
+    for (const auto& mat : model.materials) {
+        // ... existing checks ...
+
+        // --- NEW: Check for Specular Glossiness Extension ---
+        if (mat.extensions.count("KHR_materials_pbrSpecularGlossiness")) {
+            const auto& ext = mat.extensions.at("KHR_materials_pbrSpecularGlossiness");
+            if (ext.Has("specularGlossinessTexture")) {
+                int index = ext.Get("specularGlossinessTexture").Get("index").Get<int>();
+                int sourceIdx = getImageSourceIndex(index);
+                // The spec says this is sRGB
+                if (sourceIdx >= 0) image_formats[sourceIdx] = vk::Format::eR8G8B8A8Srgb;
+            }
+            if (ext.Has("diffuseTexture")) {
+                int index = ext.Get("diffuseTexture").Get("index").Get<int>();
+                int sourceIdx = getImageSourceIndex(index);
+                if (sourceIdx >= 0) image_formats[sourceIdx] = vk::Format::eR8G8B8A8Srgb;
+            }
+        }
+    }
     return image_formats;
 }
 
@@ -168,6 +188,7 @@ int Gameobject::getTextureIndex(int gltfTexIdx, const tinygltf::Model& model) co
 }
 
 void Gameobject::loadMaterials(const tinygltf::Model& model) {
+    int index = 0;
     for (const auto& mat : model.materials) {
         Material newMaterial{};
         const auto& pbr = mat.pbrMetallicRoughness;
@@ -177,27 +198,68 @@ void Gameobject::loadMaterials(const tinygltf::Model& model) {
         if(mat.doubleSided) newMaterial.is_doublesided = true;
         if(mat.alphaMode == "MASK") newMaterial.alpha_cutoff = static_cast<float>(mat.alphaCutoff);
 
-        // PBR Base
-        const auto& bcf = pbr.baseColorFactor;
-        newMaterial.base_color_factor = glm::vec4(bcf[0], bcf[1], bcf[2], bcf[3]);
-        newMaterial.metallic_factor = static_cast<float>(pbr.metallicFactor);
-        newMaterial.roughness_factor = static_cast<float>(pbr.roughnessFactor);
+        if (mat.extensions.count("KHR_materials_pbrSpecularGlossiness")) {
+            const auto& ext = mat.extensions.at("KHR_materials_pbrSpecularGlossiness");
+            
+            newMaterial.use_specular_glossiness_workflow = 1.0f;
 
-        // Emissive
-        const auto& ef = mat.emissiveFactor;
-        newMaterial.emissive_factor = glm::vec3(ef[0], ef[1], ef[2]);
-        if (mat.extensions.count("KHR_materials_emissive_strength")) {
-            const auto& strength_ext = mat.extensions.at("KHR_materials_emissive_strength");
-            if (strength_ext.Has("emissiveStrength")) {
-                float strength = static_cast<float>(strength_ext.Get("emissiveStrength").Get<double>());
-                newMaterial.emissive_factor *= strength;
+            // Diffuse Factor (Replaces Base Color)
+            if (ext.Has("diffuseFactor")) {
+                const auto& f = ext.Get("diffuseFactor");
+                newMaterial.base_color_factor = glm::vec4(f.Get(0).Get<double>(), f.Get(1).Get<double>(), f.Get(2).Get<double>(), f.Get(3).Get<double>());
+            } else {
+                newMaterial.base_color_factor = glm::vec4(1.0f);
             }
-        }
 
+            // Specular Factor (We store this in specular_color_factor)
+            if (ext.Has("specularFactor")) {
+                const auto& f = ext.Get("specularFactor");
+                newMaterial.specular_color_factor = glm::vec3(f.Get(0).Get<double>(), f.Get(1).Get<double>(), f.Get(2).Get<double>());
+            } else {
+                newMaterial.specular_color_factor = glm::vec3(1.0f);
+            }
+
+            // Glossiness Factor (We store this in roughness_factor temporarily)
+            if (ext.Has("glossinessFactor")) {
+                newMaterial.roughness_factor = static_cast<float>(ext.Get("glossinessFactor").Get<double>());
+            } else {
+                newMaterial.roughness_factor = 1.0f;
+            }
+
+            // Textures
+            if (ext.Has("diffuseTexture")) {
+                int idx = ext.Get("diffuseTexture").Get("index").Get<int>();
+                newMaterial.albedo_texture_index = getTextureIndex(idx, model);
+            }
+            if (ext.Has("specularGlossinessTexture")) {
+                int idx = ext.Get("specularGlossinessTexture").Get("index").Get<int>();
+                newMaterial.specular_glossiness_texture_index = getTextureIndex(idx, model);
+            }
+
+        }
+        else{
+            // PBR Base
+            const auto& bcf = pbr.baseColorFactor;
+            newMaterial.base_color_factor = glm::vec4(bcf[0], bcf[1], bcf[2], bcf[3]);
+            newMaterial.metallic_factor = static_cast<float>(pbr.metallicFactor);
+            newMaterial.roughness_factor = static_cast<float>(pbr.roughnessFactor);
+
+            // Emissive
+            const auto& ef = mat.emissiveFactor;
+            newMaterial.emissive_factor = glm::vec3(ef[0], ef[1], ef[2]);
+            if (mat.extensions.count("KHR_materials_emissive_strength")) {
+                const auto& strength_ext = mat.extensions.at("KHR_materials_emissive_strength");
+                if (strength_ext.Has("emissiveStrength")) {
+                    float strength = static_cast<float>(strength_ext.Get("emissiveStrength").Get<double>());
+                    newMaterial.emissive_factor *= strength;
+                }
+            }
+
+            newMaterial.albedo_texture_index = getTextureIndex(pbr.baseColorTexture.index, model);
+            newMaterial.metallic_roughness_texture_index = getTextureIndex(pbr.metallicRoughnessTexture.index, model);
+        }
         // Texture Indices
-        newMaterial.albedo_texture_index = getTextureIndex(pbr.baseColorTexture.index, model);
         newMaterial.normal_texture_index = getTextureIndex(mat.normalTexture.index, model);
-        newMaterial.metallic_roughness_texture_index = getTextureIndex(pbr.metallicRoughnessTexture.index, model);
         newMaterial.occlusion_texture_index = getTextureIndex(mat.occlusionTexture.index, model);
         newMaterial.emissive_texture_index = getTextureIndex(mat.emissiveTexture.index, model);
         newMaterial.occlusion_strength = static_cast<float>(mat.occlusionTexture.strength); 

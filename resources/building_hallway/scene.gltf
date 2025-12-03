@@ -1516,20 +1516,6 @@
       "primitives": [
         {
           "attributes": {
-            "NORMAL": 18,
-            "POSITION": 17
-          },
-          "indices": 19,
-          "material": 4,
-          "mode": 4
-        }
-      ]
-    },
-    {
-      "name": "Material2",
-      "primitives": [
-        {
-          "attributes": {
             "NORMAL": 21,
             "POSITION": 20,
             "TANGENT": 22,

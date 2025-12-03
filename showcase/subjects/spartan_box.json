@@ -4,11 +4,11 @@
   "panels": {
     "floor": {
       "material": { "base_color": [0.8, 0.8, 0.8], "metallic": 1.0, "roughness": 0.0 },
-      "light": { "intensity": 0.0 }
+      "light": { "intensity": 1.0 }
     },
     "ceiling": {
       "material": { "base_color": [0.8, 0.8, 0.8], "metallic": 1.0, "roughness": 0.0 },
-      "light": { "intensity": 0.0 }
+      "light": { "intensity": 1.0 }
     },
     "back_wall": {
       "material": { "base_color": [0.8, 0.8, 0.8], "metallic": 1.0, "roughness": 0.0 },
@@ -19,8 +19,8 @@
       "light": { "intensity": 0.0 }
     },
     "right_wall": {
-      "material": { "base_color": [1.0, 0.1, 0.1], "metallic": 1.0, "roughness": 0.0 },
-      "light": { "intensity": 3.0 }
+      "material": { "base_color": [0.8, 0.8, 0.8], "metallic": 1.0, "roughness": 0.0 },
+      "light": { "intensity": 0.0 }
     }
   }
 }

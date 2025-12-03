@@ -8,7 +8,7 @@
     "emissive_intensity_multiplier": 300.0,
 
     "use_rt_box": true,
-    "rt_box_file": "resources/twins/rtbox.json",
+    "rt_box_file": "showcase/subjects/twins_box.json",
     "panel_shadows_enabled": false,
 
     "ambient_light": [0, 0, 0, 1]

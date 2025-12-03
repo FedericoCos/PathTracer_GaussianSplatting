@@ -323,13 +323,18 @@ void Engine::createRTBox(const std::string& rtbox_path)
     auto createMatFromJson = [&](const json& mat_config) -> Material {
         Material mat;
         mat.base_color_factor = glm::vec4(
+            mat_config["base_color"][0].get<float>(),
+            mat_config["base_color"][1].get<float>(),
+            mat_config["base_color"][2].get<float>(),
             1.0f
         );
         mat.metallic_factor = mat_config.value("metallic", 0.0f);
         mat.roughness_factor = mat_config.value("roughness", 1.0f);
-        mat.emissive_factor = glm::vec3(0.0f); // All materials are non-emissive
+        mat.emissive_factor = glm::vec3(mat_config["base_color"][0].get<float>(),
+            mat_config["base_color"][1].get<float>(),
+            mat_config["base_color"][2].get<float>()); // All materials are non-emissive
         mat.occlusion_strength = 1.0f;
-        mat.albedo_texture_index = -1;
+        mat.albedo_texture_index = 0;
         mat.is_transparent = false;
         return mat;
     };
@@ -339,24 +344,17 @@ void Engine::createRTBox(const std::string& rtbox_path)
     // Clear old data
     rt_box.materials.clear();
     rt_box.o_primitives.clear();
-    panel_lights.clear();
-    panel_lights_on.clear();
 
     std::vector<std::string> panel_names = {"floor", "ceiling", "back_wall", "left_wall", "right_wall"};
-    std::vector<glm::vec4> light_positions = {
-        glm::vec4(pos.x, y_bot + 1.f, pos.z, 0.0f),     // Floor light
-        glm::vec4(pos.x, y_top - 1.f, pos.z, 0.0f),     // Ceiling light
-        glm::vec4(pos.x, pos.y + h/2.0f, pos.z - d + 1.f, 0.0f), // Back light
-        glm::vec4(pos.x - w + 1.f, pos.y + h/2.0f, pos.z, 0.0f), // Left light
-        glm::vec4(pos.x + w - 1.f, pos.y + h/2.0f, pos.z, 0.0f)  // Right light
-    };
 
     for (int i = 0; i < 5; ++i) {
         const std::string& name = panel_names[i];
         const json& panel_config = config["panels"][name];
 
         // Create material
-        rt_box.materials.push_back(createMatFromJson(panel_config["material"]));
+        Material mat = createMatFromJson(panel_config["material"]);
+        mat.emissive_factor *= panel_config["light"].value("intensity", 0.0f);
+        rt_box.materials.push_back(mat);
         
         // Create primitive (indices are 6 per face, starting at 0, 6, 12, etc.)
         rt_box.o_primitives.push_back({
@@ -364,22 +362,30 @@ void Engine::createRTBox(const std::string& rtbox_path)
             6,                            // index_count
             i                             // material_index
         });
+    }
 
-        // Create light
-        float intensity = panel_config["light"].value("intensity", 0.0f);
-        glm::vec3 color = {
-            panel_config["material"]["base_color"][0].get<float>(),
-            panel_config["material"]["base_color"][1].get<float>(),
-            panel_config["material"]["base_color"][2].get<float>()
-        };
+    rt_box.emissive_triangles.clear();
+    for(size_t k = 0; k < rt_box.indices.size(); k += 3){
+        uint32_t index = static_cast<int>(k / 6);
+        if(glm::length(rt_box.materials[index].emissive_factor) < 0.001f){
+            continue;
+        }
 
-        Pointlight light;
-        light.position = light_positions[i];
-        light.color = glm::vec4(color, intensity);
-        panel_lights.push_back(light);
-        
-        // Add toggle state
-        panel_lights_on.push_back(false); // Default to OFF
+        uint32_t idx0 = rt_box.indices[k];
+        uint32_t idx1 = rt_box.indices[k+1];
+        uint32_t idx2 = rt_box.indices[k+2];
+
+        const auto& p0 = rt_box.vertices[idx0].pos;
+        const auto& p1 = rt_box.vertices[idx1].pos;
+        const auto& p2 = rt_box.vertices[idx2].pos;
+
+        EmissiveTriangle tri;
+        tri.index0 = idx0;
+        tri.index1 = idx1;
+        tri.index2 = idx2;
+        tri.material_index = index;
+        tri.area = 0.5f * glm::length(glm::cross(p1 - p0, p2 - p0));
+        rt_box.emissive_triangles.push_back(tri);
     }
 
     // --- 5. GPU Resources ---
@@ -974,28 +980,6 @@ bool Engine::initVulkan(int mssa_val){
 
     // Get device and queues
     physical_device = Device::pickPhysicalDevice(*this);
-    mssa_samples = getMaxUsableSampleCount();
-    switch (mssa_val)
-    {
-    case 2:
-        mssa_samples = vk::SampleCountFlagBits::e2;
-        break;
-    case 4:
-        mssa_samples = vk::SampleCountFlagBits::e4;
-        break;
-    case 8:
-        mssa_samples = vk::SampleCountFlagBits::e8;
-        break;
-    case 16:
-        mssa_samples = vk::SampleCountFlagBits::e16;
-        break;
-    case 32:
-        mssa_samples = vk::SampleCountFlagBits::e32;
-        break;
-    
-    default:
-        break;
-    }
     mssa_samples = vk::SampleCountFlagBits::e1;
     logical_device = Device::createLogicalDevice(*this, queue_indices); 
     graphics_queue = Device::getQueue(*this, queue_indices.graphics_family.value());

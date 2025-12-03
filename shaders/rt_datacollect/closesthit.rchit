@@ -88,7 +88,7 @@ float traceShadow(vec3 origin, vec3 lightPos) {
     return shadowPayload.isHit ? 0.0 : 1.0; 
 }
 
-void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, vec3 F0, float transmission, inout vec3 Lo)
+void sampleLights_SG(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, vec3 F0, float transmission, inout vec3 Lo)
 {
     uint num_lights = light_cdf.entries.length();
     if (num_lights == 0) return;
@@ -149,7 +149,7 @@ void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, ve
             // In Metal/Rough, `albedo` is already Black for metals (handled in main).
             // In Spec/Gloss, `albedo` is inherently Black for metals.
             // This unifies the logic.
-            vec3 kD = (vec3(1.0) - kS);
+            vec3 kD = (1 - kS) * (1 - transmission);
 
             vec3 specular = NDF * Vis * F;
             vec3 diffuse = (kD * albedo / PI) * (1.0 - transmission);
@@ -161,7 +161,6 @@ void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, ve
     }
 }
 
-// Updated sampleLights to accept F0 explicitly
 void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, float metallic, vec3 F0, float transmission, inout vec3 Lo) 
 {
     uint num_lights = light_cdf.entries.length();
@@ -327,7 +326,8 @@ void main()
 
         // 3. Conversion to PBR Standard
         F0 = specular_color;
-        roughness = 1.0 - glossiness; 
+        roughness = sqrt(max(1.0 - glossiness, 0.001));
+        alpha = roughness * roughness;
         metallic = 0.0; // SpecGloss doesn't use metallic parameter usually, diffuse is explicitly provided
     } 
     // WORKFLOW B: METALLIC - ROUGHNESS (Standard)
@@ -424,7 +424,7 @@ void main()
     vec3 Lo = vec3(0.0);
     if (transmission == 0.0) {
         if(mat.use_specular_glossiness_workflow > 0.0){
-            sampleLights(hit_pos, N, V, albedo, roughness, F0, transmission, Lo);
+            sampleLights_SG(hit_pos, N, V, albedo, roughness, F0, transmission, Lo);
         }
         else{
             sampleLights(hit_pos, N, V, albedo, roughness, metallic, F0, transmission, Lo);
@@ -493,7 +493,7 @@ void main()
         vec3 energy_attenuation = vec3(1.0);
         if (cc_valid) { 
              float prob_base = max(1.0 - prob_cc, 0.001);
-             energy_attenuation = (vec3(1.0) - (F_cc * clearcoat)) / prob_base;
+             energy_attenuation = (1 - clearcoat) * (1 - F_cc);
         } 
 
         float prob_specular = mix(0.04, 1.0, metallic);
@@ -519,7 +519,6 @@ void main()
             
             payload.next_ray_dir = L;
             // Use unified albedo
-            vec3 diffuseColor = albedo * (1.0 - metallic); 
             // Note: For SpecGloss workflow, metallic is 0, so diffuseColor = albedo.
             // For MetalRough, albedo has already been darkened by (1-metallic) in the branching block.
             // However, to avoid double darkening:

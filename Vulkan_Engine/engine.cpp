@@ -367,7 +367,7 @@ void Engine::createRTBox(const std::string& rtbox_path)
     rt_box.emissive_triangles.clear();
     for(size_t k = 0; k < rt_box.indices.size(); k += 3){
         uint32_t index = static_cast<int>(k / 6);
-        if(glm::length(rt_box.materials[index].emissive_factor) < 0.001f){
+        if(glm::length(rt_box.materials[index].emissive_factor) < 0.00001f){
             continue;
         }
 
@@ -1214,8 +1214,8 @@ void Engine::loadScene(const std::string &scene_path)
             torus_config.major_radius = t_set.value("major_radius", 16.0f);
             torus_config.minor_radius = t_set.value("minor_radius", 1.0f);
             torus_config.height = t_set.value("height", 8.0f);
-            torus_config.major_segments = t_set.value("major_segments", 2000);
-            torus_config.minor_segments = t_set.value("minor_segments", 2000);
+            torus_config.major_segments = t_set.value("major_segments", 500);
+            torus_config.minor_segments = t_set.value("minor_segments", 500);
 
             num_rays = t_set.value("num_rays", num_rays);
         }

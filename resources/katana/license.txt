@@ -1,0 +1,8 @@
+Model Information:
+* title:	Cyborg with Thermal Katana
+* source:	https://sketchfab.com/3d-models/cyborg-with-thermal-katana-f8e8fb734bac4b5f83f8d3d6ba78797c
+* author:	Mateusz Woliński (https://sketchfab.com/jeandiz)
+
+Model License:
+* license type:	SKETCHFAB Standard (https://sketchfab.com/licenses)
+* requirements:	Under basic restrictions, use worldwide, on all types of media, commercially or not, and in all types of derivative works

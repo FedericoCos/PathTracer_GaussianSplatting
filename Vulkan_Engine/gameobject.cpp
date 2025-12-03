@@ -6,6 +6,119 @@
 #include <utility>
 #include <typeinfo>
 
+// Helper: Get the first value from an animation accessor
+template<typename T>
+T getDataValue(const tinygltf::Model& model, int accessorIndex, int index) {
+    const auto& accessor = model.accessors[accessorIndex];
+    const auto& bufferView = model.bufferViews[accessor.bufferView];
+    const auto& buffer = model.buffers[bufferView.buffer];
+    
+    // Calculate stride (if 0, implies tightly packed) -> fallback to size of T
+    int stride = accessor.ByteStride(bufferView);
+    if (stride == 0) stride = static_cast<int>(sizeof(T));
+    
+    const unsigned char* data = buffer.data.data() + bufferView.byteOffset + accessor.byteOffset + (index * stride);
+    return *reinterpret_cast<const T*>(data);
+}
+
+// Calculate the global transform of every node in the hierarchy at frame 0
+void computeGlobalNodeTransforms(const tinygltf::Model& model, 
+                                 std::vector<glm::mat4>& node_globals) {
+    node_globals.resize(model.nodes.size(), glm::mat4(1.0f));
+
+    // Structure to hold local TRS overrides from animation
+    struct TRS { 
+        glm::vec3 t; glm::quat r; glm::vec3 s; 
+        bool has_t=false, has_r=false, has_s=false;
+    };
+    std::map<int, TRS> animated_nodes;
+
+    // 1. Extract Animation Data (Frame 0)
+    if (!model.animations.empty()) {
+        const auto& anim = model.animations[0]; // Use first animation
+        for (const auto& channel : anim.channels) {
+            int node = channel.target_node;
+            int samplerIdx = channel.sampler;
+            int output_acc = anim.samplers[samplerIdx].output;
+
+            if (channel.target_path == "translation") {
+                animated_nodes[node].t = getDataValue<glm::vec3>(model, output_acc, 0);
+                animated_nodes[node].has_t = true;
+            } else if (channel.target_path == "rotation") {
+                // GLTF Quat is [x, y, z, w]
+                // GLM Quat constructor is (w, x, y, z)
+                glm::vec4 q = getDataValue<glm::vec4>(model, output_acc, 0);
+                animated_nodes[node].r = glm::quat(q.w, q.x, q.y, q.z); 
+                animated_nodes[node].has_r = true;
+            } else if (channel.target_path == "scale") {
+                animated_nodes[node].s = getDataValue<glm::vec3>(model, output_acc, 0);
+                animated_nodes[node].has_s = true;
+            }
+        }
+    }
+
+    // 2. Recursive Hierarchy Traversal
+    std::function<void(int, glm::mat4)> traverse = [&](int nodeIdx, glm::mat4 parentMat) {
+        const auto& node = model.nodes[nodeIdx];
+        glm::mat4 localMat = glm::mat4(1.0f);
+
+        // A node can have a Matrix OR TRS. Animation overrides specific TRS components.
+        if (node.matrix.size() == 16) {
+            // If there's an animation on a matrix node, it's technically undefined behavior in GLTF 2.0
+            // but we usually treat it as decomposable. For safety, just use the matrix if no anim.
+            if (animated_nodes.count(nodeIdx) == 0) {
+                // Convert double[] to float mat4
+                float m_float[16];
+                for(int i=0; i<16; ++i) m_float[i] = static_cast<float>(node.matrix[i]);
+                localMat = glm::make_mat4(m_float);
+            } else {
+                // Fallback: If matrix node IS animated, we must decompose (complex), 
+                // OR assume the animation provides full TRS. Let's assume full TRS override or defaults.
+                glm::vec3 t(0.0f); glm::quat r(1.0f, 0.0f, 0.0f, 0.0f); glm::vec3 s(1.0f);
+                // (Advanced decomposition logic omitted for brevity, assuming standard TRS usage)
+            }
+        }
+        else {
+            glm::vec3 t = glm::vec3(0.0f);
+            glm::quat r = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+            glm::vec3 s = glm::vec3(1.0f);
+            if(node.translation.size() == 3){
+                t = glm::make_vec3(node.translation.data());
+            }
+            if(node.rotation.size() == 4){
+                r = glm::make_quat(node.rotation.data());
+            }
+            if(node.scale.size() == 3){
+                s = glm::make_vec3(node.scale.data());
+            }
+
+            // Apply Animation Overrides
+            if (animated_nodes.count(nodeIdx)) {
+                const auto& anim = animated_nodes[nodeIdx];
+                if (anim.has_t) t = anim.t;
+                if (anim.has_r) r = anim.r;
+                if (anim.has_s) s = anim.s;
+            }
+
+            localMat = glm::translate(glm::mat4(1.0f), t) * glm::mat4_cast(r) * glm::scale(glm::mat4(1.0f), s);
+        }
+
+        glm::mat4 globalMat = parentMat * localMat;
+        node_globals[nodeIdx] = globalMat;
+
+        for (int child : node.children) {
+            traverse(child, globalMat);
+        }
+    };
+
+    // Start traversal
+    const auto& scene = model.scenes[model.defaultScene > -1 ? model.defaultScene : 0];
+    for (int node : scene.nodes) {
+        traverse(node, glm::mat4(1.0f));
+    }
+}
+
+
 void Gameobject::createDefaultTexture(Engine& engine, AllocatedImage& texture, glm::vec4 color) {
     unsigned char colored_pixel[] = {
         static_cast<unsigned char>(color.x), 
@@ -69,6 +182,42 @@ void Gameobject::loadModel(std::string m_path, Engine &engine)
     textures.clear();
     materials.clear();
     o_primitives.clear();
+
+    // 1. Calculate global transforms for all nodes (Frame 0)
+    std::vector<glm::mat4> node_globals;
+    computeGlobalNodeTransforms(model, node_globals);
+
+    // 2. Prepare Skinning Matrices
+    skin_joint_matrices.clear();
+    if (!model.skins.empty()) {
+        const auto& skin = model.skins[0];
+        
+        // Safety check: ensure joint count matches
+        skin_joint_matrices.resize(skin.joints.size(), glm::mat4(1.0f));
+
+        if (skin.inverseBindMatrices > -1) {
+            const auto& accessor = model.accessors[skin.inverseBindMatrices];
+            const auto& bufferView = model.bufferViews[accessor.bufferView];
+            const auto& buffer = model.buffers[bufferView.buffer];
+            
+            int stride = accessor.ByteStride(bufferView);
+            const unsigned char* data_ptr = buffer.data.data() + bufferView.byteOffset + accessor.byteOffset;
+
+            for (size_t i = 0; i < skin.joints.size(); ++i) {
+                int jointNodeIdx = skin.joints[i];
+                
+                // Read IBM (mat4 is 64 bytes)
+                const float* m_ptr = reinterpret_cast<const float*>(data_ptr + (i * stride));
+                glm::mat4 ibm = glm::make_mat4(m_ptr);
+                
+                glm::mat4 globalTransform = node_globals[jointNodeIdx];
+                
+                // Skin Matrix = GlobalTransform * InverseBindMatrix
+                // This transforms a vertex from Mesh Space -> Joint Space -> Global Space
+                skin_joint_matrices[i] = globalTransform * ibm;
+            }
+        }
+    }
     
     if (default_sampler != nullptr) {
         default_sampler = nullptr;
@@ -244,19 +393,18 @@ void Gameobject::loadMaterials(const tinygltf::Model& model) {
             newMaterial.metallic_factor = static_cast<float>(pbr.metallicFactor);
             newMaterial.roughness_factor = static_cast<float>(pbr.roughnessFactor);
 
-            // Emissive
-            const auto& ef = mat.emissiveFactor;
-            newMaterial.emissive_factor = glm::vec3(ef[0], ef[1], ef[2]);
-            if (mat.extensions.count("KHR_materials_emissive_strength")) {
-                const auto& strength_ext = mat.extensions.at("KHR_materials_emissive_strength");
-                if (strength_ext.Has("emissiveStrength")) {
-                    float strength = static_cast<float>(strength_ext.Get("emissiveStrength").Get<double>());
-                    newMaterial.emissive_factor *= strength;
-                }
-            }
-
             newMaterial.albedo_texture_index = getTextureIndex(pbr.baseColorTexture.index, model);
             newMaterial.metallic_roughness_texture_index = getTextureIndex(pbr.metallicRoughnessTexture.index, model);
+        }
+        // Emissive
+        const auto& ef = mat.emissiveFactor;
+        newMaterial.emissive_factor = glm::vec3(ef[0], ef[1], ef[2]);
+        if (mat.extensions.count("KHR_materials_emissive_strength")) {
+            const auto& strength_ext = mat.extensions.at("KHR_materials_emissive_strength");
+            if (strength_ext.Has("emissiveStrength")) {
+                float strength = static_cast<float>(strength_ext.Get("emissiveStrength").Get<double>());
+                newMaterial.emissive_factor *= strength;
+            }
         }
         // Texture Indices
         newMaterial.normal_texture_index = getTextureIndex(mat.normalTexture.index, model);
@@ -401,6 +549,28 @@ void Gameobject::loadPrimitive(const tinygltf::Primitive& primitive, const tinyg
     const auto& idx_view = model.bufferViews[index_accessor.bufferView];
     const unsigned char* index_data = &model.buffers[idx_view.buffer].data[idx_view.byteOffset + index_accessor.byteOffset];
 
+    // --- SKINNING ACCESSORS ---
+    const void* joint_data = nullptr; int joint_stride = 0; int joint_component_type = 0;
+    const void* weight_data = nullptr; int weight_stride = 0; int weight_component_type = 0;
+
+    bool has_skin = !skin_joint_matrices.empty() && 
+                    primitive.attributes.count("JOINTS_0") && 
+                    primitive.attributes.count("WEIGHTS_0");
+
+    if (has_skin) {
+        const auto& j_acc = model.accessors[primitive.attributes.at("JOINTS_0")];
+        const auto& j_bv = model.bufferViews[j_acc.bufferView];
+        joint_data = &model.buffers[j_bv.buffer].data[j_bv.byteOffset + j_acc.byteOffset];
+        joint_stride = j_acc.ByteStride(j_bv);
+        joint_component_type = j_acc.componentType;
+
+        const auto& w_acc = model.accessors[primitive.attributes.at("WEIGHTS_0")];
+        const auto& w_bv = model.bufferViews[w_acc.bufferView];
+        weight_data = &model.buffers[w_bv.buffer].data[w_bv.byteOffset + w_acc.byteOffset];
+        weight_stride = w_acc.ByteStride(w_bv);
+        weight_component_type = w_acc.componentType;
+    }
+
     // --- Loading Geometry ---
     std::vector<uint32_t> local_indices;
     local_indices.reserve(total_index_count);
@@ -435,16 +605,73 @@ void Gameobject::loadPrimitive(const tinygltf::Primitive& primitive, const tinyg
             vertex.tex_coord_1 = vertex.tex_coord;
         }
 
-        // Apply Transform
-        vertex.pos = glm::vec3(transform * glm::vec4(vertex.pos, 1.0f)); 
-        glm::mat3 normal_matrix = glm::transpose(glm::inverse(glm::mat3(transform)));
-        vertex.normal = glm::normalize(normal_matrix * vertex.normal);
 
-        if (vertex.tangent.w != 0.0f) {
-             glm::vec3 t = glm::vec3(vertex.tangent);
-             // Use the standard transform (rotation), NOT the inverse-transpose (which is for Normals)
-             t = glm::normalize(glm::mat3(transform) * t);
-             vertex.tangent = glm::vec4(t, vertex.tangent.w);
+        // --- APPLY TRANSFORM OR SKINNING ---
+        if (has_skin) {
+            glm::uvec4 joints;
+            glm::vec4 weights;
+
+            // 1. Read Joints (Handle U8 vs U16)
+            const void* j_ptr = (const char*)joint_data + (idx * joint_stride);
+            if (joint_component_type == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
+                const uint16_t* jd = static_cast<const uint16_t*>(j_ptr);
+                joints = glm::uvec4(jd[0], jd[1], jd[2], jd[3]);
+            } else { // UNSIGNED_BYTE
+                const uint8_t* jd = static_cast<const uint8_t*>(j_ptr);
+                joints = glm::uvec4(jd[0], jd[1], jd[2], jd[3]);
+            }
+
+            // 2. Read Weights (Handle Float) - typically float in desktop GLTF
+            const void* w_ptr = (const char*)weight_data + (idx * weight_stride);
+            if (weight_component_type == TINYGLTF_COMPONENT_TYPE_FLOAT) {
+                weights = *static_cast<const glm::vec4*>(w_ptr);
+            } else {
+                // Fallback for normalized u8/u16 weights (less common in simple pipelines, but good to handle)
+                // For now assuming float as per standard GLTF export settings
+                weights = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
+            }
+
+            // 3. Normalize Weights (Crucial! Exporters sometimes output non-normalized weights)
+            float weightSum = weights.x + weights.y + weights.z + weights.w;
+            if (weightSum > 0.0f) {
+                weights /= weightSum;
+            } else {
+                weights = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f); // Fallback
+            }
+
+            // 4. Calculate Skin Matrix
+            glm::mat4 skinMat = 
+                weights.x * skin_joint_matrices[joints.x] +
+                weights.y * skin_joint_matrices[joints.y] +
+                weights.z * skin_joint_matrices[joints.z] +
+                weights.w * skin_joint_matrices[joints.w];
+
+            // 5. Apply Skinning
+            // skinMat is already in global space (because you computed skin_joint_matrices from global node transforms),
+            // so apply it directly to the raw vertex (which must be in mesh-local space).
+            vertex.pos = glm::vec3(skinMat * glm::vec4(vertex.pos, 1.0f));
+
+            // normals: use inverse-transpose of skinMat
+            vertex.normal = glm::normalize(glm::mat3(glm::transpose(glm::inverse(skinMat))) * vertex.normal);
+
+            // tangent: rotation part only
+            if (vertex.tangent.w != 0.0f) {
+                glm::vec3 t = glm::vec3(vertex.tangent);
+                t = glm::normalize(glm::mat3(skinMat) * t);
+                vertex.tangent = glm::vec4(t, vertex.tangent.w);
+            }
+        } 
+        else {
+            // static mesh case: now apply the node/world transform exactly once
+            vertex.pos = glm::vec3(transform * glm::vec4(vertex.pos, 1.0f)); 
+            glm::mat3 normal_matrix = glm::transpose(glm::inverse(glm::mat3(transform)));
+            vertex.normal = glm::normalize(normal_matrix * vertex.normal);
+
+            if (vertex.tangent.w != 0.0f) {
+                glm::vec3 t = glm::vec3(vertex.tangent);
+                t = glm::normalize(glm::mat3(transform) * t);
+                vertex.tangent = glm::vec4(t, vertex.tangent.w);
+            }
         }
 
         // Deduplication

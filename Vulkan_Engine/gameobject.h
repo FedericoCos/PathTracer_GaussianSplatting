@@ -32,6 +32,7 @@ public:
     // CPU side geometry (Uploads to Global Buffers)
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
+    std::vector<glm::mat4> skin_joint_matrices;
 
     // --- Model and texture path ---
     std::string model_path;

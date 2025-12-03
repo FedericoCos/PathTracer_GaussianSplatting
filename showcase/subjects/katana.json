@@ -1,0 +1,24 @@
+{
+  "settings": {
+    "lights_file": "resources/spartan/lights.json",
+    "use_manual_lights": false,
+    "use_manual_lights_shadows": false,
+    "use_emissive_lights": false,
+    "use_emissive_lights_shadows": false,
+    "emissive_intensity_multiplier": 300.0,
+
+    "use_rt_box": true,
+    "rt_box_file": "showcase/subjects/katana_box.json",
+    "panel_shadows_enabled": false,
+
+    "ambient_light": [0, 0, 0, 1]
+  },
+  "objects": [
+    {
+      "model": "resources/katana/scene.gltf",
+      "position": [0.0, 0.0, 0.0],
+      "scale": [15, 15, 15],
+      "rotation": [0.0, 0.0, 0.0]
+    }
+  ]
+}

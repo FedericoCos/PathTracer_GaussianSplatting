@@ -1,0 +1,40 @@
+{
+  "settings": {
+    "lights_file": "resources/lights.json",
+    "use_manual_lights": false,
+    "use_manual_lights_shadows": false,
+    "use_emissive_lights": false,
+    "use_emissive_lights_shadows": false,
+    "emissive_intensity_multiplier": 1.0,
+
+    "use_rt_box": false,
+    "rt_box_file": "resources/rtbox.json",
+    "panel_shadows_enabled": false,
+
+    "torus_settings": {
+        "major_radius": 7.5,
+        "minor_radius": 1.0,
+        "height": 2,
+        "major_segments": 500,
+        "minor_segments": 500,
+        "num_rays": 1000000
+    },
+
+    "ambient_light": [0.002, 0.02, 0.04, 1]
+  },
+  "objects": [
+    {
+      "model": "resources/metro_int/scene.gltf",
+      "position": [10, 0, -10],
+      "scale": [3, 3, 3],
+      "rotation": [0.0, 0.0, 0.0]
+    },
+    {
+      "model": "resources/grogu/scene.gltf",
+      "position": [0, 0, 0],
+      "scale": [12, 12, 12],
+      "rotation": [0.0, 0.0, 0.0]
+    }
+
+  ]
+}

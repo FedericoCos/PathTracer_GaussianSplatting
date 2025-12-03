@@ -1,0 +1,34 @@
+{
+  "settings": {
+    "lights_file": "resources/lights.json",
+    "use_manual_lights": false,
+    "use_manual_lights_shadows": false,
+    "use_emissive_lights": false,
+    "use_emissive_lights_shadows": false,
+    "emissive_intensity_multiplier": 1.0,
+
+    "use_rt_box": false,
+    "rt_box_file": "resources/rtbox.json",
+    "panel_shadows_enabled": false,
+
+    "torus_settings": {
+        "major_radius": 22,
+        "minor_radius": 1.0,
+        "height": 16,
+        "major_segments": 500,
+        "minor_segments": 500,
+        "num_rays": 1000000
+    },
+
+    "ambient_light": [0.002, 0.002, 0.002, 0.5]
+  },
+  "objects": [
+    {
+      "model": "resources/modern_bathroom/scene.gltf",
+      "position": [0, 0, 0],
+      "scale": [1, 1, 1],
+      "rotation": [0.0, 0.0, 0.0]
+    }
+
+  ]
+}

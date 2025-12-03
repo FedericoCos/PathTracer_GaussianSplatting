@@ -30,9 +30,9 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/quaternion.hpp>
-#include <glm/gtx/quaternion.hpp> 
 #include <glm/gtc/type_ptr.hpp>
+#include <glm/gtx/quaternion.hpp>
+#include <glm/gtx/matrix_decompose.hpp>
 
 
 // Taskflow is used for multithreading on the CPU side
@@ -276,8 +276,8 @@ struct TorusConfig {
     float major_radius = 16.0f;
     float minor_radius = 1.0f;
     float height = 8.0f;
-    int major_segments = 2000;
-    int minor_segments = 2000;
+    int major_segments = 500;
+    int minor_segments = 500;
 };
 
 

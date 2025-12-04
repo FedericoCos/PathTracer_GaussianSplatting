@@ -12,15 +12,15 @@
     "panel_shadows_enabled": false,
 
     "torus_settings": {
-        "major_radius": 8,
-        "minor_radius": 1.0,
-        "height": 5,
+        "major_radius": 4,
+        "minor_radius": 2.0,
+        "height": 9.5,
         "major_segments": 500,
         "minor_segments": 500,
         "num_rays": 1000000
     },
 
-    "ambient_light": [0.00, 0.0, 0.0, 0.5]
+    "ambient_light": [0.00, 0.0, 0.0, 0.7]
   },
   "objects": [
     {

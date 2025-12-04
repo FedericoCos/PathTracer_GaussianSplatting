@@ -20,7 +20,7 @@
         "num_rays": 1000000
     },
 
-    "ambient_light": [0, 0, 0, 0.03]
+    "ambient_light": [0, 0, 0, 0.06]
   },
   "objects": [
     {
@@ -31,7 +31,7 @@
     },
     {
       "model": "resources/the_ship/scene.gltf",
-      "position": [0, 0, 0],
+      "position": [0, -0.5, 0],
       "scale": [5, 5, 5],
       "rotation": [0.0, 0.0, 0.0]
     }

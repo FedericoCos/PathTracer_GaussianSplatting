@@ -89,20 +89,11 @@ public:
     // Descriptor Pool variables
     vk::raii::DescriptorPool descriptor_pool = nullptr;
 
-
-
     // For multisampling
     vk::SampleCountFlagBits mssa_samples = vk::SampleCountFlagBits::e1;
 
     // Uniform Buffer
     UniformBufferObject ubo{};
-
-    struct ShadowUBO {
-        glm::mat4 proj;
-        std::array<glm::mat4, 6> views;
-        glm::vec4 lightPos;
-        float farPlane;
-    } shadow_ubo_data; // One struct for temp data
 
 
     // Ray Tracing TLAS members
@@ -112,9 +103,6 @@ public:
     AllocatedBuffer tlas_scratch_buffer;
     uint64_t tlas_scratch_addr = 0;
     const uint32_t MAX_TLAS_INSTANCES = 1024;
-
-    bool panel_shadows_enabled = true; 
-    float shadow_light_far_plane = 100.f;
 
     AllocatedImage rt_output_image;
 
@@ -220,16 +208,6 @@ private:
         {GLFW_KEY_M, Action::HEIGHT_UP},
         {GLFW_KEY_N, Action::HEIGHT_DOWN},
 
-        // LIGHTS
-        {GLFW_KEY_Z, Action::DEBUG_LIGHTS},
-        {GLFW_KEY_5, Action::TOGGLE_FLOOR_LIGHT},
-        {GLFW_KEY_6, Action::TOGGLE_CEILING_LIGHT},
-        {GLFW_KEY_7, Action::TOGGLE_BACK_LIGHT},
-        {GLFW_KEY_8, Action::TOGGLE_LEFT_LIGHT},
-        {GLFW_KEY_9, Action::TOGGLE_RIGHT_LIGHT},
-        {GLFW_KEY_E, Action::TOGGLE_EMISSIVE},
-        {GLFW_KEY_Q, Action::TOGGLE_MANUAL},
-
         {GLFW_KEY_P, Action::POINTCLOUD},
         {GLFW_KEY_O, Action::F_POINTCLOUD},
         {GLFW_KEY_T, Action::TOGGLE_PROJECTION},
@@ -241,24 +219,11 @@ private:
     };
     std::unordered_set<int> pressed_keys;
 
-    // Lights
-    bool debug_lights = false;
+    // rt Box
     Gameobject rt_box;
     bool use_rt_box = false;
 
-    // Light Storage
-    std::vector<Pointlight> manual_lights;
-    std::vector<bool> manual_lights_shadow;
-    std::vector<Pointlight> emissive_lights;
-    std::vector<Pointlight> panel_lights;
-    std::vector<bool> panel_lights_on;
-
-    // Light Toggles
-    bool use_manual_lights = false;
-    bool use_emissive_lights = false;
-    bool use_manual_lights_shadows = false;
-    bool use_emissive_lights_shadows = false;
-
+    // Pointcloud settings
     bool render_point_cloud = false;
     bool render_final_pointcloud = true;
     bool show_projected_torus = false;

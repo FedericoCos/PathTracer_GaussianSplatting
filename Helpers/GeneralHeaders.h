@@ -265,13 +265,6 @@ struct Primitive {
     glm::vec3 center;
 };
 
-const size_t MAX_POINTLIGHTS = 150;
-
-struct Pointlight{
-    glm::vec4 position; // fourth value is for padding
-    glm::vec4 color;
-};
-
 struct TorusConfig {
     float major_radius = 16.0f;
     float minor_radius = 1.0f;
@@ -282,7 +275,6 @@ struct TorusConfig {
 
 
 struct UniformBufferObject {
-    // glm::mat4 model;
     glm::mat4 view;
     glm::mat4 proj;
 
@@ -290,18 +282,9 @@ struct UniformBufferObject {
     float padding;
 
     glm::vec4 ambient_light;
-    
-    std::array<Pointlight, MAX_POINTLIGHTS> pointlights;
-    std::array<Pointlight, MAX_POINTLIGHTS> shadowlights;
-    int curr_num_pointlights = 0;
-    int curr_num_shadowlights = 0;
 
-    int panel_shadows_enabled = 0; 
-    float shadow_far_plane = 100.0f;
     uint32_t frame_count = 0;
     float total_scene_flux = 0.0f;
-    // Maps a light index (0-99) to a shadow map index (0-4)
-    // -1 means no shadow.
 };
 
 struct QueueFamilyIndices {
@@ -334,15 +317,6 @@ enum class Action{
     MAJ_RAD_UP, MAJ_RAD_DOWN,
     MIN_RAD_UP, MIN_RAD_DOWN,
     HEIGHT_UP, HEIGHT_DOWN,
-
-    DEBUG_LIGHTS,
-    TOGGLE_FLOOR_LIGHT,
-    TOGGLE_CEILING_LIGHT,
-    TOGGLE_BACK_LIGHT,
-    TOGGLE_LEFT_LIGHT,
-    TOGGLE_RIGHT_LIGHT,
-    TOGGLE_EMISSIVE,
-    TOGGLE_MANUAL,
 
     POINTCLOUD,
     F_POINTCLOUD,

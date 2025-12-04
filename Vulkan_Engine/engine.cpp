@@ -769,8 +769,8 @@ void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action,
         case Action::ROT_DOWN:   input.rot_up   = pressed; break;
         case Action::ROT_UP:  input.rot_down  = pressed; break;
 
-        case Action::FOV_UP:  input.fov_up     = pressed; break;
-        case Action::FOV_DOWN:  input.fov_down   = pressed; break;
+        case Action::FOV_UP:  input.fov_up     = pressed; engine -> accumulation_frame = 0; break;
+        case Action::FOV_DOWN:  input.fov_down   = pressed; engine -> accumulation_frame = 0; break;
         case Action::HEIGHT_UP: input.height_up = pressed; break;
         case Action::HEIGHT_DOWN: input.height_down = pressed; break;
         case Action::RESET: input.reset = pressed; break;
@@ -780,41 +780,6 @@ void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action,
         case Action::MAJ_RAD_DOWN: input.maj_rad_down = pressed; break;
         case Action::MIN_RAD_UP: input.min_rad_up = pressed; break;
         case Action::MIN_RAD_DOWN: input.min_rad_down = pressed; break;
-        
-        case Action::DEBUG_LIGHTS: 
-            if (action == GLFW_PRESS)
-                engine->debug_lights = !engine->debug_lights; 
-            break;
-            
-        case Action::TOGGLE_FLOOR_LIGHT:
-            if (action == GLFW_PRESS && !engine->panel_lights_on.empty())
-                engine->panel_lights_on[0] = !engine->panel_lights_on[0];
-            break;
-        case Action::TOGGLE_CEILING_LIGHT:
-            if (action == GLFW_PRESS && engine->panel_lights_on.size() > 1)
-                engine->panel_lights_on[1] = !engine->panel_lights_on[1];
-            break;
-        case Action::TOGGLE_BACK_LIGHT:
-            if (action == GLFW_PRESS && engine->panel_lights_on.size() > 2)
-                engine->panel_lights_on[2] = !engine->panel_lights_on[2];
-            break;
-        case Action::TOGGLE_LEFT_LIGHT:
-            if (action == GLFW_PRESS && engine->panel_lights_on.size() > 3)
-                engine->panel_lights_on[3] = !engine->panel_lights_on[3];
-            break;
-        case Action::TOGGLE_RIGHT_LIGHT:
-            if (action == GLFW_PRESS && engine->panel_lights_on.size() > 4)
-                engine->panel_lights_on[4] = !engine->panel_lights_on[4];
-            break;
-        
-        case Action::TOGGLE_EMISSIVE:
-            if (action == GLFW_PRESS)
-                engine->use_emissive_lights = !engine->use_emissive_lights;
-            break;
-        case Action::TOGGLE_MANUAL:
-            if (action == GLFW_PRESS)
-                engine->use_manual_lights = !engine->use_manual_lights;
-            break;
 
         case Action::POINTCLOUD:
             if (action == GLFW_PRESS){
@@ -937,18 +902,6 @@ void Engine::createRTOutputImage() {
         vk::MemoryPropertyFlagBits::eDeviceLocal, 
         *this
     );
-    /* capture_resolve_image.image_view = Image::createImageView(capture_resolve_image, *this);
-
-    vk::raii::CommandBuffer cmd_resolve_init = beginSingleTimeCommands(command_pool_graphics, &logical_device);
-
-    // Transition from Undefined -> Color Attachment Optimal
-    transitionImage(cmd_resolve_init, 
-                    capture_resolve_image.image, 
-                    vk::ImageLayout::eUndefined, 
-                    vk::ImageLayout::eColorAttachmentOptimal, 
-                    vk::ImageAspectFlagBits::eColor);
-
-    endSingleTimeCommands(cmd_resolve_init, graphics_queue); */
 
     // Transition to General Layout (Ready for RayGen writing)
     vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device);
@@ -980,7 +933,6 @@ bool Engine::initVulkan(int mssa_val){
 
     // Get device and queues
     physical_device = Device::pickPhysicalDevice(*this);
-    mssa_samples = vk::SampleCountFlagBits::e1;
     logical_device = Device::createLogicalDevice(*this, queue_indices); 
     graphics_queue = Device::getQueue(*this, queue_indices.graphics_family.value());
     present_queue = Device::getQueue(*this, queue_indices.present_family.value());
@@ -1048,7 +1000,7 @@ bool Engine::initVulkan(int mssa_val){
     createPipelines();
     createRayTracingPipeline();
 
-    loadScene("resources/main_scene.json");
+    loadScene("main_scene.json");
     std::cout << "Memory status loading objects in scene" << std::endl;
     printGpuMemoryUsage();
 
@@ -1179,18 +1131,10 @@ void Engine::loadScene(const std::string &scene_path)
 
 
     // --- 1. Parse Settings ---
-    float emissive_multiplier = 1.0f;
-    std::string lights_path = "";
     std::string rtbox_path = "";
 
     if (scene_data.contains("settings")) {
         const auto& settings = scene_data["settings"];
-        this->use_manual_lights = settings.value("use_manual_lights", false);
-        this->use_emissive_lights = settings.value("use_emissive_lights", false);
-        emissive_multiplier = settings.value("emissive_intensity_multiplier", 1.0f);
-        this->use_manual_lights_shadows = settings.value("use_manual_lights_shadows", false);
-        this->use_emissive_lights_shadows = settings.value("use_emissive_lights_shadows", false);
-        lights_path = settings.value("lights_file", "");
         this->use_rt_box = settings.value("use_rt_box", false);
         rtbox_path = settings.value("rt_box_file", "");
 
@@ -1221,14 +1165,7 @@ void Engine::loadScene(const std::string &scene_path)
         }
     }
 
-    // --- 2. Load Manual Lights ---
-    if (use_manual_lights && !lights_path.empty()) {
-        loadManualLights(lights_path);
-    } else if (use_manual_lights && lights_path.empty()) {
-        std::cerr << "Warning: 'use_manual_lights' is true but no 'lights_file' was specified." << std::endl;
-    }
-
-    // --- 3. Load Objects ---
+    // --- 2. Load Objects ---
     if (!scene_data.contains("objects")) {
         std::cout << "Warning: Scene file contains no 'objects' array." << std::endl;
         return;
@@ -1236,7 +1173,6 @@ void Engine::loadScene(const std::string &scene_path)
 
     // Iterate over each object definition in the JSON
     // Iterate over each object definition in the JSON
-    emissive_lights.clear();
     for (const auto& obj_def : scene_data["objects"]) {
         P_object new_object;
 
@@ -1266,8 +1202,7 @@ void Engine::loadScene(const std::string &scene_path)
             });
         }
 
-        // --- STEP 2: Bake Transform into Vertices (Fixes "Obscured" / BLAS issues) ---
-        // We permanently modify the vertices to be in World Space.
+        // --- STEP 2: Bake Transform into Vertices ---
         glm::mat4 transform = new_object.model_matrix;
         glm::mat3 normal_matrix = glm::transpose(glm::inverse(glm::mat3(transform)));
 
@@ -1311,56 +1246,6 @@ void Engine::loadScene(const std::string &scene_path)
         }
 
         scene_objs.emplace_back(std::move(new_object));
-    }
-}
-
-
-void Engine::loadManualLights(const std::string& lights_path)
-{
-    std::ifstream lights_file(lights_path);
-    if (!lights_file.is_open()) {
-        std::cerr << "Warning: Failed to open lights file: " << lights_path << std::endl;
-        return;
-    }
-    
-    json lights_data = json::parse(lights_file);
-
-    manual_lights.clear();
-
-    for (const auto& light_def : lights_data) {
-        // Stop if we've filled the UBO
-        if (ubo.curr_num_pointlights >= MAX_POINTLIGHTS) {
-            std::cerr << "Warning: Reached maximum point lights (" << MAX_POINTLIGHTS 
-                      << "). Skipping remaining lights in file." << std::endl;
-            break;
-        }
-
-        std::string type = light_def.value("type", "pointlight");
-
-        if (type == "pointlight") {
-            int light_index = ubo.curr_num_pointlights;
-
-            // Get position
-            glm::vec3 pos(0.0f);
-            if (light_def.contains("position")) {
-                pos = {light_def["position"][0], light_def["position"][1], light_def["position"][2]};
-            }
-            
-            // Get color
-            glm::vec3 color(1.0f);
-            if (light_def.contains("color")) {
-                color = {light_def["color"][0], light_def["color"][1], light_def["color"][2]};
-            }
-
-            // Get intensity
-            float intensity = light_def.value("intensity", 1.0f);
-
-            Pointlight new_light;
-            new_light.position = glm::vec4(pos, 0.0f);
-            new_light.color = glm::vec4(color, intensity);
-            manual_lights.push_back(new_light);
-            manual_lights_shadow.push_back(light_def.value("shadow", false));
-        }
     }
 }
 
@@ -1416,10 +1301,7 @@ void Engine::createDescriptorPool()
         { vk::DescriptorType::eUniformBuffer, total_sets },
         { vk::DescriptorType::eStorageBuffer, MAX_FRAMES_IN_FLIGHT * 10 },
         { vk::DescriptorType::eAccelerationStructureKHR, rt_sets },
-        
-        // --- UPDATED: We use Storage Images for Binding 10 (Output) ---
         { vk::DescriptorType::eStorageImage, rt_sets },
-
         { vk::DescriptorType::eCombinedImageSampler, 
           MAX_FRAMES_IN_FLIGHT * (MAX_SHADOW_LIGHTS + MAX_BINDLESS_TEXTURES) } 
     };
@@ -2032,68 +1914,6 @@ void Engine::updateUniformBuffer(uint32_t current_image)
         ubo.camera_pos = camera.getCurrentState().t_camera.position;
     else
         ubo.camera_pos = camera.getCurrentState().f_camera.position;
-
-    // --- 2. Reset Light Counters ---
-    ubo.curr_num_pointlights = 0;
-    ubo.curr_num_shadowlights = 0;
-    ubo.panel_shadows_enabled = this->panel_shadows_enabled;
-    ubo.shadow_far_plane = this->shadow_light_far_plane;
-
-    // --- 3. Add Panel Lights (if enabled) ---
-    for(int i = 0; i < panel_lights.size(); ++i) {
-        if(panel_shadows_enabled){
-            if(ubo.curr_num_shadowlights >= MAX_SHADOW_LIGHTS) break;
-            if(panel_lights_on[i]){
-                ubo.shadowlights[ubo.curr_num_shadowlights] = panel_lights[i];
-                ubo.curr_num_shadowlights++;
-            }
-        }
-        else{
-            if(ubo.curr_num_pointlights >= MAX_POINTLIGHTS) break;
-            if(panel_lights_on[i]){
-                ubo.pointlights[ubo.curr_num_pointlights] = panel_lights[i];
-                ubo.curr_num_pointlights++;
-            }
-        }
-    }
-
-    // --- 4. Add Manual Lights ---
-    if (use_manual_lights) {
-        if(use_manual_lights_shadows){
-            for(int i = 0; i < manual_lights.size(); i++){
-                if(manual_lights_shadow[i]){
-                    if (ubo.curr_num_shadowlights >= MAX_SHADOW_LIGHTS) break;
-                    ubo.shadowlights[ubo.curr_num_shadowlights++] = manual_lights[i];
-                }
-                else{
-                    if (ubo.curr_num_pointlights >= MAX_POINTLIGHTS) break;
-                    ubo.pointlights[ubo.curr_num_pointlights++] = manual_lights[i];
-                }
-            }
-        }
-        else{ 
-            for (const auto& light : manual_lights) {
-                if (ubo.curr_num_pointlights >= MAX_POINTLIGHTS) break;
-                ubo.pointlights[ubo.curr_num_pointlights++] = light;
-            }
-        }
-    }
-
-    // --- 5. Add Emissive Lights ---
-    if (use_emissive_lights) {
-        if(use_emissive_lights_shadows){
-            for (const auto& light : emissive_lights) {
-                if (ubo.curr_num_shadowlights >= MAX_SHADOW_LIGHTS) break;
-                ubo.shadowlights[ubo.curr_num_shadowlights++] = light;
-            }
-        }
-        else{
-            for (const auto& light : emissive_lights) {
-                if (ubo.curr_num_pointlights >= MAX_POINTLIGHTS) break;
-                ubo.pointlights[ubo.curr_num_pointlights++] = light;
-            }
-        }
-    }
 
     ubo.total_scene_flux = total_scene_flux;
     ubo.frame_count = accumulation_frame;

@@ -1504,6 +1504,9 @@ void Engine::createGlobalBindlessBuffers()
             p_const.clearcoat_roughness_texture_index = current_texture_offset + mat.clearcoat_roughness_texture_index;
             p_const.sg_id = current_texture_offset + mat.specular_glossiness_texture_index;
             p_const.use_specular_glossiness_workflow = mat.use_specular_glossiness_workflow;
+            p_const.uv_normal = mat.uv_normal;
+            p_const.uv_emissive = mat.uv_emissive;
+            p_const.uv_albedo = mat.uv_albedo;
             global_materials_data.push_back(p_const);
         }
 
@@ -2174,7 +2177,6 @@ void Engine::createRayTracingPipeline()
     // --- 1. DESCRIPTOR SET LAYOUT ---
     std::vector<vk::DescriptorSetLayoutBinding> bindings;
 
-    // ... [Bindings 0-7 remain indices 0-7] ...
     bindings.emplace_back(0, vk::DescriptorType::eAccelerationStructureKHR, 1, vk::ShaderStageFlagBits::eRaygenKHR | vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
     bindings.emplace_back(1, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eRaygenKHR, nullptr);
     bindings.emplace_back(2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eRaygenKHR, nullptr);

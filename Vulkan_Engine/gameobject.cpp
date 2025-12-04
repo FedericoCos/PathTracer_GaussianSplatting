@@ -6,6 +6,46 @@
 #include <utility>
 #include <typeinfo>
 
+// Helper to extract KHR_texture_transform from a specific texture slot
+// Returns true if a transform was found and out_matrix is updated
+bool getTextureTransform(const tinygltf::ExtensionMap& extensionMap, glm::mat4& out_matrix) {
+    if (extensionMap.count("KHR_texture_transform")) {
+        const auto& ext = extensionMap.at("KHR_texture_transform");
+        
+        glm::vec2 offset(0.0f, 0.0f);
+        glm::vec2 scale(1.0f, 1.0f);
+        float rotation = 0.0f;
+
+        if (ext.Has("offset")) {
+            const auto& o = ext.Get("offset");
+            offset = glm::vec2(o.Get(0).Get<double>(), o.Get(1).Get<double>());
+        }
+        if (ext.Has("scale")) {
+            const auto& s = ext.Get("scale");
+            scale = glm::vec2(s.Get(0).Get<double>(), s.Get(1).Get<double>());
+        }
+        if (ext.Has("rotation")) {
+            rotation = static_cast<float>(ext.Get("rotation").Get<double>());
+        }
+
+        // GLTF Transformation Order: UV' = Translation * Rotation * Scale * UV
+        // 1. Scale
+        glm::mat4 S = glm::scale(glm::mat4(1.0f), glm::vec3(scale, 1.0f));
+        // 2. Rotate (around Z axis for 2D) - GLM rotates counter-clockwise
+        // Note: The pivot is (0,0) which is top-left in UV space usually.
+        glm::mat4 R = glm::rotate(glm::mat4(1.0f), -rotation, glm::vec3(0.0f, 0.0f, 1.0f)); 
+        // 3. Translate
+        glm::mat4 T = glm::translate(glm::mat4(1.0f), glm::vec3(offset, 0.0f));
+
+        out_matrix = T * R * S;
+
+        // If 'texCoord' override exists, we might need to handle it, 
+        // but typically engines assume UV0 unless shaders support multiple sets dynamically.
+        return true;
+    }
+    return false;
+}
+
 // Helper: Get the first value from an animation accessor
 template<typename T>
 T getDataValue(const tinygltf::Model& model, int accessorIndex, int index) {
@@ -394,6 +434,9 @@ void Gameobject::loadMaterials(const tinygltf::Model& model) {
             newMaterial.roughness_factor = static_cast<float>(pbr.roughnessFactor);
 
             newMaterial.albedo_texture_index = getTextureIndex(pbr.baseColorTexture.index, model);
+            if(pbr.baseColorTexture.extensions.count("KHR_texture_transform")){
+                getTextureTransform(pbr.baseColorTexture.extensions, newMaterial.uv_albedo);
+            }
             newMaterial.metallic_roughness_texture_index = getTextureIndex(pbr.metallicRoughnessTexture.index, model);
         }
         // Emissive
@@ -406,6 +449,8 @@ void Gameobject::loadMaterials(const tinygltf::Model& model) {
                 newMaterial.emissive_factor *= strength;
             }
         }
+
+        
         // Texture Indices
         newMaterial.normal_texture_index = getTextureIndex(mat.normalTexture.index, model);
         newMaterial.occlusion_texture_index = getTextureIndex(mat.occlusionTexture.index, model);
@@ -427,6 +472,13 @@ void Gameobject::loadMaterials(const tinygltf::Model& model) {
                 }
             }
         }
+        if(mat.normalTexture.extensions.count("KHR_texture_transform")){
+            getTextureTransform(mat.normalTexture.extensions, newMaterial.uv_normal);
+        }
+        if(mat.emissiveTexture.extensions.count("KHR_texture_transform")){
+            getTextureTransform(mat.emissiveTexture.extensions, newMaterial.uv_emissive);
+        }
+
 
         // Transmission
         if(mat.extensions.count("KHR_materials_transmission")){

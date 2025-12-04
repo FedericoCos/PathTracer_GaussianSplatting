@@ -337,7 +337,7 @@ void main()
     mat3 TBN = mat3(T, B, N);
 
     if (abs(Tw) > 0.0001 && mat.normal_id > 0) {
-        vec3 normal_map = sampleTexture(mat.normal_id, tex_coord).xyz * 2.0 - 1.0;
+        vec3 normal_map = sampleTexture(mat.normal_id, (mat.uv_normal * vec4(tex_coord, 0.0, 1.0)).xy).xyz * 2.0 - 1.0;
         N = safeNormalize(TBN * normal_map);
     }
 
@@ -378,7 +378,7 @@ void main()
     else {
         vec4 base_color = mat.base_color_factor * vec4(vertex_color, 1.0);
         if (mat.albedo_id > 0) {
-            base_color *= sampleTexture(mat.albedo_id, tex_coord);
+            base_color *= sampleTexture(mat.albedo_id, (mat.uv_albedo * vec4(tex_coord, 0.0, 1.0)).xy);
         }
         albedo = base_color.rgb;
         alpha = base_color.a;
@@ -415,7 +415,7 @@ void main()
     // Emissive
     vec3 emissive = mat.emissive_factor_and_pad.xyz;
     if (mat.emissive_id > 0){ 
-        emissive *= sampleTexture(mat.emissive_id, tex_coord).rgb;
+        emissive *= sampleTexture(mat.emissive_id, (mat.uv_emissive * vec4(tex_coord, 0.0, 1.0)).xy).rgb;
     }
 
     // --- 5. TRANSPARENCY & MASK LOGIC ---

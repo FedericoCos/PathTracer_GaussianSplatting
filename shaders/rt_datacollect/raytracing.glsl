@@ -20,6 +20,10 @@ struct InputVertex {
 struct MaterialData {
     vec4  base_color_factor;
 
+    mat4 uv_normal;
+    mat4 uv_emissive;
+    mat4 uv_albedo;
+
     vec4  emissive_factor_and_pad;
 
     float metallic_factor;

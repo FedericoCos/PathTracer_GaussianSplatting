@@ -224,10 +224,18 @@ struct Material {
 
     bool is_transparent = false;
     bool is_doublesided = false;
+
+    glm::mat4 uv_normal = glm::mat4(1.0f);
+    glm::mat4 uv_emissive = glm::mat4(1.0f);
+    glm::mat4 uv_albedo = glm::mat4(1.0f);
 };
 
 struct MaterialPushConstant {
     glm::vec4 base_color_factor;          // 16
+
+    glm::mat4 uv_normal;
+    glm::mat4 uv_emissive;
+    glm::mat4 uv_albedo;
 
     glm::vec4 emissive_factor_and_pad;    // 16
 

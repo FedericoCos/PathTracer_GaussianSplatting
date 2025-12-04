@@ -11,6 +11,13 @@ layout(location = 0) rayPayloadEXT RayPayload payload;
 // Clamps max brightness to prevent "Blue Noise" fireflies from getting stuck
 const float CLAMP_MAX = 10.0; 
 
+vec2 hammersley(uint i) {
+    return vec2(
+        float(i) * 0.61803398875, // Golden Ratio X
+        float(i) * 1.32471795724  // Plastic Constant Y (or just use random seed)
+    );
+}
+
 void main()
 {
     uint index = gl_LaunchIDEXT.y * gl_LaunchSizeEXT.x + gl_LaunchIDEXT.x;
@@ -18,9 +25,9 @@ void main()
     uint seed = index + ubo.frameCount * 719393; 
     
     // 1. Antialiasing Jitter
-    float rX = rnd(seed);
-    float rY = rnd(seed);
-    const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(rX, rY);
+    vec2 subPixelJitter = fract(hammersley(ubo.frameCount) + vec2(rnd(seed), rnd(seed)));
+    
+    const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + subPixelJitter;
     const vec2 inUV = pixelCenter / vec2(gl_LaunchSizeEXT.xy);
     vec2 d = inUV * 2.0 - 1.0;
 
@@ -54,9 +61,7 @@ void main()
         }
     }
     
-    // 4. FIREFLY CLAMP (Fixes the "Blue Noise")
-    // Before accumulating, clamp super-bright pixels.
-    // This allows us to use Gamma accumulation without the noise sticking.
+    // 4. FIREFLY CLAMP
     accumulated_color = min(accumulated_color, vec3(CLAMP_MAX));
 
     // 5. ACCUMULATION

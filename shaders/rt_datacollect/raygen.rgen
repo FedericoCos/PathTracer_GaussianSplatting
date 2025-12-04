@@ -89,6 +89,7 @@ void main()
     // --- 3. ACCUMULATION (MATCHING CAMERA LOGIC) ---
     
     // A. Clamp Fireflies (Linear)
+    accumulated_color = min(accumulated_color, vec3(CLAMP_MAX));
     vec3 current_linear = accumulated_color;
 
     if (ubo.frameCount > 0) {

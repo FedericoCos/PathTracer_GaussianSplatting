@@ -136,27 +136,48 @@ void sampleLights_SG(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness,
         if (visibility > 0.0) {
             MaterialData l_mat = all_materials.materials[tri.material_index];
             vec3 Le = l_mat.emissive_factor_and_pad.rgb;
-            float geometry_term = LdotN_light / dist_sq;
+            // We need these to calculate the true PDF (Probability Density Function)
+            vec3 edge1 = p1 - p0;
+            vec3 edge2 = p2 - p0;
+            float area = 0.5 * length(cross(edge1, edge2));
+            
+            // Calculate emission strength exactly as you did in C++ to build the CDF
+            // (Assuming you used max component or length in C++)
+            float emission_strength = length(Le); 
+            
+            // Avoid division by zero
+            if (area > 1e-6 && emission_strength > 1e-6) {
+                
+                // The geometry term converts Area PDF to Solid Angle PDF
+                float geometry_term = LdotN_light / dist_sq;
+                
+                // Standard NEE Estimator: 
+                // Contribution = (BRDF * Le * cosTheta * geometry) / PDF
+                // PDF of selecting this triangle = (Area * Emission) / TotalFlux
+                // PDF of selecting point on triangle = 1.0 / Area
+                // Combined PDF = Emission / TotalFlux
+                
+                // Therefore: Weight = 1.0 / (Emission / TotalFlux) = TotalFlux / Emission
+                float pdf_weight = ubo.totalSceneFlux / emission_strength;
 
-            vec3 H = normalize(V + L);
+                vec3 H = safeNormalize(V + L);
+                float NDF = D_GGX(N, H, roughness);
+                float Vis = V_SmithGGXCorrelatedFast(dot(N,V), NdotL, roughness);
+                vec3 F = F_Schlick(dot(H, V), F0);
 
-            float NDF = D_GGX(N, H, roughness);
-            float Vis = V_SmithGGXCorrelatedFast(dot(N,V), NdotL, roughness);
-            vec3 F = F_Schlick(dot(H, V), F0);
+                vec3 kS = F;
+                vec3 kD = (vec3(1.0) - kS) * (1.0 - transmission);
+                
+                vec3 specular = NDF * Vis * F;
+                vec3 diffuse = (kD * albedo / PI) * (1.0 - transmission);
+                
+                vec3 brdf = diffuse + specular;
 
-            vec3 kS = F;
-            // FIX: Removed `* (1.0 - metallic)`.
-            // In Metal/Rough, `albedo` is already Black for metals (handled in main).
-            // In Spec/Gloss, `albedo` is inherently Black for metals.
-            // This unifies the logic.
-            vec3 kD = (1 - kS) * (1 - transmission);
-
-            vec3 specular = NDF * Vis * F;
-            vec3 diffuse = (kD * albedo / PI) * (1.0 - transmission);
-
-            vec3 brdf = diffuse + specular;
-
-            Lo += brdf * Le * NdotL * geometry_term * ubo.totalSceneFlux * ubo.ambientLight.w * visibility;
+                // Apply the corrected weight
+                // Notice we multiply by 'Le' but divide by 'emission_strength' (length of Le)
+                // This effectively applies the color of the light, normalized, scaled by TotalFlux.
+                Lo += brdf * Le * NdotL * geometry_term * pdf_weight * visibility * ubo.ambientLight.w;
+            }
         }
     }
 }
@@ -212,25 +233,48 @@ void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, fl
         if (visibility > 0.0) {
             MaterialData l_mat = all_materials.materials[tri.material_index];
             vec3 Le = l_mat.emissive_factor_and_pad.rgb;
-            float geometry_term = LdotN_light / dist_sq;
+            // We need these to calculate the true PDF (Probability Density Function)
+            vec3 edge1 = p1 - p0;
+            vec3 edge2 = p2 - p0;
+            float area = 0.5 * length(cross(edge1, edge2));
             
-            // BRDF Calculations
-            vec3 H = safeNormalize(V + L);
+            // Calculate emission strength exactly as you did in C++ to build the CDF
+            // (Assuming you used max component or length in C++)
+            float emission_strength = length(Le); 
             
-            // F0 is now passed in, not calculated here
-            
-            float NDF = D_GGX(N, H, roughness);
-            float Vis = V_SmithGGXCorrelatedFast(dot(N,V), NdotL, roughness);
-            vec3 F = F_Schlick(dot(H, V), F0);
-            
-            vec3 kS = F;
-            vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
-            vec3 specular = NDF * Vis * F;
-            vec3 diffuse = (kD * albedo / PI) * (1.0 - transmission);
-            vec3 brdf = diffuse + specular;
-            
-            // Add Contribution
-            Lo += brdf * Le * NdotL * geometry_term * ubo.totalSceneFlux * ubo.ambientLight.w * visibility;
+            // Avoid division by zero
+            if (area > 1e-6 && emission_strength > 1e-6) {
+                
+                // The geometry term converts Area PDF to Solid Angle PDF
+                float geometry_term = LdotN_light / dist_sq;
+                
+                // Standard NEE Estimator: 
+                // Contribution = (BRDF * Le * cosTheta * geometry) / PDF
+                // PDF of selecting this triangle = (Area * Emission) / TotalFlux
+                // PDF of selecting point on triangle = 1.0 / Area
+                // Combined PDF = Emission / TotalFlux
+                
+                // Therefore: Weight = 1.0 / (Emission / TotalFlux) = TotalFlux / Emission
+                float pdf_weight = ubo.totalSceneFlux / emission_strength;
+
+                vec3 H = safeNormalize(V + L);
+                float NDF = D_GGX(N, H, roughness);
+                float Vis = V_SmithGGXCorrelatedFast(dot(N,V), NdotL, roughness);
+                vec3 F = F_Schlick(dot(H, V), F0);
+
+                vec3 kS = F;
+                vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
+                
+                vec3 specular = NDF * Vis * F;
+                vec3 diffuse = (kD * albedo / PI) * (1.0 - transmission);
+                
+                vec3 brdf = diffuse + specular;
+
+                // Apply the corrected weight
+                // Notice we multiply by 'Le' but divide by 'emission_strength' (length of Le)
+                // This effectively applies the color of the light, normalized, scaled by TotalFlux.
+                Lo += brdf * Le * NdotL * geometry_term * pdf_weight * visibility * ubo.ambientLight.w;
+            }
         }
     }
 }
@@ -510,15 +554,31 @@ void main()
             // Specular Reflection
             vec3 H = sampleGGX(N, roughness, payload.seed);
             vec3 L = reflect(-V, H);
+
+            float NdotL = max(dot(N, L), 0.0);
+            float NdotV = max(dot(N, V), 0.0);
+            float NdotH = max(dot(N, H), 0.0);
+            float VdotH = max(dot(V, H), 0.0);
             
             if (dot(L, N_geo) <= 0.0) {
                 payload.weight = vec3(0.0);
             } else {
                 payload.next_ray_dir = L;
                 vec3 F = F_Schlick(max(dot(H, V), 0.0), F0);
-                payload.weight = (F * (1.0 / prob_specular)) * energy_attenuation;
+                // We need the Visibility term (G2 / (4 * NdotV * NdotL))
+                // Your helper 'V_SmithGGXCorrelatedFast' returns exactly this Vis term.
+                float Vis = V_SmithGGXCorrelatedFast(NdotV, NdotL, roughness);
+                
+                // The theoretical weight for sampling normal distribution D is:
+                // Weight = F * Vis * 4.0 * NdotL * (VdotH / NdotH)
+                // (Note: D cancels out with the PDF)
+                
+                vec3 specular_weight = F * Vis * 4.0 * NdotL * (VdotH / max(NdotH, 0.0001));
+                
+                // Combine with Russian Roulette prob and Energy Attenuation
+                payload.weight = (specular_weight * (1.0 / prob_specular)) * energy_attenuation;
+                payload.is_specular = true;
             }
-            payload.is_specular = true;
         } else {
             // Diffuse Reflection
             vec3 L = sampleCosineHemisphere(N, payload.seed);

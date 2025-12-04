@@ -391,7 +391,7 @@ struct CameraState{
     glm::mat4 view_matrix;
     glm::mat4 projection_matrix;
 
-    float fov = 45.f;
+    float fov = 60.f;
     float near_plane = 0.1f;
     float far_plane = 10000.f;
     float aspect_ratio;

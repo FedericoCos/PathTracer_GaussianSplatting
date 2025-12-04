@@ -94,9 +94,8 @@ struct RayPayload {
     vec3 weight;    
     vec3 hit_pos;
     vec3 normal;
-    
-    // Random State (Passed between bounces)
     uint seed; 
+    bool is_specular;
 };
 
 struct ShadowPayload {

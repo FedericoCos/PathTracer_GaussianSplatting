@@ -431,7 +431,11 @@ void main()
         }
     }
 
-    payload.color = Lo + emissive;
+    vec3 final_emissive = vec3(0.0);
+    if (payload.is_specular) {
+        final_emissive = emissive;
+    }
+    payload.color = Lo + final_emissive;
 
     // --- 7. NEXT RAY GENERATION ---
     payload.hit_flag = 2.0;
@@ -461,6 +465,7 @@ void main()
                 payload.weight = vec3(1.0);
             }
         }
+        payload.is_specular = true;
         return;
     } 
 
@@ -487,6 +492,7 @@ void main()
         // --- HIT CLEARCOAT ---
         payload.next_ray_dir = L_cc;
         payload.weight = vec3(1.0);
+        payload.is_specular = true;
     } 
     else {
         // --- HIT BASE LAYER ---
@@ -512,6 +518,7 @@ void main()
                 vec3 F = F_Schlick(max(dot(H, V), 0.0), F0);
                 payload.weight = (F * (1.0 / prob_specular)) * energy_attenuation;
             }
+            payload.is_specular = true;
         } else {
             // Diffuse Reflection
             vec3 L = sampleCosineHemisphere(N, payload.seed);
@@ -528,6 +535,7 @@ void main()
             
             // Correction:
             payload.weight = (albedo * (1.0 / (1.0 - prob_specular))) * energy_attenuation;
+            payload.is_specular = false;
         }
     }
 }

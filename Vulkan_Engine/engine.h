@@ -16,7 +16,6 @@
 
 #include "vk_mem_alloc.h"
 
-const int MAX_SHADOW_LIGHTS = 40;
 const int MAX_BINDLESS_TEXTURES = 1024;
 const int NUM_CAPTURE_POSITIONS = 168;
 
@@ -245,7 +244,7 @@ private:
     AllocatedBuffer light_cdf_buffer;
     uint32_t num_light_triangles = 0;
     float total_scene_flux = 0.0f;
-    uint32_t accumulation_frame = 0;
+    uint32_t accumulation_frame = -1;
 
     // --- Ray Tracing Function Pointers ---
     PFN_vkGetAccelerationStructureBuildSizesKHR vkGetAccelerationStructureBuildSizesKHR = nullptr;
@@ -254,6 +253,14 @@ private:
     PFN_vkGetAccelerationStructureDeviceAddressKHR vkGetAccelerationStructureDeviceAddressKHR = nullptr;
     PFN_vkGetRayTracingShaderGroupHandlesKHR vkGetRayTracingShaderGroupHandlesKHR = nullptr;
     PFN_vkCmdTraceRaysKHR vkCmdTraceRaysKHR = nullptr;
+
+    // Ray tracing variables
+    uint32_t handle_size;
+    uint32_t sbt_entry_size;
+    uint64_t sbt_address;
+    vk::StridedDeviceAddressRegionKHR rmiss_region;
+    vk::StridedDeviceAddressRegionKHR rhit_region;
+    vk::StridedDeviceAddressRegionKHR callable_region;
 
 
     // ----- Helper functions

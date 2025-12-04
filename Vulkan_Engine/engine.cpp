@@ -1303,7 +1303,7 @@ void Engine::createDescriptorPool()
         { vk::DescriptorType::eAccelerationStructureKHR, rt_sets },
         { vk::DescriptorType::eStorageImage, rt_sets },
         { vk::DescriptorType::eCombinedImageSampler, 
-          MAX_FRAMES_IN_FLIGHT * (MAX_SHADOW_LIGHTS + MAX_BINDLESS_TEXTURES) } 
+          MAX_FRAMES_IN_FLIGHT * (MAX_BINDLESS_TEXTURES) } 
     };
 
     vk::DescriptorPoolCreateInfo pool_info;
@@ -1618,7 +1618,17 @@ void Engine::createGlobalBindlessBuffers()
 // ------ Render Loop Functions
 
 void Engine::run(){
+    // --- Common SBT Setup ---
+    auto align_up = [&](uint32_t size, uint32_t alignment) { return (size + alignment - 1) & ~(alignment - 1); };
+    handle_size = rt_props.pipeline_props.shaderGroupHandleSize;
+    sbt_entry_size = align_up(handle_size, rt_props.pipeline_props.shaderGroupBaseAlignment);
+    sbt_address = getBufferDeviceAddress(sbt_buffer.buffer);
+    rmiss_region = vk::StridedDeviceAddressRegionKHR{sbt_address + 2 * sbt_entry_size, sbt_entry_size, 2 * sbt_entry_size};
+    rhit_region = vk::StridedDeviceAddressRegionKHR{sbt_address + 4 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
+    callable_region= vk::StridedDeviceAddressRegionKHR{};
+
     while(!glfwWindowShouldClose(window)){
+        accumulation_frame++;
         glfwPollEvents();
         drawFrame();
     }
@@ -1633,13 +1643,8 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     cmd.begin({});
 
     // 1. Always Build TLAS (Required for ray queries in both modes)
-    buildTlas(cmd); 
-
-    // --- Common SBT Setup ---
-    auto align_up = [&](uint32_t size, uint32_t alignment) { return (size + alignment - 1) & ~(alignment - 1); };
-    uint32_t handle_size = rt_props.pipeline_props.shaderGroupHandleSize;
-    uint32_t sbt_entry_size = align_up(handle_size, rt_props.pipeline_props.shaderGroupBaseAlignment);
-    uint64_t sbt_address = getBufferDeviceAddress(sbt_buffer.buffer);
+    if(accumulation_frame == 0) // This is possible since we are using static scenes, remove for changing scenes
+        buildTlas(cmd); 
 
     // Bind RT Pipeline & Descriptors (Shared by both modes)
     cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline);
@@ -1652,10 +1657,6 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     p_const.minor_radius = torus.getMinorRadius();
     p_const.height = torus.getHeight();
     cmd.pushConstants<RayPushConstant>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, p_const);
-
-    vk::StridedDeviceAddressRegionKHR rmiss_region{sbt_address + 2 * sbt_entry_size, sbt_entry_size, 2 * sbt_entry_size};
-    vk::StridedDeviceAddressRegionKHR rhit_region{sbt_address + 4 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
-    vk::StridedDeviceAddressRegionKHR callable_region{};
 
 
     // =========================================================
@@ -1849,13 +1850,9 @@ void Engine::drawFrame(){
     // Normal Camera Mode accumulation logic
     if (input.move != glm::vec2(0) || input.look_x != 0 || input.look_y != 0 || changed) {
         accumulation_frame = 0;
-    } else {
-        accumulation_frame++;
     }
     camera.update(time, input, torus.getMajorRadius(), torus.getHeight());
-
     updateUniformBuffer(current_frame);
-
     recordCommandBuffer(image_index);
 
     prev_time = current_time;

@@ -11,7 +11,7 @@
     "rt_box_file": "showcase/subjects/death_star_box.json",
     "panel_shadows_enabled": false,
 
-    "ambient_light": [0, 0, 0, 40]
+    "ambient_light": [0, 0, 0, 100]
   },
   "objects": [
     {

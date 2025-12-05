@@ -57,9 +57,7 @@ void main()
         accumulated_color += payload.color * throughput;
 
         if (depth > 0) {
-            // Clamp the max contribution of a single indirect ray
-            float max_indirect = 20.0; 
-            accumulated_color = min(accumulated_color, vec3(max_indirect)); 
+            accumulated_color = min(accumulated_color, vec3(CLAMP_MAX)); 
         }
 
         if (payload.hit_flag < 1.5) break; 

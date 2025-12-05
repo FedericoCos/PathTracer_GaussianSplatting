@@ -50,9 +50,9 @@ void main()
     vec3 throughput = vec3(1.0);
     payload.seed = seed;
     payload.blue_noise = blue.ba;
-    payload.is_specular = true;
+    payload.last_bsdf_pdf = 0.0;
 
-    for (int depth = 0; depth < 12; depth++) { 
+    for (int depth = 0; depth < 32; depth++) { 
         traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, ray_origin, 0.001, ray_dir, 10000.0, 0);
         accumulated_color += payload.color * throughput;
 
@@ -67,7 +67,7 @@ void main()
         ray_dir = payload.next_ray_dir;
         
         // Russian Roulette
-        if(depth >= 4) {
+        if(depth >= 8) {
             float p = max(max(throughput.r, throughput.g), throughput.b);
             if (rnd(payload.seed) > p) break;
             throughput /= p;

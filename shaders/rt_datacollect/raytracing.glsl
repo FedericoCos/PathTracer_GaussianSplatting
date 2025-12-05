@@ -99,7 +99,7 @@ struct RayPayload {
     vec3 hit_pos;
     vec3 normal;
     uint seed; 
-    bool is_specular;
+    float last_bsdf_pdf;
     vec2 blue_noise;
 };
 

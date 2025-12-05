@@ -76,6 +76,26 @@ vec3 sampleGGX(vec3 N, float roughness, inout uint seed) {
     return safeNormalize(T * H_local.x + B * H_local.y + N * H_local.z);
 }
 
+    // 1. PDF of GGX (Specular)
+// Probability of sampling direction L given View V and Normal N
+float pdf_GGX(vec3 N, vec3 V, vec3 L, float roughness) {
+    vec3 H = safeNormalize(V + L);
+    float NdotH = max(dot(N, H), 0.0);
+    float VdotH = max(dot(V, H), 0.0);
+    
+    // D_GGX is already defined in your code
+    float D = D_GGX(N, H, roughness); 
+    
+    // Jacobian to convert from Half-vector PDF to Light-vector PDF
+    return (D * NdotH) / (4.0 * VdotH + 0.0001);
+}
+
+// 2. PDF of Lambert (Diffuse)
+// Probability of sampling direction L (Cosine Weighted)
+float pdf_Lambert(vec3 N, vec3 L) {
+    return max(dot(N, L), 0.0) / PI;
+}
+
 // --- SHADOW & LIGHTS ---
 float traceShadow(vec3 origin, vec3 lightPos) {
     vec3 L = lightPos - origin;
@@ -148,49 +168,50 @@ void sampleLights_SG(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness,
         if (visibility > 0.0) {
             MaterialData l_mat = all_materials.materials[tri.material_index];
             vec3 Le = l_mat.emissive_factor_and_pad.rgb;
-            // We need these to calculate the true PDF (Probability Density Function)
-            vec3 edge1 = p1 - p0;
-            vec3 edge2 = p2 - p0;
-            float area = 0.5 * length(cross(edge1, edge2));
-            
-            // Calculate emission strength exactly as you did in C++ to build the CDF
-            // (Assuming you used max component or length in C++)
             float emission_strength = max(Le.r, max(Le.g, Le.b));
+
+            // --- MIS CALCULATION START ---
             
-            // Avoid division by zero
-            if (area > 1e-6 && emission_strength > 1e-6) {
-                
-                // The geometry term converts Area PDF to Solid Angle PDF
-                float geometry_term = LdotN_light / dist_sq;
-                // geometry_term = min(geometry_term, 100.0);
-                
-                // Standard NEE Estimator: 
-                // Contribution = (BRDF * Le * cosTheta * geometry) / PDF
-                // PDF of selecting this triangle = (Area * Emission) / TotalFlux
-                // PDF of selecting point on triangle = 1.0 / Area
-                // Combined PDF = Emission / TotalFlux
-                
-                // Therefore: Weight = 1.0 / (Emission / TotalFlux) = TotalFlux / Emission
-                float pdf_weight = ubo.totalSceneFlux / emission_strength;
+            // 1. NEE PDF (Solid Angle)
+            // Probability of picking this light area relative to total flux, converted to solid angle.
+            // P_pick = (Emission * Area) / TotalFlux
+            // P_sample = 1 / Area
+            // P_solid_angle = (P_pick * P_sample) * (dist^2 / cosThetaLight)
+            // Simplifies to: (Emission / TotalFlux) * (dist^2 / LdotN_light)
+            
+            float pdf_nee = (emission_strength / ubo.totalSceneFlux) * (dist_sq / LdotN_light);
+            
+            // 2. BSDF PDF (Solid Angle)
+            // Probability that the material would have scattered here naturally
+            float pdf_bsdf = pdf_Lambert(N, L); 
 
-                vec3 H = safeNormalize(V + L);
-                float NDF = D_GGX(N, H, roughness);
-                float Vis = V_SmithGGXCorrelatedFast(dot(N,V), NdotL, roughness);
-                vec3 F = F_Schlick(dot(H, V), F0);
+            // 3. Balance Heuristic Weight
+            // If NEE probability is high, weight is close to 1.0.
+            // If BSDF probability is also high (very shiny), weight drops to 0.5.
+            float mis_weight = (pdf_nee * pdf_nee) / (pdf_nee * pdf_nee + pdf_bsdf * pdf_bsdf);
 
-                vec3 kS = F;
-                vec3 kD = (vec3(1.0) - kS) * (1.0 - transmission);
-                
-                vec3 specular = NDF * Vis * F;
-                vec3 diffuse = (kD * albedo / PI) * (1.0 - transmission);
-                
-                vec3 brdf = diffuse + specular;
+            // --- MIS CALCULATION END ---
 
-                // Apply the corrected weight
-                // Notice we multiply by 'Le' but divide by 'emission_strength' (length of Le)
-                // This effectively applies the color of the light, normalized, scaled by TotalFlux.
-                Lo += brdf * Le * NdotL * geometry_term * pdf_weight * visibility * ubo.ambientLight.w;
-            }
+            // Standard PBR Evaluation
+            vec3 H = safeNormalize(V + L);
+            float NDF = D_GGX(N, H, roughness);
+            float Vis = V_SmithGGXCorrelatedFast(dot(N,V), NdotL, roughness);
+            vec3 F = F_Schlick(dot(H, V), F0);
+            vec3 kS = F;
+            vec3 kD = (vec3(1.0) - kS); // Correct logic
+            vec3 specular = NDF * Vis * F;
+            vec3 diffuse = (kD * albedo / PI) * (1.0 - transmission);
+            
+            // Note: The 'geometry_term' and 'pdf_weight' from your old code
+            // essentially formed (1.0 / pdf_nee).
+            // We can rewrite the final contribution cleanly:
+            
+            vec3 brdf = diffuse + specular;
+            
+            // Lo += (BRDF * Le * cosTheta) * (1 / pdf_nee) * mis_weight * visibility
+            // We use the calculated pdf_nee directly to avoid confusion
+            if(pdf_nee > 1e-10)
+                Lo += brdf * Le * NdotL * (1.0 / pdf_nee) * mis_weight * visibility * ubo.ambientLight.w;
         }
     }
 }
@@ -245,54 +266,60 @@ void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, fl
         vec3 shadow_origin = hit_pos + N * 0.001; 
         
         float visibility = traceShadow(shadow_origin, light_pos);
-        // Shadow Trick: Transparent objects don't fully shadow themselves
         visibility = max(visibility, transmission);
         if (visibility > 0.0) {
             MaterialData l_mat = all_materials.materials[tri.material_index];
             vec3 Le = l_mat.emissive_factor_and_pad.rgb;
-            // We need these to calculate the true PDF (Probability Density Function)
-            vec3 edge1 = p1 - p0;
-            vec3 edge2 = p2 - p0;
-            float area = 0.5 * length(cross(edge1, edge2));
-            
-            // Calculate emission strength exactly as you did in C++ to build the CDF
-            // (Assuming you used max component or length in C++)
             float emission_strength = max(Le.r, max(Le.g, Le.b));
+
+            // --- MIS CALCULATION START ---
             
-            // Avoid division by zero
-            if (area > 1e-6 && emission_strength > 1e-6) {
-                
-                // The geometry term converts Area PDF to Solid Angle PDF
-                float geometry_term = LdotN_light / dist_sq;
-                // geometry_term = min(geometry_term, 100.0);
-                
-                // Standard NEE Estimator: 
-                // Contribution = (BRDF * Le * cosTheta * geometry) / PDF
-                // PDF of selecting this triangle = (Area * Emission) / TotalFlux
-                // PDF of selecting point on triangle = 1.0 / Area
-                // Combined PDF = Emission / TotalFlux
-                
-                // Therefore: Weight = 1.0 / (Emission / TotalFlux) = TotalFlux / Emission
-                float pdf_weight = ubo.totalSceneFlux / emission_strength;
+            // 1. NEE PDF (Solid Angle)
+            // Probability of picking this light area relative to total flux, converted to solid angle.
+            // P_pick = (Emission * Area) / TotalFlux
+            // P_sample = 1 / Area
+            // P_solid_angle = (P_pick * P_sample) * (dist^2 / cosThetaLight)
+            // Simplifies to: (Emission / TotalFlux) * (dist^2 / LdotN_light)
+            
+            float pdf_nee = (emission_strength / ubo.totalSceneFlux) * (dist_sq / LdotN_light);
+            
+            // 2. BSDF PDF (Solid Angle)
+            // Probability that the material would have scattered here naturally
+            float pdf_bsdf = 0.0;
+            // Mix Diffuse and Specular PDFs based on Fresnel/Metalness
+            float prob_specular = mix(0.04, 1.0, metallic);
+            float pdf_spec = pdf_GGX(N, V, L, roughness);
+            float pdf_diff = pdf_Lambert(N, L);
+            // We weight the combined PDF by the probability of choosing that lobe
+            pdf_bsdf = mix(pdf_diff, pdf_spec, prob_specular);
 
-                vec3 H = safeNormalize(V + L);
-                float NDF = D_GGX(N, H, roughness);
-                float Vis = V_SmithGGXCorrelatedFast(dot(N,V), NdotL, roughness);
-                vec3 F = F_Schlick(dot(H, V), F0);
+            // 3. Balance Heuristic Weight
+            // If NEE probability is high, weight is close to 1.0.
+            // If BSDF probability is also high (very shiny), weight drops to 0.5.
+            float mis_weight = (pdf_nee * pdf_nee) / (pdf_nee * pdf_nee + pdf_bsdf * pdf_bsdf);
 
-                vec3 kS = F;
-                vec3 kD = (vec3(1.0) - kS);
-                
-                vec3 specular = NDF * Vis * F;
-                vec3 diffuse = (kD * albedo / PI) * (1.0 - transmission);
-                
-                vec3 brdf = diffuse + specular;
+            // --- MIS CALCULATION END ---
 
-                // Apply the corrected weight
-                // Notice we multiply by 'Le' but divide by 'emission_strength' (length of Le)
-                // This effectively applies the color of the light, normalized, scaled by TotalFlux.
-                Lo += brdf * Le * NdotL * geometry_term * pdf_weight * visibility * ubo.ambientLight.w;
-            }
+            // Standard PBR Evaluation
+            vec3 H = safeNormalize(V + L);
+            float NDF = D_GGX(N, H, roughness);
+            float Vis = V_SmithGGXCorrelatedFast(dot(N,V), NdotL, roughness);
+            vec3 F = F_Schlick(dot(H, V), F0);
+            vec3 kS = F;
+            vec3 kD = (vec3(1.0) - kS); // Correct logic
+            vec3 specular = NDF * Vis * F;
+            vec3 diffuse = (kD * albedo / PI) * (1.0 - transmission);
+            
+            // Note: The 'geometry_term' and 'pdf_weight' from your old code
+            // essentially formed (1.0 / pdf_nee).
+            // We can rewrite the final contribution cleanly:
+            
+            vec3 brdf = diffuse + specular;
+            
+            // Lo += (BRDF * Le * cosTheta) * (1 / pdf_nee) * mis_weight * visibility
+            // We use the calculated pdf_nee directly to avoid confusion
+            if(pdf_nee > 1e-10)
+                Lo += brdf * Le * NdotL * (1.0 / pdf_nee) * mis_weight * visibility * ubo.ambientLight.w;
         }
     }
 }
@@ -484,6 +511,40 @@ void main()
     payload.normal = N;
     vec3 Lo = vec3(0.0);
 
+    vec3 Le = emissive; // From fetching material at line 124
+    float emission_strength = max(Le.r, max(Le.g, Le.b));
+
+    if (emission_strength > 0.0) {
+        // If Primary Ray (depth 0, inferred if last_bsdf_pdf is 0 or via flag)
+        // OR if it's a perfect mirror (roughness ~0) where NEE is disabled
+        if (payload.last_bsdf_pdf <= 0.0) {
+            Lo += Le; 
+        } 
+        else {
+            // We hit a light via a bounce. We need to weight it.
+            // 1. Get BSDF PDF (passed from previous bounce)
+            float pdf_bsdf = payload.last_bsdf_pdf;
+            
+            // 2. Get NEE PDF (What was the chance we picked THIS spot with NEE?)
+            // We need the Triangle Area to know the probability.
+            // Since we don't have the triangle Area here easily without looking it up:
+            // APPROXIMATION: Use the global average or re-calculate if possible.
+            // For EXACT MIS, you need to look up the triangle area based on gl_PrimitiveID.
+            
+            vec3 L_to_cam = -gl_WorldRayDirectionEXT;
+            float LdotN = abs(dot(N, L_to_cam));
+            float dist_sq = gl_HitTEXT * gl_HitTEXT;
+            
+            // Reconstruct NEE PDF
+            float pdf_nee = (emission_strength / ubo.totalSceneFlux) * (dist_sq / max(LdotN, 0.001));
+            
+            // 3. Weight
+            float mis_weight = (pdf_bsdf * pdf_bsdf) / (pdf_bsdf * pdf_bsdf + pdf_nee * pdf_nee);
+            
+            Lo += Le * mis_weight;
+        }
+    }
+
     float nee_treshold = 0.001;
     bool use_nee = (transmission == 0.0) && (roughness > nee_treshold);
 
@@ -498,11 +559,7 @@ void main()
         }
     }
 
-    vec3 final_emissive = vec3(0.0);
-    if (payload.is_specular) {
-        final_emissive = emissive;
-    }
-    payload.color = Lo + final_emissive;
+    payload.color = Lo;
 
     // --- 7. NEXT RAY GENERATION ---
     payload.hit_flag = 2.0;
@@ -532,7 +589,7 @@ void main()
                 payload.weight = vec3(1.0);
             }
         }
-        payload.is_specular = true;
+        payload.last_bsdf_pdf = 0.0;
         return;
     } 
 
@@ -559,7 +616,7 @@ void main()
         // --- HIT CLEARCOAT ---
         payload.next_ray_dir = L_cc;
         payload.weight = vec3(1.0);
-        payload.is_specular = true;
+        //payload.is_specular = true;
     } 
     else {
         // --- HIT BASE LAYER ---
@@ -597,15 +654,13 @@ void main()
                 // (Note: D cancels out with the PDF)
                 
                 vec3 specular_weight = F * Vis * 4.0 * NdotL * (VdotH / max(NdotH, 0.0001));
+
+                float pdf = pdf_GGX(N, V, L, roughness);
+                // Combine with probability of choosing specular path
+                payload.last_bsdf_pdf = pdf * prob_specular;
                 
                 // Combine with Russian Roulette prob and Energy Attenuation
                 payload.weight = (specular_weight * (1.0 / prob_specular)) * energy_attenuation;
-            }
-
-            if(use_nee){
-                payload.is_specular = false;
-            } else{
-                payload.is_specular = true;
             }
 
         } else {
@@ -624,7 +679,10 @@ void main()
             
             // Correction:
             payload.weight = (albedo * (1.0 / (1.0 - prob_specular))) * energy_attenuation;
-            payload.is_specular = false;
+            // Calculate PDF for the Next Bounce
+            float pdf = pdf_Lambert(N, L);
+            // Combine with probability of choosing diffuse path
+            payload.last_bsdf_pdf = pdf * (1.0 - prob_specular);
         }
     }
 }

@@ -13,9 +13,10 @@ layout(location = 1) rayPayloadEXT ShadowPayload shadowPayload;
 const float PI = 3.14159265359;
 
 // --- TEXTURE HELPERS ---
-vec4 sampleTexture(int texture_id, vec2 uv) {
+vec4 sampleTexture(int texture_id, vec2 uv, float lod) {
     if (texture_id < 0) return vec4(1.0);
-    return textureLod(global_textures[nonuniformEXT(texture_id)], uv, 0.0); 
+    // Use the requested LOD
+    return textureLod(global_textures[nonuniformEXT(texture_id)], uv, lod); 
 }
 
 vec3 safeNormalize(vec3 v) {
@@ -381,8 +382,10 @@ void main()
     
     mat3 TBN = mat3(T, B, N);
 
+    float tex_lod = (payload.last_bsdf_pdf > 0.0) ? (mat.roughness_factor * 5.0) : 0.0;
+
     if (abs(Tw) > 0.0001 && mat.normal_id > 0) {
-        vec3 normal_map = sampleTexture(mat.normal_id, (mat.uv_normal * vec4(tex_coord, 0.0, 1.0)).xy).xyz * 2.0 - 1.0;
+        vec3 normal_map = sampleTexture(mat.normal_id, (mat.uv_normal * vec4(tex_coord, 0.0, 1.0)).xy, tex_lod).xyz * 2.0 - 1.0;
         N = safeNormalize(TBN * normal_map);
     }
 
@@ -398,7 +401,7 @@ void main()
         // 1. Diffuse (Albedo)
         vec4 diffuse_sample = mat.base_color_factor * vec4(vertex_color, 1.0);
         if (mat.albedo_id > 0) {
-            diffuse_sample *= sampleTexture(mat.albedo_id, tex_coord);
+            diffuse_sample *= sampleTexture(mat.albedo_id, tex_coord, tex_lod);
         }
         albedo = diffuse_sample.rgb;
         alpha  = diffuse_sample.a;
@@ -408,7 +411,7 @@ void main()
         float glossiness = mat.roughness_factor; // We stored glossiness here in C++
 
         if (mat.sg_id > 0) {
-            vec4 sg_tex = sampleTexture(mat.sg_id, tex_coord);
+            vec4 sg_tex = sampleTexture(mat.sg_id, tex_coord, tex_lod);
             specular_color *= sg_tex.rgb; // RGB is Specular Color
             glossiness *= sg_tex.a;       // A is Glossiness
         }
@@ -423,7 +426,7 @@ void main()
     else {
         vec4 base_color = mat.base_color_factor * vec4(vertex_color, 1.0);
         if (mat.albedo_id > 0) {
-            base_color *= sampleTexture(mat.albedo_id, (mat.uv_albedo * vec4(tex_coord, 0.0, 1.0)).xy);
+            base_color *= sampleTexture(mat.albedo_id, (mat.uv_albedo * vec4(tex_coord, 0.0, 1.0)).xy, tex_lod);
         }
         albedo = base_color.rgb;
         alpha = base_color.a;
@@ -432,7 +435,7 @@ void main()
         roughness = mat.roughness_factor;
         
         if (mat.mr_id > 0) {
-            vec4 mr_sample = sampleTexture(mat.mr_id, tex_coord);
+            vec4 mr_sample = sampleTexture(mat.mr_id, tex_coord, tex_lod);
             metallic *= mr_sample.b; // glTF is Blue for Metallic
             roughness *= mr_sample.g; // glTF is Green for Roughness
         }
@@ -447,20 +450,20 @@ void main()
     float clearcoat = mat.clearcoat_factor;
     float cc_roughness = mat.clearcoat_roughness_factor; 
     if (mat.clearcoat_id > 0) { 
-        clearcoat *= sampleTexture(mat.clearcoat_id, tex_coord).r;
+        clearcoat *= sampleTexture(mat.clearcoat_id, tex_coord, tex_lod).r;
     }
     if (mat.clearcoat_roughness_id > 0) {
-        cc_roughness *= sampleTexture(mat.clearcoat_roughness_id, tex_coord).r;
+        cc_roughness *= sampleTexture(mat.clearcoat_roughness_id, tex_coord, tex_lod).r;
     }
 
     // Occlusion
     float ao = mat.occlusion_strength; 
-    if (mat.occlusion_id > 0) ao *= sampleTexture(mat.occlusion_id, tex_coord).r;
+    if (mat.occlusion_id > 0) ao *= sampleTexture(mat.occlusion_id, tex_coord, tex_lod).r;
     
     // Emissive
     vec3 emissive = mat.emissive_factor_and_pad.xyz;
     if (mat.emissive_id > 0){ 
-        emissive *= sampleTexture(mat.emissive_id, (mat.uv_emissive * vec4(tex_coord, 0.0, 1.0)).xy).rgb;
+        emissive *= sampleTexture(mat.emissive_id, (mat.uv_emissive * vec4(tex_coord, 0.0, 1.0)).xy, tex_lod).rgb;
     }
 
     // --- 5. TRANSPARENCY & MASK LOGIC ---

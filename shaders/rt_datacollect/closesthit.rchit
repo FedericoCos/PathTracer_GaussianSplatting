@@ -36,8 +36,8 @@ void getOrthonormalBasis(in vec3 N, out vec3 T, out vec3 B) {
 }
 
 vec3 sampleCosineHemisphere(vec3 N, inout uint seed) {
-    float r1 = rnd(seed);
-    float r2 = rnd(seed);
+    float r1 = fract(payload.blue_noise.x + rnd(payload.seed));
+    float r2 = fract(payload.blue_noise.y + rnd(payload.seed));
     float phi = 2.0 * PI * r1; 
     float sqrtR2 = sqrt(r2);
     vec3 localDir = vec3(cos(phi) * sqrtR2, sin(phi) * sqrtR2, sqrt(1.0 - r2)); 
@@ -63,8 +63,8 @@ float V_SmithGGXCorrelatedFast(float NdotV, float NdotL, float roughness) {
 }
 
 vec3 sampleGGX(vec3 N, float roughness, inout uint seed) {
-    float r1 = rnd(seed);
-    float r2 = rnd(seed);
+    float r1 = fract(payload.blue_noise.x + rnd(payload.seed));
+    float r2 = fract(payload.blue_noise.y + rnd(payload.seed));
     float a = roughness * roughness; 
     float phi = 2.0 * PI * r1;
     float denom = (1.0 + (a*a - 1.0) * r2); 
@@ -81,11 +81,19 @@ float traceShadow(vec3 origin, vec3 lightPos) {
     vec3 L = lightPos - origin;
     float dist = length(L); 
     L = safeNormalize(L);
-    vec3 originOffset = origin + L * 0.01;
     shadowPayload.isHit = true;
-    uint rayFlags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT; 
-    traceRayEXT(tlas, rayFlags, 0xFF, 0, 0, 1, originOffset, 0.0, L, dist - 0.01, 1);
-    return shadowPayload.isHit ? 0.0 : 1.0; 
+    
+    // FIX 2: Reduce epsilon. 0.01 (1cm) is too large for most scenes. Use 0.001 (1mm).
+    // FIX 3: Don't subtract 0.01 from dist. Subtract a tiny epsilon to avoid hitting the light itself.
+    traceRayEXT(tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT, 
+                0xFF, 0, 0, 1, 
+                origin,     // Origin is now pre-offset
+                0.001,      // tMin: Start 1mm away
+                L, 
+                dist - 0.005, // tMax: Stop just before the light
+                1);
+                
+    return shadowPayload.isHit ? 0.0 : 1.0;
 }
 
 void sampleLights_SG(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, vec3 F0, float transmission, inout vec3 Lo)
@@ -124,14 +132,17 @@ void sampleLights_SG(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness,
 
     vec3 L = light_pos - hit_pos;
     float dist_sq = dot(L, L);
+    dist_sq = max(dist_sq, 0.0001); 
     float dist = sqrt(dist_sq);
     L /= dist;
 
     float NdotL = max(dot(N, L), 0.0);
-    float LdotN_light = dot(-L, light_normal);
+    float LdotN_light = abs(dot(-L, light_normal));
 
     if (NdotL > 0.0 && LdotN_light > 0.0) {
-        float visibility = traceShadow(hit_pos, light_pos);
+        vec3 shadow_origin = hit_pos + N * 0.001; 
+        
+        float visibility = traceShadow(shadow_origin, light_pos);
         visibility = max(visibility, transmission);
 
         if (visibility > 0.0) {
@@ -144,13 +155,14 @@ void sampleLights_SG(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness,
             
             // Calculate emission strength exactly as you did in C++ to build the CDF
             // (Assuming you used max component or length in C++)
-            float emission_strength = length(Le); 
+            float emission_strength = max(Le.r, max(Le.g, Le.b));
             
             // Avoid division by zero
             if (area > 1e-6 && emission_strength > 1e-6) {
                 
                 // The geometry term converts Area PDF to Solid Angle PDF
                 float geometry_term = LdotN_light / dist_sq;
+                // geometry_term = min(geometry_term, 100.0);
                 
                 // Standard NEE Estimator: 
                 // Contribution = (BRDF * Le * cosTheta * geometry) / PDF
@@ -222,14 +234,17 @@ void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, fl
     // Lighting Vectors
     vec3 L = light_pos - hit_pos;
     float dist_sq = dot(L, L);
+    dist_sq = max(dist_sq, 0.0001); 
     float dist = sqrt(dist_sq);
     L /= dist;
     
     float NdotL = max(dot(N, L), 0.0);
-    float LdotN_light = dot(-L, light_normal); 
+    float LdotN_light = abs(dot(-L, light_normal));
     
     if (NdotL > 0.0 && LdotN_light > 0.0) {
-        float visibility = traceShadow(hit_pos, light_pos);
+        vec3 shadow_origin = hit_pos + N * 0.001; 
+        
+        float visibility = traceShadow(shadow_origin, light_pos);
         // Shadow Trick: Transparent objects don't fully shadow themselves
         visibility = max(visibility, transmission);
         if (visibility > 0.0) {
@@ -242,13 +257,14 @@ void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, fl
             
             // Calculate emission strength exactly as you did in C++ to build the CDF
             // (Assuming you used max component or length in C++)
-            float emission_strength = length(Le); 
+            float emission_strength = max(Le.r, max(Le.g, Le.b));
             
             // Avoid division by zero
             if (area > 1e-6 && emission_strength > 1e-6) {
                 
                 // The geometry term converts Area PDF to Solid Angle PDF
                 float geometry_term = LdotN_light / dist_sq;
+                // geometry_term = min(geometry_term, 100.0);
                 
                 // Standard NEE Estimator: 
                 // Contribution = (BRDF * Le * cosTheta * geometry) / PDF
@@ -265,7 +281,7 @@ void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, fl
                 vec3 F = F_Schlick(dot(H, V), F0);
 
                 vec3 kS = F;
-                vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
+                vec3 kD = (vec3(1.0) - kS);
                 
                 vec3 specular = NDF * Vis * F;
                 vec3 diffuse = (kD * albedo / PI) * (1.0 - transmission);
@@ -466,14 +482,19 @@ void main()
     // --- 6. LIGHTING ---
     payload.hit_pos = hit_pos;
     payload.normal = N;
-    
     vec3 Lo = vec3(0.0);
-    if (transmission == 0.0) {
-        if(mat.use_specular_glossiness_workflow > 0.0){
-            sampleLights_SG(hit_pos, N, V, albedo, roughness, F0, transmission, Lo);
-        }
-        else{
-            sampleLights(hit_pos, N, V, albedo, roughness, metallic, F0, transmission, Lo);
+
+    float nee_treshold = 0.001;
+    bool use_nee = (transmission == 0.0) && (roughness > nee_treshold);
+
+    if(use_nee){
+        if (transmission == 0.0) {
+            if(mat.use_specular_glossiness_workflow > 0.0){
+                sampleLights_SG(hit_pos, N, V, albedo, roughness, F0, transmission, Lo);
+            }
+            else{
+                sampleLights(hit_pos, N, V, albedo, roughness, metallic, F0, transmission, Lo);
+            }
         }
     }
 
@@ -579,8 +600,14 @@ void main()
                 
                 // Combine with Russian Roulette prob and Energy Attenuation
                 payload.weight = (specular_weight * (1.0 / prob_specular)) * energy_attenuation;
+            }
+
+            if(use_nee){
+                payload.is_specular = false;
+            } else{
                 payload.is_specular = true;
             }
+
         } else {
             // Diffuse Reflection
             vec3 L = sampleCosineHemisphere(N, payload.seed);

@@ -56,6 +56,12 @@ void main()
         traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, ray_origin, 0.001, ray_dir, 10000.0, 0);
         accumulated_color += payload.color * throughput;
 
+        if (depth > 0) {
+            // Clamp the max contribution of a single indirect ray
+            float max_indirect = 20.0; 
+            accumulated_color = min(accumulated_color, vec3(max_indirect)); 
+        }
+
         if (payload.hit_flag < 1.5) break; 
 
         throughput *= payload.weight;
@@ -71,7 +77,7 @@ void main()
     }
     
     // 4. FIREFLY CLAMP
-    accumulated_color = min(accumulated_color, vec3(CLAMP_MAX));
+    // accumulated_color = min(accumulated_color, vec3(CLAMP_MAX));
 
     // 5. ACCUMULATION
     vec3 final_color = accumulated_color;

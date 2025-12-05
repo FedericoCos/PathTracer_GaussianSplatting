@@ -18,11 +18,21 @@ vec2 hammersley(uint i) {
     );
 }
 
+vec2 r2_sequence(uint i) {
+    const float a1 = 0.75487766624669276; 
+    const float a2 = 0.56984029099805327;
+    return vec2(float(i) * a1, float(i) * a2);
+}
+
 void main()
 {
     ivec2 size = textureSize(blueNoiseTex, 0);
     // Offset read position by frame count to "spin" the noise pattern
-    ivec2 pos = (ivec2(gl_LaunchIDEXT.xy) + ivec2(ubo.frameCount * 53, ubo.frameCount * 113)) % size;
+    vec2 random_offset = fract(r2_sequence(ubo.frameCount)); 
+    ivec2 pixel_offset = ivec2(random_offset * vec2(size));
+
+    // Apply Toroidal Shift
+    ivec2 pos = (ivec2(gl_LaunchIDEXT.xy) + pixel_offset) % size;
     vec4 blue = texelFetch(blueNoiseTex, pos, 0);
 
     // Use blue.r and blue.g for your sub-pixel jitter

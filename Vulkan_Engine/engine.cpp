@@ -839,6 +839,7 @@ void Engine::mouse_button_callback(GLFWwindow *window, int button, int action, i
 
     if(button == GLFW_MOUSE_BUTTON_LEFT){
         engine -> input.left_mouse = (action == GLFW_PRESS);
+        engine -> accumulation_frame = 0;
     }
 }
 
@@ -994,6 +995,11 @@ bool Engine::initVulkan(int mssa_val){
 
     Image::createDepthResources(physical_device, depth_image, swapchain.extent.width, swapchain.extent.height, *this);
     std::cout << "Memory usage after depth image creation" << std::endl;
+    printGpuMemoryUsage();
+
+    blue_noise_txt = Image::createTextureImage(*this, blue_noise_txt_path, vk::Format::eR8G8B8A8Srgb);
+    blue_noise_txt_sampler = Image::createTextureSampler(physical_device, &logical_device, 1);
+    std::cout << "Memory usage after blue noise creation" << std::endl;
     printGpuMemoryUsage();
 
     // PIPELINE CREATION
@@ -1303,7 +1309,7 @@ void Engine::createDescriptorPool()
         { vk::DescriptorType::eAccelerationStructureKHR, rt_sets },
         { vk::DescriptorType::eStorageImage, rt_sets },
         { vk::DescriptorType::eCombinedImageSampler, 
-          MAX_FRAMES_IN_FLIGHT * (MAX_BINDLESS_TEXTURES) } 
+          MAX_FRAMES_IN_FLIGHT * (MAX_BINDLESS_TEXTURES)+MAX_FRAMES_IN_FLIGHT } 
     };
 
     vk::DescriptorPoolCreateInfo pool_info;
@@ -2191,11 +2197,13 @@ void Engine::createRayTracingPipeline()
     // Binding 9: Light CDF
     bindings.emplace_back(9, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
 
-    // --- SHIFTED BINDINGS ---
     // Binding 10: Output Image
     bindings.emplace_back(10, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eRaygenKHR, nullptr);
+
+    bindings.emplace_back(11, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eRaygenKHR, nullptr);
+
     // Binding 11: Textures (Must be LAST)
-    bindings.emplace_back(11, vk::DescriptorType::eCombinedImageSampler, static_cast<uint32_t>(MAX_BINDLESS_TEXTURES), 
+    bindings.emplace_back(12, vk::DescriptorType::eCombinedImageSampler, static_cast<uint32_t>(MAX_BINDLESS_TEXTURES), 
                           vk::ShaderStageFlagBits::eClosestHitKHR | vk::ShaderStageFlagBits::eAnyHitKHR, nullptr);
 
     // --- FLAGS ---
@@ -2448,11 +2456,23 @@ void Engine::createRayTracingDescriptorSets()
         output_write.pImageInfo = &storage_image_info; // Pointer to info
         writes.push_back(output_write);
 
+        vk::WriteDescriptorSet noise_write;
+        noise_write.dstSet = *rt_descriptor_sets[i];
+        noise_write.dstBinding = 11;
+        noise_write.dstArrayElement = 0;
+        noise_write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        noise_write.descriptorCount = 1;
+        blue_noise_txt_info.sampler = *blue_noise_txt_sampler;
+        blue_noise_txt_info.imageView = *blue_noise_txt.image_view;
+        blue_noise_txt_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        noise_write.pImageInfo = &blue_noise_txt_info;
+        writes.push_back(noise_write);
+
         // --- Binding 11: Global Textures (Last) ---
         if (!global_texture_descriptors.empty()) {
             vk::WriteDescriptorSet texture_write;
             texture_write.dstSet = *rt_descriptor_sets[i];
-            texture_write.dstBinding = 11;
+            texture_write.dstBinding = 12;
             texture_write.dstArrayElement = 0;
             texture_write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
             texture_write.descriptorCount = static_cast<uint32_t>(global_texture_descriptors.size());

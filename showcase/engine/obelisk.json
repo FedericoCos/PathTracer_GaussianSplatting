@@ -20,7 +20,7 @@
         "num_rays": 1000000
     },
 
-    "ambient_light": [0, 0, 0, 1]
+    "ambient_light": [0, 0, 0, 1.5]
   },
   "objects": [
     {

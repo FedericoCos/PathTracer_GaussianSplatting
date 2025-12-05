@@ -93,14 +93,14 @@ void sampleLights_SG(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness,
     uint num_lights = light_cdf.entries.length();
     if (num_lights == 0) return;
 
-    float r1 = rnd(payload.seed);
+    float r_select = fract(payload.blue_noise.x + rnd(payload.seed));
 
     // Binary Search
     uint left = 0;
     uint right = num_lights - 1; uint idx = 0;
     while (left <= right) {
         uint mid = (left + right) / 2;
-        if (light_cdf.entries[mid].cumulative_probability < r1) {
+        if (light_cdf.entries[mid].cumulative_probability < r_select) {
             left = mid + 1;
         } else {
             idx = mid;
@@ -116,7 +116,8 @@ void sampleLights_SG(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness,
     vec3 p1 = all_vertices.v[tri.v1].pos;
     vec3 p2 = all_vertices.v[tri.v2].pos;
 
-    float u = rnd(payload.seed); float v = rnd(payload.seed);
+    float u = fract(payload.blue_noise.y + rnd(payload.seed)); 
+    float v = fract(payload.blue_noise.x + rnd(payload.seed));
     if (u + v > 1.0) { u = 1.0 - u; v = 1.0 - v; }
     vec3 light_pos = p0 * (1.0 - u - v) + p1 * u + p2 * v;
     vec3 light_normal = normalize(cross(p1 - p0, p2 - p0));
@@ -187,14 +188,14 @@ void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, fl
     uint num_lights = light_cdf.entries.length();
     if (num_lights == 0) return;
 
-    float r1 = rnd(payload.seed);
+    float r_select = fract(payload.blue_noise.x + rnd(payload.seed));
     
     // Binary Search for Light Triangle
     uint left = 0;
     uint right = num_lights - 1; uint idx = 0;
     while (left <= right) {
         uint mid = (left + right) / 2;
-        if (light_cdf.entries[mid].cumulative_probability < r1) {
+        if (light_cdf.entries[mid].cumulative_probability < r_select) {
             left = mid + 1;
         } else {
             idx = mid;
@@ -212,7 +213,8 @@ void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, fl
     vec3 p2 = all_vertices.v[tri.v2].pos;
     
     // Sample Point on Triangle
-    float u = rnd(payload.seed); float v = rnd(payload.seed);
+    float u = fract(payload.blue_noise.y + rnd(payload.seed)); 
+    float v = fract(payload.blue_noise.x + rnd(payload.seed));
     if (u + v > 1.0) { u = 1.0 - u; v = 1.0 - v; }
     vec3 light_pos = p0 * (1.0 - u - v) + p1 * u + p2 * v;
     vec3 light_normal = safeNormalize(cross(p1 - p0, p2 - p0));

@@ -19,6 +19,7 @@ public:
     // We store all primitives here so the BLAS builder sees everything
     std::vector<Primitive> o_primitives; 
     std::vector<EmissiveTriangle> emissive_triangles;
+    std::vector<PunctualLight> local_lights;
     
     std::vector<Material> materials;
     std::vector<AllocatedImage> textures;
@@ -87,7 +88,9 @@ protected:
 
     void processNode(int nodeIndex, const tinygltf::Model& model, const glm::mat4& parentTransform, std::unordered_map<Vertex, uint32_t>& unique_vertices);
     void loadPrimitive(const tinygltf::Primitive& primitive, const tinygltf::Model& model, const glm::mat4& transform, std::unordered_map<Vertex, uint32_t>& unique_vertices);
-    
+
+    void loadLights(const tinygltf::Model &model, const std::vector<glm::mat4> &node_globals);
+
     std::map<int, vk::Format> scanTextureFormats(const tinygltf::Model& model);
     glm::mat4 getNodeTransform(const tinygltf::Node& node) const;
     int getTextureIndex(int gltfTexIdx, const tinygltf::Model& model) const;

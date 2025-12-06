@@ -226,6 +226,7 @@ void Gameobject::loadModel(std::string m_path, Engine &engine)
     // 1. Calculate global transforms for all nodes (Frame 0)
     std::vector<glm::mat4> node_globals;
     computeGlobalNodeTransforms(model, node_globals);
+    loadLights(model, node_globals);
 
     // 2. Prepare Skinning Matrices
     skin_joint_matrices.clear();
@@ -791,4 +792,60 @@ void Gameobject::loadPrimitive(const tinygltf::Primitive& primitive, const tinyg
     // The BLAS builder only iterates o_primitives. We want transparent objects
     // to be in the BLAS so the Ray Tracer hits them.
     o_primitives.push_back(new_primitive);
+}
+
+
+void Gameobject::loadLights(const tinygltf::Model& model, const std::vector<glm::mat4>& node_globals) {
+    local_lights.clear();
+
+    for (size_t i = 0; i < model.nodes.size(); ++i) {
+        const auto& node = model.nodes[i];
+        
+        // Check for the KHR_lights_punctual extension on the NODE
+        if (node.extensions.count("KHR_lights_punctual")) {
+            const auto& ext = node.extensions.at("KHR_lights_punctual");
+            
+            if (ext.Has("light")) {
+                int lightIdx = ext.Get("light").Get<int>();
+                
+                // Safety check
+                if (lightIdx >= 0 && lightIdx < model.lights.size()) {
+                    const auto& light = model.lights[lightIdx];
+                    PunctualLight l{};
+
+                    // 1. Transform Position & Direction using the global node transform
+                    glm::mat4 trans = node_globals[i];
+                    
+                    // Position is simply the translation component
+                    l.position = glm::vec3(trans[3]); 
+                    
+                    // Direction: glTF lights point down -Z by default. Transform that vector.
+                    // We use mat3 to extract rotation/scale only, then normalize.
+                    l.direction = glm::normalize(glm::vec3(trans * glm::vec4(0, 0, -1, 0)));
+
+                    // 2. Load Properties
+                    l.color = glm::vec3(1.0f);
+                    if (!light.color.empty()) {
+                        l.color = glm::vec3(light.color[0], light.color[1], light.color[2]);
+                    }
+                    
+                    l.intensity = static_cast<float>(light.intensity);
+                    l.range = static_cast<float>(light.range);
+
+                    // 3. Type Mapping
+                    if (light.type == "directional") {
+                        l.type = 1;
+                    } else if (light.type == "point") {
+                        l.type = 0;
+                    } else if (light.type == "spot") {
+                        l.type = 2;
+                        l.inner_cone_cos = static_cast<float>(cos(light.spot.innerConeAngle));
+                        l.outer_cone_cos = static_cast<float>(cos(light.spot.outerConeAngle));
+                    }
+
+                    local_lights.push_back(l);
+                }
+            }
+        }
+    }
 }

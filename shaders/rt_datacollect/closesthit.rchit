@@ -97,6 +97,25 @@ float pdf_Lambert(vec3 N, vec3 L) {
     return max(dot(N, L), 0.0) / PI;
 }
 
+float traceShadow(vec3 origin, vec3 direction, float maxDist) 
+{
+    shadowPayload.isHit = true;
+
+    traceRayEXT(
+        tlas,
+        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT,
+        0xFF,
+        0,0,1,
+        origin,
+        0.001,
+        direction,
+        maxDist,
+        1
+    );
+
+    return shadowPayload.isHit ? 0.0 : 1.0;
+}
+
 // --- SHADOW & LIGHTS ---
 float traceShadow(vec3 origin, vec3 lightPos) {
     vec3 L = lightPos - origin;
@@ -115,6 +134,110 @@ float traceShadow(vec3 origin, vec3 lightPos) {
                 1);
                 
     return shadowPayload.isHit ? 0.0 : 1.0;
+}
+
+void samplePunctualLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, vec3 F0, float transmission, inout vec3 Lo) 
+{
+    uint num_lights = scene_lights.lights.length();
+    if (num_lights == 0) return;
+
+    // 1. Pick ONE random light
+    // (For Sponza with ~10-50 lights, this is better than iterating all)
+    // PDF of choosing this light = 1.0 / num_lights
+    float r_select = fract(payload.blue_noise.x + rnd(payload.seed)); // Use different noise channel if possible
+    uint light_idx = uint(r_select * float(num_lights));
+    
+    // Clamp to be safe
+    light_idx = min(light_idx, num_lights - 1);
+    
+    PunctualLight light = scene_lights.lights[light_idx];
+    
+    vec3 L;
+    float dist;
+    float attenuation = 1.0;
+    
+    // --- 2. Calculate L vector and Attenuation ---
+    
+    if (light.type == 1) { // Directional
+        L = normalize(-light.direction);
+        dist = 10000.0; // Infinite distance
+        attenuation = 1.0; // Sun doesn't fall off
+    } 
+    else { // Point (0) or Spot (2)
+        vec3 offset = light.position - hit_pos;
+        float dist_sq = dot(offset, offset);
+        
+        // --- ANTI-FIREFLY CLAMP ---
+        // This prevents the "Bright Spot Reflect" you feared.
+        dist_sq = max(dist_sq, 0.01); 
+        
+        dist = sqrt(dist_sq);
+        L = offset / dist;
+        
+        // Inverse Square Law
+        attenuation = 1.0 / dist_sq;
+        
+        // Range Cutoff (optional, based on glTF spec)
+        if (light.range > 0.0) {
+            float range_atten = max(min(1.0 - pow(dist / light.range, 4.0), 1.0), 0.0) / (dist_sq);
+            // Actually standard glTF uses specific formula, but simple 1/dist^2 is core.
+            // Let's stick to 1/r^2 for path tracing purity, unless you want strict glTF match.
+            attenuation = range_atten / dist_sq;
+        }
+        
+        // Spot Light Cone Falloff
+        if (light.type == 2) {
+            float cos_dir = dot(-L, normalize(light.direction));
+            float spot_scale = 1.0 / max(light.inner_cone_cos - light.outer_cone_cos, 0.001);
+            float spot_offset = -light.outer_cone_cos * spot_scale;
+            float spot_atten = clamp(cos_dir * spot_scale + spot_offset, 0.0, 1.0);
+            attenuation *= spot_atten * spot_atten;
+        }
+    }
+    
+    // Radiance = Intensity * Attenuation * Color
+    vec3 Le = light.color * light.intensity * attenuation;
+
+    // --- 3. Shadow Trace & BRDF ---
+    
+    float NdotL = max(dot(N, L), 0.0);
+    
+    if (NdotL > 0.0 && length(Le) > 0.0) {
+        // Offset shadow ray
+        vec3 shadow_origin = hit_pos + N * 0.001;
+
+        float visibility;
+        
+        if (light.type == 1) visibility = traceShadow(shadow_origin, hit_pos, 10000.0);
+        else visibility = traceShadow(shadow_origin, light.position, dist - 0.005);
+
+        visibility = max(visibility, transmission);
+
+        if (visibility > 0.0) {
+            // PDF Weighting
+            // We selected 1 light out of N uniformly.
+            // PDF_pick = 1.0 / num_lights.
+            // Weight = 1.0 / PDF = num_lights.
+            float weight = float(num_lights);
+            
+            // Punctual lights cannot be hit by random bouncing (probability 0).
+            // So MIS weight is effectively 1.0 (Pure NEE).
+            
+            // BRDF Calc
+            vec3 H = safeNormalize(V + L);
+            float NDF = D_GGX(N, H, roughness);
+            float Vis = V_SmithGGXCorrelatedFast(dot(N,V), NdotL, roughness);
+            vec3 F = F_Schlick(dot(H, V), F0);
+            
+            vec3 kS = F;
+            vec3 kD = (vec3(1.0) - kS) * (1.0 - transmission);
+            
+            vec3 specular = NDF * Vis * F;
+            vec3 diffuse = (kD * albedo / PI) * (1.0 - transmission);
+            
+            Lo += (diffuse + specular) * Le * NdotL * visibility * weight;
+        }
+    }
 }
 
 void sampleLights_SG(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, vec3 F0, float transmission, inout vec3 Lo)
@@ -551,15 +674,39 @@ void main()
     float nee_treshold = 0.001;
     bool use_nee = (transmission == 0.0) && (roughness > nee_treshold);
 
-    if(use_nee){
-        if (transmission == 0.0) {
-            if(mat.use_specular_glossiness_workflow > 0.0){
-                sampleLights_SG(hit_pos, N, V, albedo, roughness, F0, transmission, Lo);
+    bool has_emissive = light_cdf.entries.length() > 0;
+    bool has_punctual = scene_lights.lights.length() > 0;
+
+    vec3 light_contr = vec3(0.0);
+
+    if (has_emissive && has_punctual) {
+        if (rnd(payload.seed) < 0.5) {
+            if(use_nee){
+                if(mat.use_specular_glossiness_workflow > 0.0){
+                    sampleLights_SG(hit_pos, N, V, albedo, roughness, F0, transmission, light_contr);
+                }
+                else{
+                    sampleLights(hit_pos, N, V, albedo, roughness, metallic, F0, transmission, light_contr);
+                }
+                light_contr *= 2;
             }
-            else{
-                sampleLights(hit_pos, N, V, albedo, roughness, metallic, F0, transmission, Lo);
-            }
+        } else {
+            samplePunctualLights(hit_pos, N, V, albedo, roughness, F0, transmission, light_contr);
+            light_contr *= 2.0; // Compensation for 50% chance
         }
+
+        Lo += light_contr;
+    } 
+    else if (has_emissive && use_nee) {
+        if(mat.use_specular_glossiness_workflow > 0.0){
+            sampleLights_SG(hit_pos, N, V, albedo, roughness, F0, transmission, Lo);
+        }
+        else{
+            sampleLights(hit_pos, N, V, albedo, roughness, metallic, F0, transmission, Lo);
+        }
+    }
+    else if (has_punctual) {
+        samplePunctualLights(hit_pos, N, V, albedo, roughness, F0, transmission, Lo);
     }
 
     payload.color = Lo;

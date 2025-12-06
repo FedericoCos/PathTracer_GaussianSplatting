@@ -1225,6 +1225,19 @@ void Engine::loadScene(const std::string &scene_path)
             v.tangent = glm::vec4(t, v.tangent.w);
         }
 
+        float scale_factor = glm::length(glm::vec3(transform[0]));
+        for(auto& l : new_object.local_lights) {
+            // Transform Position
+            l.position = glm::vec3(transform * glm::vec4(l.position, 1.0f));
+            
+            // Transform Direction (Rotation only)
+            l.direction = glm::normalize(normal_matrix * l.direction);
+            if (l.range > 0.0f) {
+                l.range *= scale_factor;
+            }
+            l.intensity *= (scale_factor * scale_factor);
+        }
+
         // --- STEP 3: Re-calculate Emissive Areas (Crucial for Lighting) ---
         // Since we potentially scaled the mesh, the pre-calculated triangle areas are wrong.
         for(auto& tri : new_object.emissive_triangles) {
@@ -1305,7 +1318,7 @@ void Engine::createDescriptorPool()
 
     std::vector<vk::DescriptorPoolSize> pool_sizes = {
         { vk::DescriptorType::eUniformBuffer, total_sets },
-        { vk::DescriptorType::eStorageBuffer, MAX_FRAMES_IN_FLIGHT * 10 },
+        { vk::DescriptorType::eStorageBuffer, MAX_FRAMES_IN_FLIGHT * 11 },
         { vk::DescriptorType::eAccelerationStructureKHR, rt_sets },
         { vk::DescriptorType::eStorageImage, rt_sets },
         { vk::DescriptorType::eCombinedImageSampler, 
@@ -1461,6 +1474,8 @@ void Engine::createGlobalBindlessBuffers()
     global_texture_descriptors.clear();
 
     int current_texture_offset = 0;
+
+    global_punctual_lights.clear();
     
     // Helper lambda to aggregate a single game object
     auto aggregate_object = [&](Gameobject& obj) {
@@ -1549,6 +1564,12 @@ void Engine::createGlobalBindlessBuffers()
             light_triangle_fluxes.push_back(flux);
         }
 
+        if (!obj.local_lights.empty()) {
+            for(auto &l : obj.local_lights){
+                global_punctual_lights.push_back(l);
+            }
+        }
+
         current_texture_offset += obj.textures.size();
     };
 
@@ -1619,6 +1640,9 @@ void Engine::createGlobalBindlessBuffers()
     // --- NEW: Upload Light Buffers ---
     upload_buffer(light_triangle_buffer, sizeof(LightTriangle) * global_light_triangles.size(), global_light_triangles.data());
     upload_buffer(light_cdf_buffer, sizeof(LightCDF) * global_light_cdf.size(), global_light_cdf.data());
+    upload_buffer(punctual_light_buffer, sizeof(PunctualLight) * global_punctual_lights.size(), global_punctual_lights.data());
+
+    std::cout << "Size of global punctual lights: " << global_punctual_lights.size() << std::endl;
     
     std::cout << "Built Light CDF: " << num_light_triangles << " emissive triangles. Total Flux: " << total_scene_flux << std::endl;
 }
@@ -2202,8 +2226,10 @@ void Engine::createRayTracingPipeline()
 
     bindings.emplace_back(11, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eRaygenKHR, nullptr);
 
+    bindings.emplace_back(12, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
+
     // Binding 11: Textures (Must be LAST)
-    bindings.emplace_back(12, vk::DescriptorType::eCombinedImageSampler, static_cast<uint32_t>(MAX_BINDLESS_TEXTURES), 
+    bindings.emplace_back(13, vk::DescriptorType::eCombinedImageSampler, static_cast<uint32_t>(MAX_BINDLESS_TEXTURES), 
                           vk::ShaderStageFlagBits::eClosestHitKHR | vk::ShaderStageFlagBits::eAnyHitKHR, nullptr);
 
     // --- FLAGS ---
@@ -2468,11 +2494,21 @@ void Engine::createRayTracingDescriptorSets()
         noise_write.pImageInfo = &blue_noise_txt_info;
         writes.push_back(noise_write);
 
-        // --- Binding 11: Global Textures (Last) ---
+        vk::DescriptorBufferInfo light_info(punctual_light_buffer.buffer, 0, VK_WHOLE_SIZE);
+        vk::WriteDescriptorSet light_write;
+        light_write.dstSet = *rt_descriptor_sets[i];
+        light_write.dstBinding = 12;
+        light_write.dstArrayElement = 0;
+        light_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+        light_write.descriptorCount = 1;
+        light_write.pBufferInfo = &light_info;
+        writes.push_back(light_write);
+
+        // --- Binding 13: Global Textures (Last) ---
         if (!global_texture_descriptors.empty()) {
             vk::WriteDescriptorSet texture_write;
             texture_write.dstSet = *rt_descriptor_sets[i];
-            texture_write.dstBinding = 12;
+            texture_write.dstBinding = 13;
             texture_write.dstArrayElement = 0;
             texture_write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
             texture_write.descriptorCount = static_cast<uint32_t>(global_texture_descriptors.size());

@@ -281,6 +281,17 @@ struct TorusConfig {
     int minor_segments = 500;
 };
 
+struct PunctualLight {
+    glm::vec3 position;
+    float intensity;
+    glm::vec3 color;
+    float range;
+    glm::vec3 direction;
+    float outer_cone_cos;
+    float inner_cone_cos;
+    int type;
+};
+
 
 struct UniformBufferObject {
     glm::mat4 view;

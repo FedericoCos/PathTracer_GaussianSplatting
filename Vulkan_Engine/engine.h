@@ -128,6 +128,8 @@ public:
     AllocatedBuffer all_vertices_buffer;
     AllocatedBuffer all_indices_buffer;
     AllocatedBuffer all_mesh_info_buffer;
+    std::vector<PunctualLight> global_punctual_lights;
+    AllocatedBuffer punctual_light_buffer;
 
     // Used to track GPU resources usage
     void printGpuMemoryUsage();
@@ -139,7 +141,7 @@ public:
 private:
     // Window variables
     uint32_t win_width = 1280;
-    uint32_t win_height = 800;
+    uint32_t win_height = 720;
 
     float total_elapsed = 0.f;
     int fps_count = 0;

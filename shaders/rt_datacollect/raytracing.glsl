@@ -52,6 +52,17 @@ struct MaterialData {
     int use_specular_glossiness_workflow; // 0 = Metal/Rough, 1 = Spec/Gloss
 };
 
+struct PunctualLight {
+    vec3 position;
+    float intensity; // Luminous intensity (candela)
+    vec3 color;
+    float range;     // Max distance (0 = infinite)
+    vec3 direction;  // For Spot/Directional
+    float outer_cone_cos; // For Spot
+    float inner_cone_cos; // For Spot
+    int type;
+};
+
 // --- NEW: LIGHT DATA STRUCTURES ---
 struct LightTriangle {
     uint v0, v1, v2;
@@ -131,7 +142,8 @@ layout(set = 0, binding = 9, scalar) buffer readonly LightCDFBuffer { LightCDF e
 // --- SHIFTED BINDINGS ---
 layout(set = 0, binding = 10, rgba32f) uniform image2D rt_output_image;
 layout(set = 0, binding = 11) uniform sampler2D blueNoiseTex;
-layout(set = 0, binding = 12) uniform sampler2D global_textures[];
+layout(set = 0, binding = 12, scalar) buffer LightBuffer { PunctualLight lights[]; } scene_lights;
+layout(set = 0, binding = 13) uniform sampler2D global_textures[];
 
 // --- 6. RANDOM NUMBER GENERATOR (PCG Hash) ---
 // Returns a random float [0, 1] and updates state

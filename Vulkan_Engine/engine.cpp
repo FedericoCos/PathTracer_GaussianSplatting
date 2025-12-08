@@ -1566,7 +1566,9 @@ void Engine::createGlobalBindlessBuffers()
 
         if (!obj.local_lights.empty()) {
             for(auto &l : obj.local_lights){
-                global_punctual_lights.push_back(l);
+                if(l.intensity > 0.f){
+                    global_punctual_lights.push_back(l);
+                }
             }
         }
 
@@ -1586,11 +1588,11 @@ void Engine::createGlobalBindlessBuffers()
     // --- 3. Build CDF ---
     std::vector<LightCDF> global_light_cdf;
     num_light_triangles = static_cast<uint32_t>(global_light_triangles.size());
-    total_scene_flux = 0.0f;
+    ubo.emissive_flux = 0.0f;
 
     if (num_light_triangles > 0) {
         // Calculate total flux
-        for (float f : light_triangle_fluxes) total_scene_flux += f;
+        for (float f : light_triangle_fluxes) ubo.emissive_flux += f;
 
         // Build CDF
         float running_sum = 0.0f;
@@ -1598,7 +1600,7 @@ void Engine::createGlobalBindlessBuffers()
             running_sum += light_triangle_fluxes[i];
             
             LightCDF cdf_entry;
-            cdf_entry.cumulative_probability = (total_scene_flux > 0.0f) ? (running_sum / total_scene_flux) : 0.0f;
+            cdf_entry.cumulative_probability = (ubo.emissive_flux > 0.0f) ? (running_sum / ubo.emissive_flux) : 0.0f;
             cdf_entry.triangle_index = static_cast<uint32_t>(i);
             cdf_entry.padding[0] = 0.0f; cdf_entry.padding[1] = 0.0f;
             
@@ -1612,7 +1614,28 @@ void Engine::createGlobalBindlessBuffers()
         global_light_cdf.push_back({1.0f, 0, {0.0f, 0.0f}});
     }
 
-    // --- 4. Upload Buffers ---
+    ubo.punctual_flux = 0.f;
+    if(global_punctual_lights.size() > 0){
+        for (const auto& l : global_punctual_lights) {
+            if (l.type == 1) { // Directional
+                ubo.punctual_flux += l.intensity * 400.0f; // Assuming a scene cross-section of ~20x20m = 400m^2.
+            } else { // Point or Spot
+                // Flux (Lumens) = Intensity (Candela) * SolidAngle (4PI)
+                ubo.punctual_flux += l.intensity * 12.566f; // 4 * PI
+            }
+        }
+    }
+    else{
+        global_punctual_lights.emplace_back();
+    }
+
+    ubo.total_flux = ubo.emissive_flux + ubo.punctual_flux;
+    if(ubo.emissive_flux > 0 && ubo.punctual_flux > 0){
+        ubo.p_emissive = ubo.emissive_flux / ubo.total_flux;
+        ubo.p_emissive = std::clamp(ubo.p_emissive, 0.1f, 0.9f);
+    }
+
+
     auto upload_buffer = [&](AllocatedBuffer& buffer, vk::DeviceSize data_size, const void* data) {
         if (data_size == 0) return;
         
@@ -1641,10 +1664,9 @@ void Engine::createGlobalBindlessBuffers()
     upload_buffer(light_triangle_buffer, sizeof(LightTriangle) * global_light_triangles.size(), global_light_triangles.data());
     upload_buffer(light_cdf_buffer, sizeof(LightCDF) * global_light_cdf.size(), global_light_cdf.data());
     upload_buffer(punctual_light_buffer, sizeof(PunctualLight) * global_punctual_lights.size(), global_punctual_lights.data());
-
-    std::cout << "Size of global punctual lights: " << global_punctual_lights.size() << std::endl;
     
-    std::cout << "Built Light CDF: " << num_light_triangles << " emissive triangles. Total Flux: " << total_scene_flux << std::endl;
+    std::cout << "Built Light CDF: " << num_light_triangles << " emissive triangles. Total Flux: " << ubo.emissive_flux << std::endl;
+    std::cout << "Built punctual lights: " << global_punctual_lights.size() << " total lights. Total Flux: " << ubo.punctual_flux << std::endl;
 }
 
 
@@ -1945,7 +1967,6 @@ void Engine::updateUniformBuffer(uint32_t current_image)
     else
         ubo.camera_pos = camera.getCurrentState().f_camera.position;
 
-    ubo.total_scene_flux = total_scene_flux;
     ubo.frame_count = accumulation_frame;
 
     // --- 6. Copy Data to GPU ---
@@ -2605,6 +2626,12 @@ void Engine::recreateSwapChain(){
     // 3. Recreate Ray Tracing Output Image
     // This helper (defined earlier) destroys the old image and creates a new one 
     // with the new swapchain dimensions.
+    if(rt_output_image.image){
+        vmaDestroyImage(vma_allocator, rt_output_image.image, rt_output_image.allocation);
+    }
+    if(capture_resolve_image.image){
+        vmaDestroyImage(vma_allocator, capture_resolve_image.image, capture_resolve_image.allocation);
+    }
     createRTOutputImage();
 
     // 4. Update Descriptor Sets

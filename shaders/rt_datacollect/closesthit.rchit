@@ -12,6 +12,38 @@ layout(location = 1) rayPayloadEXT ShadowPayload shadowPayload;
 
 const float PI = 3.14159265359;
 
+// Estimates the texture LOD based on ray distance and screen resolution.
+// You might need to pass in screen height via UBO if you want it exact, 
+// otherwise 1080.0 is a decent default.
+float computeLOD(vec3 origin, vec3 dir, float dist, vec3 normal) {
+    // 1. ANGLE TUNING (LOWER = SHARPER)
+    // Previous: 0.00035
+    // New: 0.00015 -> This is extremely conservative. 
+    // It assumes a very high pixel density, delaying the blur significantly.
+    const float pixel_spread_angle = 0.00015; 
+    
+    float ray_footprint = dist * pixel_spread_angle;
+
+    // 2. GRAZING ANGLE TUNING
+    float NdotV = abs(dot(normal, -dir));
+    
+    // Previous: 0.2
+    // New: 0.1 -> Allows textures to stay sharp even at steep 
+    // angles (like the side of the cloth folds) before blurring.
+    ray_footprint /= max(NdotV, 0.1);
+
+    // 3. TEXTURE SIZE
+    // Keep this at 2048.0 or 4096.0 depending on your asset quality.
+    float texture_size = 2048.0; 
+    
+    float lod = log2(ray_footprint * texture_size);
+    
+    // 4. BIAS (MORE NEGATIVE = SHARPER)
+    // -1.0 forces the GPU to pick one full mip-level higher 
+    // than the math suggests.
+    return max(lod - 1.0, 0.0);
+}
+
 // --- TEXTURE HELPERS ---
 vec4 sampleTexture(int texture_id, vec2 uv, float lod) {
     if (texture_id < 0) return vec4(1.0);
@@ -139,7 +171,6 @@ float traceShadow(vec3 origin, vec3 lightPos) {
 void samplePunctualLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, vec3 F0, float transmission, inout vec3 Lo) 
 {
     uint num_lights = scene_lights.lights.length();
-    if (num_lights == 0) return;
 
     // 1. Pick ONE random light
     // (For Sponza with ~10-50 lights, this is better than iterating all)
@@ -157,7 +188,6 @@ void samplePunctualLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float rough
     float attenuation = 1.0;
     
     // --- 2. Calculate L vector and Attenuation ---
-    
     if (light.type == 1) { // Directional
         L = normalize(-light.direction);
         dist = 10000.0; // Infinite distance
@@ -208,8 +238,8 @@ void samplePunctualLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float rough
 
         float visibility;
         
-        if (light.type == 1) visibility = traceShadow(shadow_origin, hit_pos, 10000.0);
-        else visibility = traceShadow(shadow_origin, light.position, dist - 0.005);
+        if (light.type == 1) visibility = traceShadow(shadow_origin, L, 10000.0);
+        else visibility = traceShadow(shadow_origin, light.position);
 
         visibility = max(visibility, transmission);
 
@@ -303,7 +333,7 @@ void sampleLights_SG(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness,
             // P_solid_angle = (P_pick * P_sample) * (dist^2 / cosThetaLight)
             // Simplifies to: (Emission / TotalFlux) * (dist^2 / LdotN_light)
             
-            float pdf_nee = (emission_strength / ubo.totalSceneFlux) * (dist_sq / LdotN_light);
+            float pdf_nee = (emission_strength / ubo.emissive_flux) * (dist_sq / LdotN_light);
             
             // 2. BSDF PDF (Solid Angle)
             // Probability that the material would have scattered here naturally
@@ -405,7 +435,7 @@ void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, fl
             // P_solid_angle = (P_pick * P_sample) * (dist^2 / cosThetaLight)
             // Simplifies to: (Emission / TotalFlux) * (dist^2 / LdotN_light)
             
-            float pdf_nee = (emission_strength / ubo.totalSceneFlux) * (dist_sq / LdotN_light);
+            float pdf_nee = (emission_strength / ubo.emissive_flux) * (dist_sq / LdotN_light);
             
             // 2. BSDF PDF (Solid Angle)
             // Probability that the material would have scattered here naturally
@@ -505,10 +535,26 @@ void main()
     
     mat3 TBN = mat3(T, B, N);
 
-    float tex_lod = (payload.last_bsdf_pdf > 0.0) ? (mat.roughness_factor * 5.0) : 0.0;
+    float tex_lod = 0.0;
+    
+    if (payload.last_bsdf_pdf <= 0.0) {
+        // Primary Ray: Calculate geometric LOD to prevent aliasing (fireflies)
+        tex_lod = computeLOD(gl_WorldRayOriginEXT, gl_WorldRayDirectionEXT, gl_HitTEXT, N_geo);
+    } else {
+        // Secondary Ray: Blur based on roughness (cone widening)
+        // We accumulate roughness to simulate the ray getting wider after bouncing
+        tex_lod = (mat.roughness_factor * 3.0) + log2(gl_HitTEXT + 1.0);
+    }
 
     if (abs(Tw) > 0.0001 && mat.normal_id > 0) {
-        vec3 normal_map = sampleTexture(mat.normal_id, (mat.uv_normal * vec4(tex_coord, 0.0, 1.0)).xy, tex_lod).xyz * 2.0 - 1.0;
+        vec3 map_val = sampleTexture(mat.normal_id, (mat.uv_normal * vec4(tex_coord, 0.0, 1.0)).xy, tex_lod).xyz;
+        vec3 normal_map = map_val * 2.0 - 1.0;
+        
+        // --- SOFTEN NORMALS FOR CLOTH ---
+        // This effectively flattens the bumps, reducing "sparkles"
+        normal_map.xy *= 0.5; // Reduce strength by 50%
+        normal_map = normalize(normal_map);
+        
         N = safeNormalize(TBN * normal_map);
     }
 
@@ -542,7 +588,7 @@ void main()
         // 3. Conversion to PBR Standard
         F0 = specular_color;
         roughness = sqrt(max(1.0 - glossiness, 0.001));
-        alpha = roughness * roughness;
+        // alpha = roughness * roughness;
         metallic = 0.0; // SpecGloss doesn't use metallic parameter usually, diffuse is explicitly provided
     } 
     // WORKFLOW B: METALLIC - ROUGHNESS (Standard)
@@ -596,28 +642,35 @@ void main()
     // CASE A: MASK MODE
     if (real_alpha_cutoff > 0.0) { 
         if (alpha < real_alpha_cutoff) {
+            // Discard Ray
             payload.hit_flag = 2.0;
             payload.color = vec3(0.0); 
             payload.weight = vec3(1.0);
             payload.next_ray_origin = hit_pos + gl_WorldRayDirectionEXT * 0.001;
             payload.next_ray_dir = gl_WorldRayDirectionEXT;
+            payload.last_bsdf_pdf = 0.0;
             return;
         }
+        // If opaque, reset alpha to 1.0 for lighting
         alpha = 1.0; 
-        transmission = 0.0;
     } 
-    // CASE B: BLEND MODE (Glass)
-    else if (mat.pad > 0.5 && alpha < 0.95) {
-        if (alpha < 0.15 && transmission == 0.0) { 
-             payload.hit_flag = 2.0;
-             payload.color = vec3(0.0); 
-             payload.weight = vec3(1.0);
-             payload.next_ray_origin = hit_pos + gl_WorldRayDirectionEXT * 0.001;
-             payload.next_ray_dir = gl_WorldRayDirectionEXT;
-             return;
-        } 
-        transmission = max(transmission, 1.0 - alpha);
-    } 
+    // 2. BLEND MODE (Stochastic Transparency)
+    else if (mat.pad > 0.5) { // mat.pad stores 'is_transparent' boolean
+        if (transmission == 0.0 && alpha < 1.0) {
+            // Stochastic Transparency: Randomly ignore hit based on Alpha
+            if (rnd(payload.seed) > alpha) {
+                payload.hit_flag = 2.0; // Miss
+                payload.color = vec3(0.0); 
+                payload.weight = vec3(1.0);
+                payload.next_ray_origin = hit_pos + gl_WorldRayDirectionEXT * 0.001;
+                payload.next_ray_dir = gl_WorldRayDirectionEXT;
+                payload.last_bsdf_pdf = 0.0;
+                return;
+            }
+            // If we "hit", treat the surface as fully opaque for lighting calculations
+            alpha = 1.0;
+        }
+    }
     // CASE C: OPAQUE
     else {
         if (alpha < 0.005) {
@@ -638,49 +691,58 @@ void main()
     vec3 Lo = vec3(0.0);
 
     vec3 Le = emissive; // From fetching material at line 124
-    float emission_strength = max(Le.r, max(Le.g, Le.b));
+    float emission_strength = length(emissive);
+
+    float nee_treshold = 0.001;
+    bool use_nee = (transmission == 0.0) && (roughness > nee_treshold);
 
     if (emission_strength > 0.0) {
         // If Primary Ray (depth 0, inferred if last_bsdf_pdf is 0 or via flag)
         // OR if it's a perfect mirror (roughness ~0) where NEE is disabled
-        if (payload.last_bsdf_pdf <= 0.0) {
+        if (payload.last_bsdf_pdf <= 0.0 || !use_nee) {
             Lo += Le; 
         } 
         else {
-            // We hit a light via a bounce. We need to weight it.
-            // 1. Get BSDF PDF (passed from previous bounce)
             float pdf_bsdf = payload.last_bsdf_pdf;
             
-            // 2. Get NEE PDF (What was the chance we picked THIS spot with NEE?)
-            // We need the Triangle Area to know the probability.
-            // Since we don't have the triangle Area here easily without looking it up:
-            // APPROXIMATION: Use the global average or re-calculate if possible.
-            // For EXACT MIS, you need to look up the triangle area based on gl_PrimitiveID.
+            // 1. Reconstruct NEE PDF using Uniform Factors (Matches CPU Flux)
+            float emission_strength_cpu = length(mat.emissive_factor_and_pad.rgb); 
             
             vec3 L_to_cam = -gl_WorldRayDirectionEXT;
             float LdotN = abs(dot(N, L_to_cam));
             float dist_sq = gl_HitTEXT * gl_HitTEXT;
             
-            // Reconstruct NEE PDF
-            float pdf_nee = (emission_strength / ubo.totalSceneFlux) * (dist_sq / max(LdotN, 0.001));
-            
-            // 3. Weight
+            // 2. Calculate raw PDF
+            // Note: If emission_strength_cpu is 0, this ray shouldn't exist, but safety check:
+            float pdf_nee = 0.0;
+            float area = length(cross(v1.pos - v0.pos, v2.pos - v0.pos)) * 0.5;
+            if (ubo.emissive_flux > 0.0) {
+                pdf_nee = (emission_strength_cpu / (ubo.emissive_flux)) * (dist_sq / max(LdotN, 0.001));
+            }
+
+            // 3. Apply Strategy Probability
+            // Even if p_emissive is 1.0 now, keep this for robustness later.
+            float prob_nee_strategy = (ubo.punctual_flux > 0.0) ? ubo.p_emissive : 1.0;
+            pdf_nee *= prob_nee_strategy;
+
+            // 4. Power Heuristic
+            // We use the raw pdfs. If pdf_nee is huge, it means NEE *should* have won. 
+            // If it returns black, it's because roughness is too low (fix via nee_threshold).
             float mis_weight = (pdf_bsdf * pdf_bsdf) / (pdf_bsdf * pdf_bsdf + pdf_nee * pdf_nee);
+
             
-            Lo += Le * mis_weight;
+            Lo += Le * 1.0;
         }
     }
 
-    float nee_treshold = 0.001;
-    bool use_nee = (transmission == 0.0) && (roughness > nee_treshold);
-
-    bool has_emissive = light_cdf.entries.length() > 0;
-    bool has_punctual = scene_lights.lights.length() > 0;
+    bool has_emissive = ubo.emissive_flux > 0;
+    bool has_punctual = ubo.punctual_flux > 0;
 
     vec3 light_contr = vec3(0.0);
 
     if (has_emissive && has_punctual) {
-        if (rnd(payload.seed) < 0.5) {
+        float p_punctual = 1.0 - ubo.p_emissive;
+        if (rnd(payload.seed) < ubo.p_emissive) {
             if(use_nee){
                 if(mat.use_specular_glossiness_workflow > 0.0){
                     sampleLights_SG(hit_pos, N, V, albedo, roughness, F0, transmission, light_contr);
@@ -688,11 +750,11 @@ void main()
                 else{
                     sampleLights(hit_pos, N, V, albedo, roughness, metallic, F0, transmission, light_contr);
                 }
-                light_contr *= 2;
+                light_contr *= (1.0 / ubo.p_emissive);
             }
         } else {
             samplePunctualLights(hit_pos, N, V, albedo, roughness, F0, transmission, light_contr);
-            light_contr *= 2.0; // Compensation for 50% chance
+            light_contr *= (1.0 / p_punctual);
         }
 
         Lo += light_contr;
@@ -746,93 +808,126 @@ void main()
     // OPAQUE PATH
     payload.next_ray_origin = hit_pos + N_geo * 0.001;
     
-    // Valid Clearcoat Logic
-    bool cc_valid = (clearcoat > 0.0); 
-    vec3 H_cc = sampleGGX(N, cc_roughness, payload.seed);
-    vec3 L_cc = reflect(-V, H_cc);
-    
-    if (dot(L_cc, N_geo) <= 0.0) cc_valid = false; 
+    // 1. Calculate Clearcoat Selection Probability
+    // We use the View angle to estimate how likely we are to hit the coat.
+    // Clearcoat is dielectric (IOR 1.5 -> F0 0.04).
+    float NdotV = max(dot(N, V), 0.0);
+    float cc_prob = 0.0;
+    vec3 F_cc_view = vec3(0.0);
 
-    float prob_cc = 0.0;
-    vec3 F_cc = vec3(0.0); 
-
-    if (cc_valid) {
-        F_cc = F_Schlick(abs(dot(H_cc, V)), vec3(0.04));
-        prob_cc = max(F_cc.r, max(F_cc.g, F_cc.b)) * clearcoat;
-        prob_cc = clamp(prob_cc, 0.0, 1.0); 
+    if (clearcoat > 0.0) {
+        // Calculate Fresnel at view angle to determine importance
+        F_cc_view = F_Schlick(NdotV, vec3(0.04)) * clearcoat;
+        // Clamp probability to ensure we don't starve the base layer
+        cc_prob = clamp(max(F_cc_view.r, max(F_cc_view.g, F_cc_view.b)), 0.0, 1.0);
     }
 
-    if (cc_valid && rnd(payload.seed) < prob_cc) {
-        // --- HIT CLEARCOAT ---
-        payload.next_ray_dir = L_cc;
-        payload.weight = vec3(1.0);
-        //payload.is_specular = true;
+    // 2. Select Layer (Russian Roulette)
+    if (clearcoat > 0.0 && rnd(payload.seed) < cc_prob) {
+        // --- HIT CLEARCOAT LAYER ---
+        
+        // Use N (or N_geo for a "varnish" effect) to sample
+        vec3 H_cc = sampleGGX(N, cc_roughness, payload.seed);
+        vec3 L_cc = reflect(-V, H_cc);
+        
+        float NdotL = max(dot(N, L_cc), 0.0);
+        float NdotH = max(dot(N, H_cc), 0.0);
+        float VdotH = max(dot(V, H_cc), 0.0);
+
+        if (dot(L_cc, N_geo) <= 0.0) {
+            payload.weight = vec3(0.0);
+            payload.last_bsdf_pdf = 0.0;
+        } else {
+            payload.next_ray_dir = L_cc;
+
+            // Evaluate Clearcoat BSDF
+            // F0 is fixed 0.04 for clearcoat
+            vec3 F = F_Schlick(VdotH, vec3(0.04)) * clearcoat;
+            float Vis = V_SmithGGXCorrelatedFast(NdotV, NdotL, cc_roughness);
+            
+            // Standard GGX Weight: (F * Vis * G2_denom * VdotH) / (NdotH * NdotV * NdotL)
+            // Simplified for MC integration: (F * Vis * 4.0 * VdotH) / NdotH * NdotL
+            // (Note: D cancels out with the PDF)
+            vec3 specular_weight = F * Vis * 4.0 * NdotL * (VdotH / max(NdotH, 0.0001));
+
+            // PDF
+            float pdf_cc = pdf_GGX(N, V, L_cc, cc_roughness);
+            
+            payload.last_bsdf_pdf = pdf_cc * cc_prob; // Effective PDF
+            
+            // Weight = (BSDF / PDF) * (1 / SelectionProb)
+            // If we selected this path, we divide by cc_prob
+            payload.weight = specular_weight * (1.0 / cc_prob);
+        }
     } 
     else {
         // --- HIT BASE LAYER ---
-        vec3 energy_attenuation = vec3(1.0);
-        if (cc_valid) { 
-             float prob_base = max(1.0 - prob_cc, 0.001);
-             energy_attenuation = (1 - clearcoat) * (1 - F_cc);
-        } 
-
-        float prob_specular = mix(0.04, 1.0, metallic);
-        prob_specular = mix(prob_specular, 1.0, pow(1.0 - max(dot(N, V), 0.0), 5.0)); 
-        prob_specular = clamp(prob_specular, 0.05, 0.95);
         
-        if (rnd(payload.seed) < prob_specular) { 
+        // Energy Conservation:
+        // Light reaching the base layer is transmitted through the coat.
+        // T = 1.0 - F_coat.
+        // We use the View-angle Fresnel calculated earlier as an approximation for the attenuation.
+        vec3 transmission_factor = vec3(1.0) - F_cc_view;
+        
+        // Russian Roulette Weight Correction:
+        // If we are here, we passed the (1.0 - cc_prob) check.
+        float selection_weight = 1.0 / (1.0 - cc_prob);
+        
+        vec3 energy_attenuation = transmission_factor * selection_weight;
+
+        // --- Standard Base Layer Logic (Your original code) ---
+        float prob_specular = mix(0.04, 1.0, metallic);
+        prob_specular = mix(prob_specular, 1.0, pow(1.0 - NdotV, 5.0));
+        prob_specular = clamp(prob_specular, 0.05, 0.95);
+        float prob_diffuse = 1.0 - prob_specular;
+
+        if (rnd(payload.seed) < prob_specular) {
             // Specular Reflection
             vec3 H = sampleGGX(N, roughness, payload.seed);
             vec3 L = reflect(-V, H);
 
             float NdotL = max(dot(N, L), 0.0);
-            float NdotV = max(dot(N, V), 0.0);
             float NdotH = max(dot(N, H), 0.0);
             float VdotH = max(dot(V, H), 0.0);
-            
+
             if (dot(L, N_geo) <= 0.0) {
                 payload.weight = vec3(0.0);
+                payload.last_bsdf_pdf = 0.0;
             } else {
                 payload.next_ray_dir = L;
-                vec3 F = F_Schlick(max(dot(H, V), 0.0), F0);
-                // We need the Visibility term (G2 / (4 * NdotV * NdotL))
-                // Your helper 'V_SmithGGXCorrelatedFast' returns exactly this Vis term.
-                float Vis = V_SmithGGXCorrelatedFast(NdotV, NdotL, roughness);
                 
-                // The theoretical weight for sampling normal distribution D is:
-                // Weight = F * Vis * 4.0 * NdotL * (VdotH / NdotH)
-                // (Note: D cancels out with the PDF)
+                vec3 F = F_Schlick(max(dot(H, V), 0.0), F0);
+                float Vis = V_SmithGGXCorrelatedFast(NdotV, NdotL, roughness);
                 
                 vec3 specular_weight = F * Vis * 4.0 * NdotL * (VdotH / max(NdotH, 0.0001));
 
-                float pdf = pdf_GGX(N, V, L, roughness);
-                // Combine with probability of choosing specular path
-                payload.last_bsdf_pdf = pdf * prob_specular;
+                float pdf_spec = pdf_GGX(N, V, L, roughness);
+                float pdf_diff = pdf_Lambert(N, L);
+
+                payload.last_bsdf_pdf = ((pdf_spec * prob_specular) + (pdf_diff * prob_diffuse)) * (1.0 - cc_prob);
                 
-                // Combine with Russian Roulette prob and Energy Attenuation
+                // Apply Base Specular Weight * Energy Attenuation
                 payload.weight = (specular_weight * (1.0 / prob_specular)) * energy_attenuation;
             }
 
         } else {
             // Diffuse Reflection
             vec3 L = sampleCosineHemisphere(N, payload.seed);
-            if (dot(L, N_geo) <= 0.0) payload.weight = vec3(0.0);
             
-            payload.next_ray_dir = L;
-            // Use unified albedo
-            // Note: For SpecGloss workflow, metallic is 0, so diffuseColor = albedo.
-            // For MetalRough, albedo has already been darkened by (1-metallic) in the branching block.
-            // However, to avoid double darkening:
-            // In the MetalRough branch, I did: albedo = albedo * (1.0 - metallic).
-            // So here, I should NOT multiply again. 
-            // Let's correct this line to just use 'albedo' as it is fully prepared.
-            
-            // Correction:
-            payload.weight = (albedo * (1.0 / (1.0 - prob_specular))) * energy_attenuation;
-            // Calculate PDF for the Next Bounce
-            float pdf = pdf_Lambert(N, L);
-            // Combine with probability of choosing diffuse path
-            payload.last_bsdf_pdf = pdf * (1.0 - prob_specular);
+            if (dot(L, N_geo) <= 0.0) {
+                payload.weight = vec3(0.0);
+                payload.last_bsdf_pdf = 0.0;
+            } else {
+                payload.next_ray_dir = L;
+                
+                // Diffuse Weight * Energy Attenuation
+                payload.weight = (albedo * (1.0 / (1.0 - prob_specular))) * energy_attenuation;
+
+                float pdf_spec = pdf_GGX(N, V, L, roughness);
+                float pdf_diff = pdf_Lambert(N, L);
+                
+                payload.last_bsdf_pdf = ((pdf_spec * prob_specular) + (pdf_diff * prob_diffuse)) * (1.0 - cc_prob);
+            }
         }
     }
 }

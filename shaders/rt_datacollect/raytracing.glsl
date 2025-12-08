@@ -61,6 +61,7 @@ struct PunctualLight {
     float outer_cone_cos; // For Spot
     float inner_cone_cos; // For Spot
     int type;
+    vec2 padding;
 };
 
 // --- NEW: LIGHT DATA STRUCTURES ---
@@ -127,9 +128,12 @@ layout(set = 0, binding = 4) uniform UniformBufferObject {
     mat4 view;
     mat4 proj;
     vec3 cameraPos;
-    vec4 ambientLight;
-    uint frameCount; // Added for temporal noise
-    float totalSceneFlux;
+    uint frameCount;
+    vec4 ambientLight; 
+    float emissive_flux;
+    float punctual_flux;
+    float total_flux;
+    float p_emissive;
 } ubo;
 layout(set = 0, binding = 5, scalar) buffer readonly AllVertices { InputVertex v[]; } all_vertices;
 layout(set = 0, binding = 6, scalar) buffer readonly AllIndices { uint i[]; } all_indices;

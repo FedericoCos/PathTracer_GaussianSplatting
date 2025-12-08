@@ -245,7 +245,6 @@ private:
     AllocatedBuffer light_triangle_buffer;
     AllocatedBuffer light_cdf_buffer;
     uint32_t num_light_triangles = 0;
-    float total_scene_flux = 0.0f;
     uint32_t accumulation_frame = -1;
 
     // Blue noise

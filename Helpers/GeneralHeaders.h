@@ -290,6 +290,7 @@ struct PunctualLight {
     float outer_cone_cos;
     float inner_cone_cos;
     int type;
+    glm::vec2 padding;
 };
 
 
@@ -298,12 +299,14 @@ struct UniformBufferObject {
     glm::mat4 proj;
 
     glm::vec3 camera_pos;
-    float padding;
+    uint32_t frame_count = 0;
 
     glm::vec4 ambient_light;
 
-    uint32_t frame_count = 0;
-    float total_scene_flux = 0.0f;
+    float emissive_flux = 0.0f;
+    float punctual_flux = 0.f; 
+    float total_flux;
+    float p_emissive = 0.f;
 };
 
 struct QueueFamilyIndices {

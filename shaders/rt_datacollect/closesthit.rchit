@@ -12,6 +12,22 @@ layout(location = 1) rayPayloadEXT ShadowPayload shadowPayload;
 
 const float PI = 3.14159265359;
 
+// Golden Ratio constants
+const float PHI = 1.61803398875;
+
+// Dimension: 
+// 0 = Light Selection
+// 1 = Light Point Sampling
+// 2 = BSDF Sampling
+float getBlueNoise(int dimension) {
+    // Combine texture value + depth offset + dimension offset
+    // We use .x for some dimensions and .y for others to utilize more source entropy
+    float base = (dimension % 2 == 0) ? payload.blue_noise.x : payload.blue_noise.y;
+    
+    // The magic: Shift spatial noise by fixed amounts based on depth/dimension
+    return fract(base + (float(payload.depth) * PHI) + (float(dimension) * 0.754877));
+}
+
 // Estimates the texture LOD based on ray distance and screen resolution.
 // You might need to pass in screen height via UBO if you want it exact, 
 // otherwise 1080.0 is a decent default.
@@ -75,9 +91,9 @@ void getOrthonormalBasis(in vec3 N, out vec3 T, out vec3 B) {
     B = cross(N, T);
 }
 
-vec3 sampleCosineHemisphere(vec3 N, inout uint seed) {
-    float r1 = fract(payload.blue_noise.x + rnd(payload.seed));
-    float r2 = fract(payload.blue_noise.y + rnd(payload.seed));
+vec3 sampleCosineHemisphere(vec3 N) {
+    float r1 = getBlueNoise(0);
+    float r2 = getBlueNoise(1);
     float phi = 2.0 * PI * r1; 
     float sqrtR2 = sqrt(r2);
     vec3 localDir = vec3(cos(phi) * sqrtR2, sin(phi) * sqrtR2, sqrt(1.0 - r2)); 
@@ -102,9 +118,9 @@ float V_SmithGGXCorrelatedFast(float NdotV, float NdotL, float roughness) {
     return 0.5 / max(ggxV + ggxL, 0.0001);
 }
 
-vec3 sampleGGX(vec3 N, float roughness, inout uint seed) {
-    float r1 = fract(payload.blue_noise.x + rnd(payload.seed));
-    float r2 = fract(payload.blue_noise.y + rnd(payload.seed));
+vec3 sampleGGX(vec3 N, float roughness) {
+    float r1 = getBlueNoise(2);
+    float r2 = getBlueNoise(3);
     float a = roughness * roughness; 
     float phi = 2.0 * PI * r1;
     float denom = (1.0 + (a*a - 1.0) * r2); 
@@ -178,7 +194,7 @@ void samplePunctualLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float rough
     // 1. Pick ONE random light
     // (For Sponza with ~10-50 lights, this is better than iterating all)
     // PDF of choosing this light = 1.0 / num_lights
-    float r_select = fract(payload.blue_noise.x + rnd(payload.seed)); // Use different noise channel if possible
+    float r_select = getBlueNoise(4); // Use different noise channel if possible
     uint light_idx = uint(r_select * float(num_lights));
     
     // Clamp to be safe
@@ -279,7 +295,7 @@ void sampleLights_SG(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness,
     uint num_lights = light_cdf.entries.length();
     if (num_lights == 0) return;
 
-    float r_select = fract(payload.blue_noise.x + rnd(payload.seed));
+    float r_select = getBlueNoise(4);
 
     // Binary search optimization
     uint idx = 0;
@@ -301,8 +317,8 @@ void sampleLights_SG(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness,
     vec3 p1 = all_vertices.v[tri.v1].pos;
     vec3 p2 = all_vertices.v[tri.v2].pos;
 
-    float u = fract(payload.blue_noise.y + rnd(payload.seed)); 
-    float v = fract(payload.blue_noise.x + rnd(payload.seed));
+    float u = getBlueNoise(5); 
+    float v = getBlueNoise(6);
     if (u + v > 1.0) { u = 1.0 - u; v = 1.0 - v; }
     vec3 light_pos = p0 * (1.0 - u - v) + p1 * u + p2 * v;
     vec3 light_normal = normalize(cross(p1 - p0, p2 - p0));
@@ -379,7 +395,7 @@ void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, fl
     uint num_lights = light_cdf.entries.length();
     if (num_lights == 0) return;
 
-    float r_select = fract(payload.blue_noise.x + rnd(payload.seed));
+    float r_select = getBlueNoise(7);
     
     // Binary search optimization
     uint idx = 0;
@@ -403,8 +419,8 @@ void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, fl
     vec3 p2 = all_vertices.v[tri.v2].pos;
     
     // Sample Point on Triangle
-    float u = fract(payload.blue_noise.y + rnd(payload.seed)); 
-    float v = fract(payload.blue_noise.x + rnd(payload.seed));
+    float u = getBlueNoise(8); 
+    float v = getBlueNoise(9);
     if (u + v > 1.0) { u = 1.0 - u; v = 1.0 - v; }
     vec3 light_pos = p0 * (1.0 - u - v) + p1 * u + p2 * v;
     vec3 light_normal = safeNormalize(cross(p1 - p0, p2 - p0));
@@ -707,7 +723,7 @@ void main()
 
     if (has_emissive && has_punctual) {
         float p_punctual = 1.0 - ubo.p_emissive;
-        if (rnd(payload.seed) < ubo.p_emissive) {
+        if (getBlueNoise(10) < ubo.p_emissive) {
             if(use_nee){
                 if(mat.use_specular_glossiness_workflow > 0.0){
                     sampleLights_SG(hit_pos, N, V, albedo, roughness, F0, transmission, light_contr);
@@ -746,7 +762,7 @@ void main()
         payload.next_ray_origin = hit_pos - N_geo * 0.001;
         vec3 F_val = F_Schlick(abs(dot(N, V)), F0); 
         float prob_reflect = max(max(F_val.r, F_val.g), F_val.b);
-        if (rnd(payload.seed) < prob_reflect) { 
+        if (getBlueNoise(11) < prob_reflect) { 
             payload.next_ray_origin = hit_pos + N_geo * 0.001;
             payload.next_ray_dir = reflect(-V, N); 
             payload.weight = vec3(1.0);
@@ -788,11 +804,11 @@ void main()
     }
 
     // 2. Select Layer (Russian Roulette)
-    if (clearcoat > 0.0 && rnd(payload.seed) < cc_prob) {
+    if (clearcoat > 0.0 && getBlueNoise(12) < cc_prob) {
         // --- HIT CLEARCOAT LAYER ---
         
         // Use N (or N_geo for a "varnish" effect) to sample
-        vec3 H_cc = sampleGGX(N, cc_roughness, payload.seed);
+        vec3 H_cc = sampleGGX(N, cc_roughness);
         vec3 L_cc = reflect(-V, H_cc);
         
         float NdotL = max(dot(N, L_cc), 0.0);
@@ -846,9 +862,9 @@ void main()
         prob_specular = clamp(prob_specular, 0.05, 0.95);
         float prob_diffuse = 1.0 - prob_specular;
 
-        if (rnd(payload.seed) < prob_specular) {
+        if (getBlueNoise(13) < prob_specular) {
             // Specular Reflection
-            vec3 H = sampleGGX(N, roughness, payload.seed);
+            vec3 H = sampleGGX(N, roughness);
             vec3 L = reflect(-V, H);
 
             float NdotL = max(dot(N, L), 0.0);
@@ -877,7 +893,7 @@ void main()
 
         } else {
             // Diffuse Reflection
-            vec3 L = sampleCosineHemisphere(N, payload.seed);
+            vec3 L = sampleCosineHemisphere(N);
             
             if (dot(L, N_geo) <= 0.0) {
                 payload.weight = vec3(0.0);

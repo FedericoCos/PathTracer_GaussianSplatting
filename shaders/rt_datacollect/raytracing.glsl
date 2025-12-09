@@ -113,6 +113,7 @@ struct RayPayload {
     uint seed; 
     float last_bsdf_pdf;
     vec2 blue_noise;
+    int depth;
 };
 
 struct ShadowPayload {

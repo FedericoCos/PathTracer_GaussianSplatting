@@ -662,13 +662,6 @@ void main()
     vec3 Le = emissive; // From fetching material at line 124
     float emission_strength = length(emissive);
 
-    if (emission_strength == 0.0 && max(albedo.r, max(albedo.g, albedo.b)) < 0.001 && mat.pad < 0.5 && transmission == 0.0) {
-        payload.color = vec3(0.0);
-        payload.weight = vec3(0.0);
-        payload.hit_flag = 0.0;
-        return;
-    }
-
     float nee_treshold = 0.001;
     bool use_nee = (transmission == 0.0) && (roughness > nee_treshold);
 

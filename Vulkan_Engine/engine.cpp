@@ -2785,8 +2785,8 @@ ImageReadbackData Engine::readImageToCPU(vk::Image image, VkFormat format, uint3
 }
 
 void Engine::captureSceneData() {
-    const int ACCUMULATION_STEPS = 500; 
-    const int TOTAL_POSITIONS = NUM_CAPTURE_POSITIONS; 
+    const int ACCUMULATION_STEPS = 2048; 
+    const int TOTAL_POSITIONS = 336; 
 
     std::cout << "\n--- Starting Dataset Capture ---" << std::endl;
     std::cout << "1. Capturing " << TOTAL_POSITIONS << " Camera Views (from inside Torus)" << std::endl;

@@ -269,6 +269,18 @@ private:
     vk::StridedDeviceAddressRegionKHR rhit_region;
     vk::StridedDeviceAddressRegionKHR callable_region;
 
+    AllocatedImage g_buffer_normal;
+    AllocatedImage g_buffer_pos;
+    AllocatedImage denoised_image;
+    AllocatedImage denoise_intermediate;
+
+    PipelineInfo denoise_pipeline;
+    std::vector<vk::raii::DescriptorSet> denoise_descriptor_sets;
+
+    void createDenoiseResources();
+    void createDenoisePipeline();
+    void createDenoiseDescriptorSets();
+
 
     // ----- Helper functions
     std::vector<const char*> getRequiredExtensions();

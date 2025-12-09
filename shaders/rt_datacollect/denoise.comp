@@ -1,0 +1,115 @@
+#version 460
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0, rgba32f) uniform readonly image2D inputImage;
+layout(set = 0, binding = 1, rgba32f) uniform readonly image2D normalTex;
+layout(set = 0, binding = 2, rgba32f) uniform readonly image2D posTex;
+layout(set = 0, binding = 3, rgba32f) uniform writeonly image2D outputImage;
+
+layout(push_constant) uniform PushConstants {
+    int step_width;
+} pc;
+
+// --- BALANCED SETTINGS ---
+
+// 1.0 works well with Log-Luminance. 
+// Increase to 2.0 or 3.0 only if noise is still too grainy.
+const float SIGMA_LUMA    = 0.6;  
+
+// Controls edge sharpness.
+// 64.0 = Sharp edges preserved, smooth curves blurred.
+// (Previous value was 4.0, which blurred everything).
+const float SIGMA_NORMAL  = 256.0; 
+
+// Depth sensitivity.
+// 0.2 means pixels 20cm apart won't blend.
+const float SIGMA_PLANE   = 0.1;  
+
+float kernel[25] = float[](
+    1.0/256.0, 1.0/64.0, 3.0/128.0, 1.0/64.0, 1.0/256.0,
+    1.0/64.0,  1.0/16.0, 3.0/32.0,  1.0/16.0, 1.0/64.0,
+    3.0/128.0, 3.0/32.0, 9.0/64.0,  3.0/32.0, 3.0/128.0,
+    1.0/64.0,  1.0/16.0, 3.0/32.0,  1.0/16.0, 1.0/64.0,
+    1.0/256.0, 1.0/64.0, 3.0/128.0, 1.0/64.0, 1.0/256.0
+);
+
+ivec2 offsets[25] = ivec2[](
+    ivec2(-2,-2), ivec2(-1,-2), ivec2(0,-2), ivec2(1,-2), ivec2(2,-2),
+    ivec2(-2,-1), ivec2(-1,-1), ivec2(0,-1), ivec2(1,-1), ivec2(2,-1),
+    ivec2(-2, 0), ivec2(-1, 0), ivec2(0, 0), ivec2(1, 0), ivec2(2, 0),
+    ivec2(-2, 1), ivec2(-1, 1), ivec2(0, 1), ivec2(1, 1), ivec2(2, 1),
+    ivec2(-2, 2), ivec2(-1, 2), ivec2(0, 2), ivec2(1, 2), ivec2(2, 2)
+);
+
+// Log-Luminance helper (keeps fireflies in check)
+float getLogLuma(vec3 c) {
+    float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    return log(1.0 + luma); 
+}
+
+void main() {
+    ivec2 coords = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(inputImage);
+
+    if (coords.x >= size.x || coords.y >= size.y) return;
+
+    // 1. Load Center Data
+    vec4 centerColorVal = imageLoad(inputImage, coords);
+    vec3 centerColor = centerColorVal.rgb;
+    vec3 centerNormal = imageLoad(normalTex, coords).xyz;
+    vec3 centerPos = imageLoad(posTex, coords).xyz;
+    float centerLuma = getLogLuma(centerColor);
+
+    // Optimization: Skip background
+    if (length(centerNormal) < 0.1) {
+        imageStore(outputImage, coords, centerColorVal);
+        return;
+    }
+
+    vec3 sumColor = centerColor;
+    float sumWeight = 1.0;
+
+    // 2. Filter Loop
+    for (int i = 0; i < 25; i++) {
+        if (i == 12) continue;
+        ivec2 offset = offsets[i] * pc.step_width;
+        ivec2 sampleCoords = coords + offset;
+
+        // Clamp to edge
+        sampleCoords = clamp(sampleCoords, ivec2(0), size - ivec2(1));
+
+        vec3 sampleColor = imageLoad(inputImage, sampleCoords).rgb;
+        vec3 sampleNormal = imageLoad(normalTex, sampleCoords).xyz;
+        vec3 samplePos = imageLoad(posTex, sampleCoords).xyz;
+        float sampleLuma = getLogLuma(sampleColor);
+
+        // --- Edge Stopping Functions ---
+        
+        // A. Luminance (Color/Brightness Similarity)
+        float w_luma = abs(centerLuma - sampleLuma);
+        w_luma = exp(-w_luma / SIGMA_LUMA); 
+
+        // B. Normal (Geometric Similarity)
+        // High power (64.0) ensures we don't blur over sharp edges
+        float dotN = dot(centerNormal, sampleNormal);
+        float w_normal = pow(max(dotN, 0.0), SIGMA_NORMAL);
+
+        // C. Position (Depth Similarity)
+        float dist = distance(centerPos, samplePos);
+        float w_pos = exp(-dist / SIGMA_PLANE);
+
+        float weight = w_luma * w_normal * w_pos * kernel[i];
+
+        sumColor += sampleColor * weight;
+        sumWeight += weight;
+    }
+
+    vec3 finalColor = centerColor;
+    
+    // Normalization
+    if (sumWeight > 1e-4) {
+        finalColor = sumColor / sumWeight;
+    }
+    
+    imageStore(outputImage, coords, vec4(finalColor, 1.0));
+}

@@ -37,6 +37,7 @@ test: $(TARGET)
 	glslc shaders/pointcloud/pointcloud.frag -o shaders/pointcloud/pointcloud.frag.spv
 	glslc shaders/pointcloud/pointcloud.vert --target-env=vulkan1.4 -o shaders/pointcloud/pointcloud.vert.spv
 	glslc --target-env=vulkan1.4 shaders/rt_datacollect/lookup.comp -o shaders/rt_datacollect/lookup.comp.spv
+	glslc shaders/rt_datacollect/denoise.comp --target-env=vulkan1.4 -o shaders/rt_datacollect/denoise.comp.spv
 	./$(TARGET)
 
 # Clean up the build files

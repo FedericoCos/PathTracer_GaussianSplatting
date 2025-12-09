@@ -151,7 +151,9 @@ layout(set = 0, binding = 9, scalar) buffer readonly LightCDFBuffer { LightCDF e
 layout(set = 0, binding = 10, rgba32f) uniform image2D rt_output_image;
 layout(set = 0, binding = 11) uniform sampler2D blueNoiseTex;
 layout(set = 0, binding = 12, scalar) buffer LightBuffer { PunctualLight lights[]; } scene_lights;
-layout(set = 0, binding = 13) uniform sampler2D global_textures[];
+layout(set = 0, binding = 13, rgba32f) uniform image2D gNormals;
+layout(set = 0, binding = 14, rgba32f) uniform image2D gPositions;
+layout(set = 0, binding = 15) uniform sampler2D global_textures[];
 
 // --- 6. RANDOM NUMBER GENERATOR (PCG Hash) ---
 // Returns a random float [0, 1] and updates state

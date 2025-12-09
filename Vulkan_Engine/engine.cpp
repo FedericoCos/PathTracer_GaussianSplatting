@@ -999,6 +999,7 @@ bool Engine::initVulkan(int mssa_val){
     createTlasResources();
 
     createRTOutputImage();
+    createDenoiseResources();
 
     Image::createDepthResources(physical_device, depth_image, swapchain.extent.width, swapchain.extent.height, *this);
     std::cout << "Memory usage after depth image creation" << std::endl;
@@ -1012,6 +1013,7 @@ bool Engine::initVulkan(int mssa_val){
     // PIPELINE CREATION
     createPipelines();
     createRayTracingPipeline();
+    createDenoisePipeline();
 
     loadScene("main_scene.json");
     std::cout << "Memory status loading objects in scene" << std::endl;
@@ -1029,6 +1031,7 @@ bool Engine::initVulkan(int mssa_val){
     createUniformBuffers();
     createDescriptorPool();
     createDescriptorSets();
+    createDenoiseDescriptorSets();
 
     createShaderBindingTable();
 
@@ -1321,13 +1324,14 @@ void Engine::createDescriptorPool()
 {
     uint32_t rt_sets = MAX_FRAMES_IN_FLIGHT;
     uint32_t pc_sets = MAX_FRAMES_IN_FLIGHT;
-    uint32_t total_sets = rt_sets + pc_sets;
+    uint32_t denoise_sets = MAX_FRAMES_IN_FLIGHT * 2;
+    uint32_t total_sets = rt_sets + pc_sets + denoise_sets;
 
     std::vector<vk::DescriptorPoolSize> pool_sizes = {
         { vk::DescriptorType::eUniformBuffer, total_sets },
         { vk::DescriptorType::eStorageBuffer, MAX_FRAMES_IN_FLIGHT * 11 },
         { vk::DescriptorType::eAccelerationStructureKHR, rt_sets },
-        { vk::DescriptorType::eStorageImage, rt_sets },
+        { vk::DescriptorType::eStorageImage, rt_sets * 3 + (4 * denoise_sets) },
         { vk::DescriptorType::eCombinedImageSampler, 
           MAX_FRAMES_IN_FLIGHT * (MAX_BINDLESS_TEXTURES)+MAX_FRAMES_IN_FLIGHT } 
     };
@@ -1676,6 +1680,155 @@ void Engine::createGlobalBindlessBuffers()
     std::cout << "Built punctual lights: " << global_punctual_lights.size() << " total lights. Total Flux: " << ubo.punctual_flux << std::endl;
 }
 
+void Engine::createDenoiseResources() {
+    vk::Format format = vk::Format::eR32G32B32A32Sfloat; // High precision for position/normals
+    
+    // Helper lambda or reuse Image::createImage
+    auto createStorageImage = [&](AllocatedImage& img) {
+        img = Image::createImage(swapchain.extent.width, swapchain.extent.height, 1, 
+            vk::SampleCountFlagBits::e1, format, vk::ImageTiling::eOptimal,
+            vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst, // Used in Compute/RT
+            vk::MemoryPropertyFlagBits::eDeviceLocal, *this);
+        img.image_view = Image::createImageView(img, *this);
+        
+        // Transition to GENERAL layout immediately for simplicity
+        vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+        transitionImage(cmd, img.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
+        endSingleTimeCommands(cmd, graphics_queue);
+    };
+
+    createStorageImage(g_buffer_normal);
+    createStorageImage(g_buffer_pos);
+    createStorageImage(denoised_image);
+    createStorageImage(denoise_intermediate);
+}
+
+void Engine::createDenoisePipeline() {
+    // 1. Layout (Bindings)
+    std::vector<vk::DescriptorSetLayoutBinding> bindings = {
+        {0, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eCompute, nullptr}, // Input
+        {1, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eCompute, nullptr}, // Normals
+        {2, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eCompute, nullptr}, // Positions
+        {3, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eCompute, nullptr}  // Output
+    };
+    denoise_pipeline.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings);
+
+    // FIX: Define the Push Constant Range for the integer step width
+    vk::PushConstantRange push_constant;
+    push_constant.offset = 0;
+    push_constant.size = sizeof(int); 
+    push_constant.stageFlags = vk::ShaderStageFlagBits::eCompute;
+
+    // 2. Pipeline Layout (Attach Push Constant)
+    vk::PipelineLayoutCreateInfo layout_info({}, *denoise_pipeline.descriptor_set_layout);
+    
+    // Add these two lines:
+    layout_info.pushConstantRangeCount = 1;
+    layout_info.pPushConstantRanges = &push_constant;
+
+    denoise_pipeline.layout = vk::raii::PipelineLayout(logical_device, layout_info);
+
+    // 3. Shader & Pipeline
+    auto compShader = Pipeline::readFile("shaders/rt_datacollect/denoise.comp.spv");
+    vk::raii::ShaderModule shaderModule = Pipeline::createShaderModule(compShader, &logical_device);
+
+    vk::ComputePipelineCreateInfo pipelineInfo;
+    pipelineInfo.stage = vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eCompute, *shaderModule, "main");
+    pipelineInfo.layout = *denoise_pipeline.layout;
+
+    denoise_pipeline.pipeline = vk::raii::Pipeline(logical_device, nullptr, pipelineInfo);
+}
+
+void Engine::createDenoiseDescriptorSets()
+{
+    // 1. Resize to hold 2 sets per frame (Ping + Pong)
+    denoise_descriptor_sets.clear();
+
+    // 2. Allocate Descriptor Sets
+    std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT * 2, *denoise_pipeline.descriptor_set_layout);
+    
+    vk::DescriptorSetAllocateInfo alloc_info(
+        *descriptor_pool,
+        static_cast<uint32_t>(layouts.size()),
+        layouts.data()
+    );
+
+    denoise_descriptor_sets = logical_device.allocateDescriptorSets(alloc_info);
+
+    // 3. Update Bindings for each frame
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        
+        // We define a helper to reduce code duplication for Ping/Pong sets
+        auto update_set = [&](uint32_t set_index, AllocatedImage& input_img, AllocatedImage& output_img) {
+            std::vector<vk::WriteDescriptorSet> writes;
+
+            // Binding 0: Input Image (Read-Only)
+            vk::DescriptorImageInfo input_info;
+            input_info.imageView = *input_img.image_view;
+            input_info.imageLayout = vk::ImageLayout::eGeneral;
+
+            vk::WriteDescriptorSet input_write;
+            input_write.dstSet = *denoise_descriptor_sets[set_index];
+            input_write.dstBinding = 0;
+            input_write.descriptorType = vk::DescriptorType::eStorageImage;
+            input_write.descriptorCount = 1;
+            input_write.pImageInfo = &input_info;
+            writes.push_back(input_write);
+
+            // Binding 1: Normals (Constant)
+            vk::DescriptorImageInfo norm_info;
+            norm_info.imageView = *g_buffer_normal.image_view;
+            norm_info.imageLayout = vk::ImageLayout::eGeneral;
+
+            vk::WriteDescriptorSet norm_write;
+            norm_write.dstSet = *denoise_descriptor_sets[set_index];
+            norm_write.dstBinding = 1;
+            norm_write.descriptorType = vk::DescriptorType::eStorageImage;
+            norm_write.descriptorCount = 1;
+            norm_write.pImageInfo = &norm_info;
+            writes.push_back(norm_write);
+
+            // Binding 2: Positions (Constant)
+            vk::DescriptorImageInfo pos_info;
+            pos_info.imageView = *g_buffer_pos.image_view;
+            pos_info.imageLayout = vk::ImageLayout::eGeneral;
+
+            vk::WriteDescriptorSet pos_write;
+            pos_write.dstSet = *denoise_descriptor_sets[set_index];
+            pos_write.dstBinding = 2;
+            pos_write.descriptorType = vk::DescriptorType::eStorageImage;
+            pos_write.descriptorCount = 1;
+            pos_write.pImageInfo = &pos_info;
+            writes.push_back(pos_write);
+
+            // Binding 3: Output Image (Write-Only)
+            vk::DescriptorImageInfo out_info;
+            out_info.imageView = *output_img.image_view;
+            out_info.imageLayout = vk::ImageLayout::eGeneral;
+
+            vk::WriteDescriptorSet out_write;
+            out_write.dstSet = *denoise_descriptor_sets[set_index];
+            out_write.dstBinding = 3;
+            out_write.descriptorType = vk::DescriptorType::eStorageImage;
+            out_write.descriptorCount = 1;
+            out_write.pImageInfo = &out_info;
+            writes.push_back(out_write);
+
+            logical_device.updateDescriptorSets(writes, {});
+        };
+
+        // --- Set A (Ping): Read Denoised -> Write Intermediate ---
+        // Used in Passes 0, 2, 4...
+        // Note: For Pass 0, we assume 'denoised_image' already contains the noisy input 
+        // (via the copy/blit we added in recordCommandBuffer)
+        update_set(i * 2, denoised_image, denoise_intermediate);
+
+        // --- Set B (Pong): Read Intermediate -> Write Denoised ---
+        // Used in Passes 1, 3, 5...
+        update_set(i * 2 + 1, denoise_intermediate, denoised_image);
+    }
+}
+
 
 // ------ Render Loop Functions
 
@@ -1705,7 +1858,7 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     cmd.begin({});
 
     // 1. Always Build TLAS (Required for ray queries in both modes)
-    if(accumulation_frame == 0) // This is possible since we are using static scenes, remove for changing scenes
+    if(accumulation_frame == 0) 
         buildTlas(cmd); 
 
     // Bind RT Pipeline & Descriptors (Shared by both modes)
@@ -1720,20 +1873,17 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     p_const.height = torus.getHeight();
     cmd.pushConstants<RayPushConstant>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, p_const);
 
-
     // =========================================================
-    // MODE A: POINT CLOUD ANALYSIS (Pressed 'P')
+    // MODE A: POINT CLOUD ANALYSIS (unchanged)
     // =========================================================
     if(render_point_cloud)
     {
-        // 1. Run Data Capture Pass (RayGen 0: Torus -> Scene)
-        // This calculates positions and colors using the updated raygen.rgen
+        // ... (Keep existing Point Cloud logic exactly as it was in your file) ...
         vk::StridedDeviceAddressRegionKHR rgen_torus{sbt_address + 0 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
         uint32_t side = static_cast<uint32_t>(std::ceil(std::sqrt(sampling_points.size())));
         
         vkCmdTraceRaysKHR(*cmd, rgen_torus, rmiss_region, rhit_region, callable_region, side, side, 1);
         
-        // Barrier: Ensure RT is done writing to hit_buffer before Vertex Shader reads it
         vk::MemoryBarrier2 mem_barrier;
         mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
         mem_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
@@ -1744,7 +1894,6 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         dep_info.pMemoryBarriers = &mem_barrier;
         cmd.pipelineBarrier2(dep_info);
 
-        // 2. Prepare Swapchain for Rasterization (Clear Screen)
         transition_image_layout(image_index, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal,
                                 {}, vk::AccessFlagBits2::eColorAttachmentWrite,
                                 vk::PipelineStageFlagBits2::eTopOfPipe, vk::PipelineStageFlagBits2::eColorAttachmentOutput);
@@ -1752,9 +1901,9 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         vk::RenderingAttachmentInfo color_att{};
         color_att.imageView = swapchain.image_views[image_index];
         color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-        color_att.loadOp = vk::AttachmentLoadOp::eClear; // Clear previous frame
+        color_att.loadOp = vk::AttachmentLoadOp::eClear; 
         color_att.storeOp = vk::AttachmentStoreOp::eStore;
-        color_att.clearValue = vk::ClearColorValue{std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}}; // Black Background
+        color_att.clearValue = vk::ClearColorValue{std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}}; 
 
         vk::RenderingAttachmentInfo depth_att{};
         depth_att.imageView = depth_image.image_view;
@@ -1773,9 +1922,8 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         cmd.beginRendering(render_info);
         cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)swapchain.extent.width, (float)swapchain.extent.height, 0.f, 1.f));
         cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapchain.extent));
-        cmd.setCullMode(vk::CullModeFlagBits::eNone); // Required for dynamic state
+        cmd.setCullMode(vk::CullModeFlagBits::eNone); 
 
-        // Draw Point Cloud
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.pipeline);
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.layout, 0, {*point_cloud_descriptor_sets[current_frame]}, {});
         
@@ -1785,63 +1933,215 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         pc_data.minor_radius = torus.getMinorRadius();
         pc_data.height = torus.getHeight();
 
-        // --- Toggle 'O': Show Scene Point Cloud ---
         if (render_final_pointcloud) {
-            pc_data.mode = 0; // World Hit
+            pc_data.mode = 0; 
             cmd.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data);
             cmd.draw(static_cast<uint32_t>(sampling_points.size()), 1, 0, 0);
         }
 
-        // --- Toggle 'T': Show Projected Torus Surface ---
         if (show_projected_torus) {
-            pc_data.mode = 1; // Torus UV Surface
+            pc_data.mode = 1; 
             cmd.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data);
             cmd.draw(static_cast<uint32_t>(sampling_points.size()), 1, 0, 0);
         }
 
         cmd.endRendering();
 
-        // Transition to Present
         transition_image_layout(image_index, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::ePresentSrcKHR,
                                 vk::AccessFlagBits2::eColorAttachmentWrite, {},
                                 vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::PipelineStageFlagBits2::eBottomOfPipe);
     }
     // =========================================================
-    // MODE B: STANDARD RENDER (Normal View)
+    // MODE B: STANDARD RENDER + A-TROUS WAVELET DENOISING
     // =========================================================
     else 
     {
-        // 1. Run Camera View Pass (RayGen 1: Camera -> Scene)
+        // 1. Ray Tracing Pass (Writes to rt_output, gNormals, gPositions)
         vk::StridedDeviceAddressRegionKHR rgen_camera{sbt_address + 1 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
         vkCmdTraceRaysKHR(*cmd, rgen_camera, rmiss_region, rhit_region, callable_region, swapchain.extent.width, swapchain.extent.height, 1);
         
-        // 2. Transition & Copy to Swapchain
-        vk::ImageMemoryBarrier2 image_barrier;
-        image_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
-        image_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
-        image_barrier.dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
-        image_barrier.dstAccessMask = vk::AccessFlagBits2::eTransferRead;
-        image_barrier.oldLayout = vk::ImageLayout::eGeneral;
-        image_barrier.newLayout = vk::ImageLayout::eTransferSrcOptimal;
-        image_barrier.image = rt_output_image.image;
-        image_barrier.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
+        // --- 2. PREPARE COPY: RT -> Denoise Input ---
+        // We need to copy the noisy RT output to 'denoised_image' to start the ping-pong chain.
+        
+        vk::ImageMemoryBarrier2 pre_copy_barriers[4];
+        
+        // RT Output: General -> TransferSrc (for copy)
+        pre_copy_barriers[0].srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
+        pre_copy_barriers[0].srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
+        pre_copy_barriers[0].dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
+        pre_copy_barriers[0].dstAccessMask = vk::AccessFlagBits2::eTransferRead;
+        pre_copy_barriers[0].oldLayout = vk::ImageLayout::eGeneral;
+        pre_copy_barriers[0].newLayout = vk::ImageLayout::eTransferSrcOptimal;
+        pre_copy_barriers[0].image = rt_output_image.image;
+        pre_copy_barriers[0].subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
 
-        vk::ImageMemoryBarrier2 swap_barrier;
-        swap_barrier.srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe;
-        swap_barrier.srcAccessMask = {};
-        swap_barrier.dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
-        swap_barrier.dstAccessMask = vk::AccessFlagBits2::eTransferWrite;
-        swap_barrier.oldLayout = vk::ImageLayout::eUndefined;
-        swap_barrier.newLayout = vk::ImageLayout::eTransferDstOptimal;
-        swap_barrier.image = swapchain.images[image_index];
-        swap_barrier.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
+        // Denoised Image: Undefined/General -> TransferDst (Target of copy)
+        pre_copy_barriers[1].srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe; // Don't care previous state
+        pre_copy_barriers[1].srcAccessMask = {};
+        pre_copy_barriers[1].dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
+        pre_copy_barriers[1].dstAccessMask = vk::AccessFlagBits2::eTransferWrite;
+        pre_copy_barriers[1].oldLayout = vk::ImageLayout::eUndefined;
+        pre_copy_barriers[1].newLayout = vk::ImageLayout::eTransferDstOptimal;
+        pre_copy_barriers[1].image = denoised_image.image;
+        pre_copy_barriers[1].subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
 
-        vk::ImageMemoryBarrier2 barriers[] = {image_barrier, swap_barrier};
+        // G-Buffers: RT Write -> Compute Read (Wait here so we don't need to barrier inside the loop)
+        // Normals
+        pre_copy_barriers[2].srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
+        pre_copy_barriers[2].srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
+        pre_copy_barriers[2].dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+        pre_copy_barriers[2].dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead;
+        pre_copy_barriers[2].oldLayout = vk::ImageLayout::eGeneral;
+        pre_copy_barriers[2].newLayout = vk::ImageLayout::eGeneral;
+        pre_copy_barriers[2].image = g_buffer_normal.image;
+        pre_copy_barriers[2].subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
+
+        // Positions
+        pre_copy_barriers[3].srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
+        pre_copy_barriers[3].srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
+        pre_copy_barriers[3].dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+        pre_copy_barriers[3].dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead;
+        pre_copy_barriers[3].oldLayout = vk::ImageLayout::eGeneral;
+        pre_copy_barriers[3].newLayout = vk::ImageLayout::eGeneral;
+        pre_copy_barriers[3].image = g_buffer_pos.image;
+        pre_copy_barriers[3].subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
+
         vk::DependencyInfo dep_info;
-        dep_info.imageMemoryBarrierCount = 2;
-        dep_info.pImageMemoryBarriers = barriers;
+        dep_info.imageMemoryBarrierCount = 4;
+        dep_info.pImageMemoryBarriers = pre_copy_barriers;
         cmd.pipelineBarrier2(dep_info);
 
+        // --- 3. EXECUTE COPY (Noisy RT -> Start of Denoise Chain) ---
+        vk::ImageCopy copyRegion;
+        copyRegion.srcSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
+        copyRegion.dstSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
+        copyRegion.extent = vk::Extent3D{swapchain.extent.width, swapchain.extent.height, 1};
+        cmd.copyImage(rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, 
+                      denoised_image.image, vk::ImageLayout::eTransferDstOptimal, 
+                      {copyRegion});
+
+        // --- 4. PREPARE FOR COMPUTE LOOP ---
+        // We need Denoised, Intermediate, and RT_Output(just to restore it) back to General.
+        
+        vk::ImageMemoryBarrier2 pre_compute_barriers[3];
+        
+        // Denoised: TransferDst -> General (Read/Write in Compute)
+        pre_compute_barriers[0].srcStageMask = vk::PipelineStageFlagBits2::eTransfer;
+        pre_compute_barriers[0].srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
+        pre_compute_barriers[0].dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+        pre_compute_barriers[0].dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite;
+        pre_compute_barriers[0].oldLayout = vk::ImageLayout::eTransferDstOptimal;
+        pre_compute_barriers[0].newLayout = vk::ImageLayout::eGeneral;
+        pre_compute_barriers[0].image = denoised_image.image;
+        pre_compute_barriers[0].subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
+
+        // Intermediate: Undefined -> General (Write target for Pass 0)
+        pre_compute_barriers[1].srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe;
+        pre_compute_barriers[1].srcAccessMask = {};
+        pre_compute_barriers[1].dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+        pre_compute_barriers[1].dstAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
+        pre_compute_barriers[1].oldLayout = vk::ImageLayout::eUndefined;
+        pre_compute_barriers[1].newLayout = vk::ImageLayout::eGeneral;
+        pre_compute_barriers[1].image = denoise_intermediate.image;
+        pre_compute_barriers[1].subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
+
+        // RT Output: Restore to General for next frame (optional but good practice)
+        pre_compute_barriers[2].srcStageMask = vk::PipelineStageFlagBits2::eTransfer;
+        pre_compute_barriers[2].srcAccessMask = vk::AccessFlagBits2::eTransferRead;
+        pre_compute_barriers[2].dstStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
+        pre_compute_barriers[2].dstAccessMask = vk::AccessFlagBits2::eShaderStorageWrite; // Ready for next frame
+        pre_compute_barriers[2].oldLayout = vk::ImageLayout::eTransferSrcOptimal;
+        pre_compute_barriers[2].newLayout = vk::ImageLayout::eGeneral;
+        pre_compute_barriers[2].image = rt_output_image.image;
+        pre_compute_barriers[2].subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
+
+        vk::DependencyInfo comp_dep;
+        comp_dep.imageMemoryBarrierCount = 3;
+        comp_dep.pImageMemoryBarriers = pre_compute_barriers;
+        cmd.pipelineBarrier2(comp_dep);
+
+
+        // --- 5. A-TROUS WAVELET LOOP (4 Passes) ---
+        // Passes: 0 (Step 1), 1 (Step 2), 2 (Step 4), 3 (Step 8)
+        // Since pass count is EVEN (4), the result ping-pongs D->I->D->I->D.
+        // The final result ends up in 'denoised_image'.
+        
+        cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *denoise_pipeline.pipeline);
+        uint32_t groupX = (swapchain.extent.width + 15) / 16;
+        uint32_t groupY = (swapchain.extent.height + 15) / 16;
+
+        const int PASSES = 4;
+        for (int p = 0; p < PASSES; p++) {
+            // Determine Descriptor Set (Ping or Pong)
+            // Even Passes (0, 2): Read Denoised -> Write Intermediate (Set Index A)
+            // Odd Passes  (1, 3): Read Intermediate -> Write Denoised (Set Index B)
+            uint32_t set_idx = (current_frame * 2) + (p % 2);
+            
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *denoise_pipeline.layout, 0, {*denoise_descriptor_sets[set_idx]}, {});
+
+            // Push Constant: Step Width (1, 2, 4, 8)
+            int step_width = 1 << p;
+            cmd.pushConstants<int>(*denoise_pipeline.layout, vk::ShaderStageFlagBits::eCompute, 0, step_width);
+
+            // Dispatch
+            cmd.dispatch(groupX, groupY, 1);
+
+            // Barrier between passes
+            // Wait for Compute Write -> Compute Read for both images (simplest)
+            vk::ImageMemoryBarrier2 loop_barriers[2];
+            auto setup_loop_barrier = [&](vk::Image img) {
+                vk::ImageMemoryBarrier2 b = {};
+                b.srcStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+                b.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
+                b.dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+                b.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead;
+                b.oldLayout = vk::ImageLayout::eGeneral;
+                b.newLayout = vk::ImageLayout::eGeneral;
+                b.image = img;
+                b.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
+                return b;
+            };
+
+            loop_barriers[0] = setup_loop_barrier(denoised_image.image);
+            loop_barriers[1] = setup_loop_barrier(denoise_intermediate.image);
+
+            vk::DependencyInfo loop_dep;
+            loop_dep.imageMemoryBarrierCount = 2;
+            loop_dep.pImageMemoryBarriers = loop_barriers;
+            cmd.pipelineBarrier2(loop_dep);
+        }
+
+        // --- 6. FINAL BLIT (Denoised Image -> Swapchain) ---
+        // Since we did 4 passes, the final valid data is in 'denoised_image'.
+        
+        vk::ImageMemoryBarrier2 blit_barriers[2];
+
+        // Denoised: Compute Read/Write -> TransferSrc
+        blit_barriers[0].srcStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+        blit_barriers[0].srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
+        blit_barriers[0].dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
+        blit_barriers[0].dstAccessMask = vk::AccessFlagBits2::eTransferRead;
+        blit_barriers[0].oldLayout = vk::ImageLayout::eGeneral;
+        blit_barriers[0].newLayout = vk::ImageLayout::eTransferSrcOptimal;
+        blit_barriers[0].image = denoised_image.image;
+        blit_barriers[0].subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
+
+        // Swapchain: Undefined -> TransferDst
+        blit_barriers[1].srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe;
+        blit_barriers[1].srcAccessMask = {};
+        blit_barriers[1].dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
+        blit_barriers[1].dstAccessMask = vk::AccessFlagBits2::eTransferWrite;
+        blit_barriers[1].oldLayout = vk::ImageLayout::eUndefined;
+        blit_barriers[1].newLayout = vk::ImageLayout::eTransferDstOptimal;
+        blit_barriers[1].image = swapchain.images[image_index];
+        blit_barriers[1].subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
+
+        vk::DependencyInfo blit_dep;
+        blit_dep.imageMemoryBarrierCount = 2;
+        blit_dep.pImageMemoryBarriers = blit_barriers;
+        cmd.pipelineBarrier2(blit_dep);
+
+        // Execute Blit
         vk::ImageBlit blitRegion;
         blitRegion.srcOffsets[0] = vk::Offset3D{0, 0, 0};
         blitRegion.srcOffsets[1] = vk::Offset3D{static_cast<int32_t>(swapchain.extent.width), static_cast<int32_t>(swapchain.extent.height), 1};
@@ -1852,16 +2152,16 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         blitRegion.dstSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
 
         cmd.blitImage(
-            rt_output_image.image,            // Source (Float32)
+            denoised_image.image,             
             vk::ImageLayout::eTransferSrcOptimal,
-            swapchain.images[image_index],    // Dest (Int8 / Swapchain)
+            swapchain.images[image_index],    
             vk::ImageLayout::eTransferDstOptimal,
-            blitRegion,                       // <--- FIXED: Pass the object directly (implicit ArrayProxy)
+            blitRegion,                       
             vk::Filter::eNearest
         );
 
-        // Restore RT Image Layout
-        transitionImage(cmd, rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
+        // Restore Denoised Image to General (ready for next frame's copy-in)
+        transitionImage(cmd, denoised_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
 
         // Transition Swapchain to Present
         transition_image_layout(image_index, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::ePresentSrcKHR,
@@ -2258,8 +2558,12 @@ void Engine::createRayTracingPipeline()
 
     bindings.emplace_back(12, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
 
-    // Binding 11: Textures (Must be LAST)
-    bindings.emplace_back(13, vk::DescriptorType::eCombinedImageSampler, static_cast<uint32_t>(MAX_BINDLESS_TEXTURES), 
+    bindings.emplace_back(13, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eRaygenKHR, nullptr);
+
+    bindings.emplace_back(14, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eRaygenKHR, nullptr);
+
+    // Binding 15: Textures (Must be LAST)
+    bindings.emplace_back(15, vk::DescriptorType::eCombinedImageSampler, static_cast<uint32_t>(MAX_BINDLESS_TEXTURES), 
                           vk::ShaderStageFlagBits::eClosestHitKHR | vk::ShaderStageFlagBits::eAnyHitKHR, nullptr);
 
     // --- FLAGS ---
@@ -2543,11 +2847,29 @@ void Engine::createRayTracingDescriptorSets()
         light_write.pBufferInfo = &light_info;
         writes.push_back(light_write);
 
-        // --- Binding 13: Global Textures (Last) ---
+        // Binding 13: Normals
+        vk::DescriptorImageInfo norm_info;
+        norm_info.imageView = *g_buffer_normal.image_view;
+        norm_info.imageLayout = vk::ImageLayout::eGeneral;
+        vk::WriteDescriptorSet norm_write(
+            *rt_descriptor_sets[i], 13, 0, 1, vk::DescriptorType::eStorageImage, &norm_info, nullptr, nullptr
+        );
+        writes.push_back(norm_write);
+
+        // Binding 14: Positions
+        vk::DescriptorImageInfo pos_info;
+        pos_info.imageView = *g_buffer_pos.image_view;
+        pos_info.imageLayout = vk::ImageLayout::eGeneral;
+        vk::WriteDescriptorSet pos_write(
+            *rt_descriptor_sets[i], 14, 0, 1, vk::DescriptorType::eStorageImage, &pos_info, nullptr, nullptr
+        );
+        writes.push_back(pos_write);
+
+        // --- Binding 15: Global Textures (Last) ---
         if (!global_texture_descriptors.empty()) {
             vk::WriteDescriptorSet texture_write;
             texture_write.dstSet = *rt_descriptor_sets[i];
-            texture_write.dstBinding = 13;
+            texture_write.dstBinding = 15;
             texture_write.dstArrayElement = 0;
             texture_write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
             texture_write.descriptorCount = static_cast<uint32_t>(global_texture_descriptors.size());
@@ -2651,10 +2973,17 @@ void Engine::recreateSwapChain(){
     }
     createRTOutputImage();
 
+    vmaDestroyImage(vma_allocator, g_buffer_normal.image, g_buffer_normal.allocation);
+    vmaDestroyImage(vma_allocator, g_buffer_pos.image, g_buffer_pos.allocation);
+    vmaDestroyImage(vma_allocator, denoised_image.image, denoised_image.allocation);
+    vmaDestroyImage(vma_allocator, denoise_intermediate.image, denoise_intermediate.allocation);
+    createDenoiseResources();
+
     // 4. Update Descriptor Sets
     // The RT Descriptor Set (Binding 10) holds the 'rt_output_image' view.
     // Since the view has changed, we must update the descriptors.
     createDescriptorSets();
+    createDenoiseDescriptorSets();
 
     // 5. Update Camera
     camera.modAspectRatio(swapchain.extent.width * 1.0 / swapchain.extent.height);

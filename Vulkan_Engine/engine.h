@@ -140,8 +140,8 @@ public:
 
 private:
     // Window variables
-    uint32_t win_width = 1280;
-    uint32_t win_height = 720;
+    int win_width = 1280;
+    int win_height = 720;
 
     float total_elapsed = 0.f;
     int fps_count = 0;

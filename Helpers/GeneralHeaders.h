@@ -307,6 +307,10 @@ struct UniformBufferObject {
     float punctual_flux = 0.f; 
     float total_flux;
     float p_emissive = 0.f;
+
+    float fov = 60.f;
+    float height = 720.f;
+    glm::vec2 pad;
 };
 
 struct QueueFamilyIndices {

@@ -26,7 +26,7 @@ vec2 r2_sequence(uint i) {
 
 const float PI = 3.14159265359;
 // MATCH CAMERA RENDERER CLAMP
-const float CLAMP_MAX = 10.0; 
+const float CLAMP_MAX = 5.0; 
 
 void main()
 {
@@ -82,7 +82,7 @@ void main()
     payload.last_bsdf_pdf = 0.0;
     payload.blue_noise = blue.ba;
 
-    traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, safe_origin, 0.0, ray_dir, 10000.0, 0);
+    traceRayEXT(tlas, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0, safe_origin, 0.0, ray_dir, 10000.0, 0);
 
     vec3 final_hit_pos = payload.hit_pos;
     float final_hit_flag = payload.hit_flag;
@@ -92,16 +92,21 @@ void main()
         accumulated_color += payload.color * throughput;
         for (int depth = 1; depth < 12; depth++) { 
              throughput *= payload.weight;
+             float max_throughput = max(max(throughput.r, throughput.g), throughput.b);
+            if (max_throughput < 0.001) break;
              if(depth >= 4) {
-                 float p = max(max(throughput.r, throughput.g), throughput.b);
-                 if (rnd(payload.seed) > p) break;
-                 throughput /= p;
-             }
-             traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, payload.next_ray_origin, 0.001, payload.next_ray_dir, 10000.0, 0);
-             accumulated_color += payload.color * throughput;
-             if (depth > 0) {
-                accumulated_color = min(accumulated_color, vec3(CLAMP_MAX)); 
+                // Calculate survival probability based on material brightness
+                float p = clamp(max_throughput, 0.05, 0.95);
+            
+                if (rnd(payload.seed) > p) break;
+                
+                // Boost the survivor so the average brightness remains correct
+                throughput /= p;
             }
+             traceRayEXT(tlas, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0, payload.next_ray_origin, 0.001, payload.next_ray_dir, 10000.0, 0);
+             accumulated_color += payload.color * throughput;
+            
+            accumulated_color = min(accumulated_color, vec3(CLAMP_MAX)); 
              if (payload.hit_flag < 1.5) break;
         }
     }

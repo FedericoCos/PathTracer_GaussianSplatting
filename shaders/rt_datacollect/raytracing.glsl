@@ -134,6 +134,9 @@ layout(set = 0, binding = 4) uniform UniformBufferObject {
     float punctual_flux;
     float total_flux;
     float p_emissive;
+    float fov;
+    float win_height;
+    vec2 padding;
 } ubo;
 layout(set = 0, binding = 5, scalar) buffer readonly AllVertices { InputVertex v[]; } all_vertices;
 layout(set = 0, binding = 6, scalar) buffer readonly AllIndices { uint i[]; } all_indices;

@@ -15,33 +15,40 @@ const float PI = 3.14159265359;
 // Estimates the texture LOD based on ray distance and screen resolution.
 // You might need to pass in screen height via UBO if you want it exact, 
 // otherwise 1080.0 is a decent default.
-float computeLOD(vec3 origin, vec3 dir, float dist, vec3 normal) {
-    // 1. ANGLE TUNING (LOWER = SHARPER)
-    // Previous: 0.00035
-    // New: 0.00015 -> This is extremely conservative. 
-    // It assumes a very high pixel density, delaying the blur significantly.
-    const float pixel_spread_angle = 0.00015; 
-    
+float computeLOD(vec3 origin, vec3 dir, float dist, vec3 normal, int tex_id) {
+    // 1. ANGLE TUNING (FOV calculation)
+    const float pixel_spread_angle = (2.0 * tan(ubo.fov * 0.5)) / ubo.win_height; 
     float ray_footprint = dist * pixel_spread_angle;
 
-    // 2. GRAZING ANGLE TUNING
+    // 2. GRAZING ANGLE RELAXATION
     float NdotV = abs(dot(normal, -dir));
-    
-    // Previous: 0.2
-    // New: 0.1 -> Allows textures to stay sharp even at steep 
-    // angles (like the side of the cloth folds) before blurring.
-    ray_footprint /= max(NdotV, 0.1);
+    ray_footprint /= max(NdotV, 0.25);
 
-    // 3. TEXTURE SIZE
-    // Keep this at 2048.0 or 4096.0 depending on your asset quality.
-    float texture_size = 2048.0; 
+    // 3. GET ACTUAL TEXTURE SIZE
+    float texture_dim = 2048.0; 
+    if (tex_id >= 0) {
+        ivec2 size = textureSize(global_textures[nonuniformEXT(tex_id)], 0);
+        texture_dim = float(max(size.x, size.y));
+    }
+
+    // 4. CALCULATE RAW LOD
+    float raw_lod = log2(ray_footprint * texture_dim);
+
+    // --- 5. DYNAMIC BIAS ---
     
-    float lod = log2(ray_footprint * texture_size);
+    // Default bias for standard (1k/2k) textures: make them sharper (-0.5 to -1.0)
+    float bias = -0.5;
+
+    // If the texture is HUGE (4k+), we don't need to force sharpness 
+    // because the data is already dense. Forcing it creates shimmering.
+    if (texture_dim > 2048.0) {
+        bias = 0.0; // No sharpening for 4K textures
+    }
     
-    // 4. BIAS (MORE NEGATIVE = SHARPER)
-    // -1.0 forces the GPU to pick one full mip-level higher 
-    // than the math suggests.
-    return max(lod - 1.0, 0.0);
+    // Apply the Gentle Falloff multiplier from before
+    float final_lod = (raw_lod * 0.7) + bias;
+
+    return max(final_lod, 0.0);
 }
 
 // --- TEXTURE HELPERS ---
@@ -135,7 +142,7 @@ float traceShadow(vec3 origin, vec3 direction, float maxDist)
 
     traceRayEXT(
         tlas,
-        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT,
+        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
         0xFF,
         0,0,1,
         origin,
@@ -157,7 +164,7 @@ float traceShadow(vec3 origin, vec3 lightPos) {
     
     // FIX 2: Reduce epsilon. 0.01 (1cm) is too large for most scenes. Use 0.001 (1mm).
     // FIX 3: Don't subtract 0.01 from dist. Subtract a tiny epsilon to avoid hitting the light itself.
-    traceRayEXT(tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT, 
+    traceRayEXT(tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT, 
                 0xFF, 0, 0, 1, 
                 origin,     // Origin is now pre-offset
                 0.001,      // tMin: Start 1mm away
@@ -537,9 +544,9 @@ void main()
 
     float tex_lod = 0.0;
     
-    if (payload.last_bsdf_pdf <= 0.0) {
+    if (payload.last_bsdf_pdf <= 0.0 && mat.albedo_id > 0) {
         // Primary Ray: Calculate geometric LOD to prevent aliasing (fireflies)
-        tex_lod = computeLOD(gl_WorldRayOriginEXT, gl_WorldRayDirectionEXT, gl_HitTEXT, N_geo);
+        tex_lod = computeLOD(gl_WorldRayOriginEXT, gl_WorldRayDirectionEXT, gl_HitTEXT, N_geo, mat.albedo_id);
     } else {
         // Secondary Ray: Blur based on roughness (cone widening)
         // We accumulate roughness to simulate the ray getting wider after bouncing
@@ -549,7 +556,6 @@ void main()
     if (abs(Tw) > 0.0001 && mat.normal_id > 0) {
         vec3 map_val = sampleTexture(mat.normal_id, (mat.uv_normal * vec4(tex_coord, 0.0, 1.0)).xy, tex_lod).xyz;
         vec3 normal_map = map_val * 2.0 - 1.0;
-        
         // --- SOFTEN NORMALS FOR CLOTH ---
         // This effectively flattens the bumps, reducing "sparkles"
         normal_map.xy *= 0.5; // Reduce strength by 50%
@@ -587,7 +593,7 @@ void main()
 
         // 3. Conversion to PBR Standard
         F0 = specular_color;
-        roughness = sqrt(max(1.0 - glossiness, 0.001));
+        roughness = sqrt(max(1.0 - glossiness, 0.04));
         // alpha = roughness * roughness;
         metallic = 0.0; // SpecGloss doesn't use metallic parameter usually, diffuse is explicitly provided
     } 
@@ -634,56 +640,7 @@ void main()
     if (mat.emissive_id > 0){ 
         emissive *= sampleTexture(mat.emissive_id, (mat.uv_emissive * vec4(tex_coord, 0.0, 1.0)).xy, tex_lod).rgb;
     }
-
-    // --- 5. TRANSPARENCY & MASK LOGIC ---
-    float real_alpha_cutoff = mat.alpha_cutoff;
     float transmission = mat.transmission_factor; 
-
-    // CASE A: MASK MODE
-    if (real_alpha_cutoff > 0.0) { 
-        if (alpha < real_alpha_cutoff) {
-            // Discard Ray
-            payload.hit_flag = 2.0;
-            payload.color = vec3(0.0); 
-            payload.weight = vec3(1.0);
-            payload.next_ray_origin = hit_pos + gl_WorldRayDirectionEXT * 0.001;
-            payload.next_ray_dir = gl_WorldRayDirectionEXT;
-            payload.last_bsdf_pdf = 0.0;
-            return;
-        }
-        // If opaque, reset alpha to 1.0 for lighting
-        alpha = 1.0; 
-    } 
-    // 2. BLEND MODE (Stochastic Transparency)
-    else if (mat.pad > 0.5) { // mat.pad stores 'is_transparent' boolean
-        if (transmission == 0.0 && alpha < 1.0) {
-            // Stochastic Transparency: Randomly ignore hit based on Alpha
-            if (rnd(payload.seed) > alpha) {
-                payload.hit_flag = 2.0; // Miss
-                payload.color = vec3(0.0); 
-                payload.weight = vec3(1.0);
-                payload.next_ray_origin = hit_pos + gl_WorldRayDirectionEXT * 0.001;
-                payload.next_ray_dir = gl_WorldRayDirectionEXT;
-                payload.last_bsdf_pdf = 0.0;
-                return;
-            }
-            // If we "hit", treat the surface as fully opaque for lighting calculations
-            alpha = 1.0;
-        }
-    }
-    // CASE C: OPAQUE
-    else {
-        if (alpha < 0.005) {
-             payload.hit_flag = 2.0;
-             payload.color = vec3(0.0); 
-             payload.weight = vec3(1.0);
-             payload.next_ray_origin = hit_pos + gl_WorldRayDirectionEXT * 0.001;
-             payload.next_ray_dir = gl_WorldRayDirectionEXT;
-             return;
-        } 
-        alpha = 1.0;
-        transmission = 0.0;
-    } 
 
     // --- 6. LIGHTING ---
     payload.hit_pos = hit_pos;

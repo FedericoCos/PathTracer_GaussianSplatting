@@ -620,7 +620,12 @@ void Engine::buildBlas(Gameobject& obj)
         vk::AccelerationStructureGeometryKHR geo;
         geo.geometryType = vk::GeometryTypeKHR::eTriangles;
         geo.geometry.triangles = triangles_data;
-        geo.flags = vk::GeometryFlagBitsKHR::eOpaque; // Mark as opaque
+        if (obj.materials[prim.material_index].is_transparent) {
+            geo.flags = vk::GeometryFlagBitsKHR::eNoDuplicateAnyHitInvocation; 
+            // eNoDuplicate... helps performance by ensuring AnyHit runs only once per potential hit
+        } else {
+            geo.flags = vk::GeometryFlagBitsKHR::eOpaque; // Keep Opaque for solid objects (Performance optimization)
+        }
 
         geometries.push_back(geo);
 
@@ -913,7 +918,9 @@ void Engine::createRTOutputImage() {
 // ------ Init Functions
 
 bool Engine::initWindow(){
-    window = initWindowGLFW("Engine", win_width, win_height);
+    uint32_t w = win_width;
+    uint32_t h = win_height;
+    window = initWindowGLFW("Engine", w, h);
     glfwSetWindowUserPointer(window, this);
     glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 
@@ -1968,6 +1975,8 @@ void Engine::updateUniformBuffer(uint32_t current_image)
         ubo.camera_pos = camera.getCurrentState().f_camera.position;
 
     ubo.frame_count = accumulation_frame;
+    ubo.fov = glm::radians(camera.getCurrentState().fov);
+    ubo.height = win_height;
 
     // --- 6. Copy Data to GPU ---
     memcpy(uniform_buffers_mapped[current_image], &ubo, sizeof(ubo));
@@ -2231,11 +2240,11 @@ void Engine::createRayTracingPipeline()
     bindings.emplace_back(0, vk::DescriptorType::eAccelerationStructureKHR, 1, vk::ShaderStageFlagBits::eRaygenKHR | vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
     bindings.emplace_back(1, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eRaygenKHR, nullptr);
     bindings.emplace_back(2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eRaygenKHR, nullptr);
-    bindings.emplace_back(3, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
+    bindings.emplace_back(3, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR | vk::ShaderStageFlagBits::eAnyHitKHR, nullptr);
     bindings.emplace_back(4, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eRaygenKHR | vk::ShaderStageFlagBits::eClosestHitKHR | vk::ShaderStageFlagBits::eMissKHR, nullptr);
-    bindings.emplace_back(5, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
-    bindings.emplace_back(6, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
-    bindings.emplace_back(7, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
+    bindings.emplace_back(5, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR | vk::ShaderStageFlagBits::eAnyHitKHR, nullptr);
+    bindings.emplace_back(6, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR | vk::ShaderStageFlagBits::eAnyHitKHR, nullptr);
+    bindings.emplace_back(7, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR | vk::ShaderStageFlagBits::eAnyHitKHR, nullptr);
 
     // Binding 8: Light Triangles
     bindings.emplace_back(8, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
@@ -2286,12 +2295,15 @@ void Engine::createRayTracingPipeline()
     // Group 4: Closest Hit (PBR + Shadows)
     vk::raii::ShaderModule rchit = Pipeline::createShaderModule(Pipeline::readFile(rt_rchit_shader), &logical_device);
 
+    vk::raii::ShaderModule ranyhit = Pipeline::createShaderModule(Pipeline::readFile("shaders/rt_datacollect/alpha.rahit.spv"), &logical_device);
+
     std::vector<vk::PipelineShaderStageCreateInfo> stages;
     stages.push_back({{}, vk::ShaderStageFlagBits::eRaygenKHR, *rgen_torus, "main"});      // 0
     stages.push_back({{}, vk::ShaderStageFlagBits::eRaygenKHR, *rgen_camera, "main"});     // 1
     stages.push_back({{}, vk::ShaderStageFlagBits::eMissKHR, *rmiss_primary, "main"});     // 2
     stages.push_back({{}, vk::ShaderStageFlagBits::eMissKHR, *rmiss_shadow, "main"});      // 3
     stages.push_back({{}, vk::ShaderStageFlagBits::eClosestHitKHR, *rchit, "main"});       // 4
+    stages.push_back({{}, vk::ShaderStageFlagBits::eAnyHitKHR, *ranyhit, "main"});
 
     // --- 3. SHADER GROUPS ---
     std::vector<vk::RayTracingShaderGroupCreateInfoKHR> groups;
@@ -2309,7 +2321,13 @@ void Engine::createRayTracingPipeline()
     groups.push_back({vk::RayTracingShaderGroupTypeKHR::eGeneral, 3, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR});
     
     // Group 4: Hit Group (Triangle Closest Hit)
-    groups.push_back({vk::RayTracingShaderGroupTypeKHR::eTrianglesHitGroup, VK_SHADER_UNUSED_KHR, 4, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR});
+    groups.push_back({
+        vk::RayTracingShaderGroupTypeKHR::eTrianglesHitGroup, 
+        VK_SHADER_UNUSED_KHR, // General
+        4,                    // Closest Hit
+        5,                    // Any Hit <--- ATTACH HERE
+        VK_SHADER_UNUSED_KHR  // Intersection
+    });
 
     // --- 4. PIPELINE LAYOUT ---
     // Push constants needed for Torus Model Matrix & Geometry info
@@ -2600,12 +2618,11 @@ void Engine::createShaderBindingTable()
 }
 
 void Engine::recreateSwapChain(){
-    int width = 0, height = 0;
-    glfwGetFramebufferSize(window, &width, &height);
+    glfwGetFramebufferSize(window, &win_width, &win_height);
     
     // Pause while minimized
-    while (width == 0 || height == 0){
-        glfwGetFramebufferSize(window, &width, &height);
+    while (win_width == 0 || win_height == 0){
+        glfwGetFramebufferSize(window, &win_width, &win_height);
         glfwWaitEvents();
     }
 

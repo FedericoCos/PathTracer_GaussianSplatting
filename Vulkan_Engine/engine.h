@@ -248,7 +248,7 @@ private:
     uint32_t accumulation_frame = -1;
 
     // Blue noise
-    const char * blue_noise_txt_path = "blue_noise/128_128/HDR_LA_0.png";
+    const char * blue_noise_txt_path = "blue_noise/1024_1024/LDR_RGBA_0.png";
     AllocatedImage blue_noise_txt;
     vk::DescriptorImageInfo blue_noise_txt_info;
     vk::raii::Sampler blue_noise_txt_sampler = nullptr;

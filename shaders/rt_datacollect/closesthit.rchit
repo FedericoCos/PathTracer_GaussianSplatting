@@ -122,12 +122,8 @@ float pdf_GGX(vec3 N, vec3 V, vec3 L, float roughness) {
     vec3 H = safeNormalize(V + L);
     float NdotH = max(dot(N, H), 0.0);
     float VdotH = max(dot(V, H), 0.0);
-    
-    // D_GGX is already defined in your code
-    float D = D_GGX(N, H, roughness); 
-    
-    // Jacobian to convert from Half-vector PDF to Light-vector PDF
-    return (D * NdotH) / (4.0 * VdotH + 0.0001);
+    float D_NdotH = D_GGX(N, H, roughness) * NdotH;
+    return D_NdotH / (4.0 * VdotH + 0.0001);
 }
 
 // 2. PDF of Lambert (Diffuse)
@@ -136,7 +132,7 @@ float pdf_Lambert(vec3 N, vec3 L) {
     return max(dot(N, L), 0.0) / PI;
 }
 
-float traceShadow(vec3 origin, vec3 direction, float maxDist) 
+float traceShadowDist(vec3 origin, vec3 direction, float maxDist) 
 {
     shadowPayload.isHit = true;
 
@@ -238,6 +234,7 @@ void samplePunctualLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float rough
     // --- 3. Shadow Trace & BRDF ---
     
     float NdotL = max(dot(N, L), 0.0);
+    if (NdotL < 0.001) return;
     
     if (NdotL > 0.0 && length(Le) > 0.0) {
         // Offset shadow ray
@@ -245,7 +242,7 @@ void samplePunctualLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float rough
 
         float visibility;
         
-        if (light.type == 1) visibility = traceShadow(shadow_origin, L, 10000.0);
+        if (light.type == 1) visibility = traceShadowDist(shadow_origin, L, 10000.0);
         else visibility = traceShadow(shadow_origin, light.position);
 
         visibility = max(visibility, transmission);
@@ -284,17 +281,16 @@ void sampleLights_SG(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness,
 
     float r_select = fract(payload.blue_noise.x + rnd(payload.seed));
 
-    // Binary Search
-    uint left = 0;
-    uint right = num_lights - 1; uint idx = 0;
-    while (left <= right) {
-        uint mid = (left + right) / 2;
+    // Binary search optimization
+    uint idx = 0;
+    uint left = 0, right = num_lights;
+    while (left < right) {
+        uint mid = (left + right) >> 1; // Bit shift is faster
         if (light_cdf.entries[mid].cumulative_probability < r_select) {
             left = mid + 1;
         } else {
             idx = mid;
-            if (mid == 0) break;
-            right = mid - 1;
+            right = mid;
         }
     }
 
@@ -318,6 +314,7 @@ void sampleLights_SG(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness,
     L /= dist;
 
     float NdotL = max(dot(N, L), 0.0);
+    if (NdotL < 0.001) return;
     float LdotN_light = abs(dot(-L, light_normal));
 
     if (NdotL > 0.0 && LdotN_light > 0.0) {
@@ -384,17 +381,16 @@ void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, fl
 
     float r_select = fract(payload.blue_noise.x + rnd(payload.seed));
     
-    // Binary Search for Light Triangle
-    uint left = 0;
-    uint right = num_lights - 1; uint idx = 0;
-    while (left <= right) {
-        uint mid = (left + right) / 2;
+    // Binary search optimization
+    uint idx = 0;
+    uint left = 0, right = num_lights;
+    while (left < right) {
+        uint mid = (left + right) >> 1; // Bit shift is faster
         if (light_cdf.entries[mid].cumulative_probability < r_select) {
             left = mid + 1;
         } else {
             idx = mid;
-            if (mid == 0) break;
-            right = mid - 1;
+            right = mid;
         }
     }
     
@@ -421,6 +417,7 @@ void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, fl
     L /= dist;
     
     float NdotL = max(dot(N, L), 0.0);
+    if (NdotL < 0.001) return;
     float LdotN_light = abs(dot(-L, light_normal));
     
     if (NdotL > 0.0 && LdotN_light > 0.0) {
@@ -519,7 +516,7 @@ void main()
     vec3 V = -gl_WorldRayDirectionEXT;
     if (dot(N_geo, V) < 0.0) N_geo = -N_geo; 
     
-    vec3 N = safeNormalize(N_geo);
+    vec3 N = N_geo;
 
    vec3 T = T_geo; 
     
@@ -543,14 +540,14 @@ void main()
     mat3 TBN = mat3(T, B, N);
 
     float tex_lod = 0.0;
-    
-    if (payload.last_bsdf_pdf <= 0.0 && mat.albedo_id > 0) {
-        // Primary Ray: Calculate geometric LOD to prevent aliasing (fireflies)
-        tex_lod = computeLOD(gl_WorldRayOriginEXT, gl_WorldRayDirectionEXT, gl_HitTEXT, N_geo, mat.albedo_id);
+    if (payload.last_bsdf_pdf <= 0.0) {
+        // Primary ray: geometric LOD
+        if (mat.albedo_id > 0) {
+            tex_lod = computeLOD(gl_WorldRayOriginEXT, gl_WorldRayDirectionEXT, gl_HitTEXT, N_geo, mat.albedo_id);
+        }
     } else {
-        // Secondary Ray: Blur based on roughness (cone widening)
-        // We accumulate roughness to simulate the ray getting wider after bouncing
-        tex_lod = (mat.roughness_factor * 3.0) + log2(gl_HitTEXT + 1.0);
+        // Secondary ray: roughness-based blur
+        tex_lod = clamp(mat.roughness_factor * 5.0 + log2(gl_HitTEXT * 0.1 + 1.0), 0.0, 8.0);
     }
 
     if (abs(Tw) > 0.0001 && mat.normal_id > 0) {
@@ -571,13 +568,15 @@ void main()
     float roughness;
     float metallic;
 
+    vec4 base_color_sample = vec4(1.0);
+    if (mat.albedo_id > 0) {
+        base_color_sample = sampleTexture(mat.albedo_id, tex_coord, tex_lod);
+    }
+
     // WORKFLOW A: SPECULAR - GLOSSINESS
     if (mat.use_specular_glossiness_workflow > 0.5) {
         // 1. Diffuse (Albedo)
-        vec4 diffuse_sample = mat.base_color_factor * vec4(vertex_color, 1.0);
-        if (mat.albedo_id > 0) {
-            diffuse_sample *= sampleTexture(mat.albedo_id, tex_coord, tex_lod);
-        }
+        vec4 diffuse_sample = mat.base_color_factor * vec4(vertex_color, 1.0) * base_color_sample;
         albedo = diffuse_sample.rgb;
         alpha  = diffuse_sample.a;
 
@@ -599,10 +598,7 @@ void main()
     } 
     // WORKFLOW B: METALLIC - ROUGHNESS (Standard)
     else {
-        vec4 base_color = mat.base_color_factor * vec4(vertex_color, 1.0);
-        if (mat.albedo_id > 0) {
-            base_color *= sampleTexture(mat.albedo_id, (mat.uv_albedo * vec4(tex_coord, 0.0, 1.0)).xy, tex_lod);
-        }
+        vec4 base_color = mat.base_color_factor * vec4(vertex_color, 1.0) * base_color_sample;
         albedo = base_color.rgb;
         alpha = base_color.a;
 
@@ -650,8 +646,17 @@ void main()
     vec3 Le = emissive; // From fetching material at line 124
     float emission_strength = length(emissive);
 
+    if (emission_strength == 0.0 && max(albedo.r, max(albedo.g, albedo.b)) < 0.001 && mat.pad < 0.5 && transmission == 0.0) {
+        payload.color = vec3(0.0);
+        payload.weight = vec3(0.0);
+        payload.hit_flag = 0.0;
+        return;
+    }
+
     float nee_treshold = 0.001;
     bool use_nee = (transmission == 0.0) && (roughness > nee_treshold);
+
+    if (payload.hit_flag > 3.0) use_nee = false; 
 
     if (emission_strength > 0.0) {
         // If Primary Ray (depth 0, inferred if last_bsdf_pdf is 0 or via flag)
@@ -659,6 +664,10 @@ void main()
         if (payload.last_bsdf_pdf <= 0.0 || !use_nee) {
             Lo += Le; 
         } 
+        else if(emission_strength < 0.001){
+            payload.color = vec3(0.0);
+            return;
+        }
         else {
             float pdf_bsdf = payload.last_bsdf_pdf;
             
@@ -672,7 +681,6 @@ void main()
             // 2. Calculate raw PDF
             // Note: If emission_strength_cpu is 0, this ray shouldn't exist, but safety check:
             float pdf_nee = 0.0;
-            float area = length(cross(v1.pos - v0.pos, v2.pos - v0.pos)) * 0.5;
             if (ubo.emissive_flux > 0.0) {
                 pdf_nee = (emission_strength_cpu / (ubo.emissive_flux)) * (dist_sq / max(LdotN, 0.001));
             }

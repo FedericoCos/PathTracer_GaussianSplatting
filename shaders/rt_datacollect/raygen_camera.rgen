@@ -32,7 +32,7 @@ void main()
     ivec2 pixel_offset = ivec2(random_offset * vec2(size));
 
     // Apply Toroidal Shift
-    ivec2 pos = (ivec2(gl_LaunchIDEXT.xy) + pixel_offset) % size;
+    ivec2 pos = (ivec2(gl_LaunchIDEXT.xy) + pixel_offset) & (size - 1);
     vec4 blue = texelFetch(blueNoiseTex, pos, 0);
 
     // Use blue.r and blue.g for your sub-pixel jitter
@@ -62,13 +62,18 @@ void main()
     payload.blue_noise = blue.ba;
     payload.last_bsdf_pdf = 0.0;
 
-    for (int depth = 0; depth < 12; depth++) { 
+    int max_depth = 12;
+
+    for (int depth = 0; depth < max_depth; depth++) { 
         traceRayEXT(tlas, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0, ray_origin, 0.001, ray_dir, 10000.0, 0);
         accumulated_color += payload.color * throughput;
 
         accumulated_color = min(accumulated_color, vec3(CLAMP_MAX));
 
         if (payload.hit_flag < 1.5) break; 
+        if (depth == 0 && payload.hit_flag > 1.5) {
+            max_depth = 8; // Saves 33% rays on diffuse surfaces
+        }
 
         throughput *= payload.weight;
         ray_origin = payload.next_ray_origin;

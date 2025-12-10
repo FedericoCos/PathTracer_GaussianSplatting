@@ -48,16 +48,5 @@ GLFWwindow * initWindowGLFW(const char *windowTitle, uint32_t& out_width, uint32
     out_width = (uint32_t)w;
     out_height = (uint32_t)h;
 
-    // TEMPORARY !!!! 0001
-    // Window input handling
-    glfwSetKeyCallback(window, handle_input);
-
     return window;
-}
-
-
-void handle_input(GLFWwindow *window, int key, int, int action, int){
-    if(key == GLFW_KEY_ESCAPE && action == GLFW_PRESS){
-        glfwSetWindowShouldClose(window, GLFW_TRUE);
-    }
 }

@@ -44,9 +44,9 @@ public:
     }
 
 
-    void init(int mssa_val) {
+    void init() {
        initWindow();
-       initVulkan(mssa_val);
+       initVulkan();
     };
 
     void run();
@@ -306,7 +306,7 @@ private:
 
     // ----- Init functions
     bool initWindow();
-    bool initVulkan(int mssa_val);
+    bool initVulkan();
 
     void createInstance();
     void createSurface();
@@ -357,8 +357,6 @@ private:
 
     void updateTorusRTBuffer();
 
-    void updateImportanceSampling();
     void saveTransformsJson(const std::string &filename, const std::vector<FrameData> &frames);
     void savePly(const std::string &filename);
-    void readBuffer(vk::Buffer buffer, vk::DeviceSize size, void *dst_ptr);
 };

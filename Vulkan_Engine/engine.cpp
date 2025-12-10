@@ -13,74 +13,7 @@
 #include "../Helpers/tiny_obj_loader.h"
 
 
-// ------ Helper Functions
-void Engine::readBuffer(vk::Buffer buffer, vk::DeviceSize size, void* dst_ptr) {
-    AllocatedBuffer staging_buffer;
-    createBuffer(vma_allocator, size, vk::BufferUsageFlagBits::eTransferDst,
-                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
-                 staging_buffer);
-
-    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device);
-    vk::BufferCopy copy_region(0, 0, size);
-    cmd.copyBuffer(buffer, staging_buffer.buffer, copy_region);
-    endSingleTimeCommands(cmd, graphics_queue);
-
-    void* data;
-    vmaMapMemory(vma_allocator, staging_buffer.allocation, &data);
-    memcpy(dst_ptr, data, (size_t)size);
-    vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
-}
-
-// 2. The main Importance Sampling Logic
-void Engine::updateImportanceSampling() {
-    std::cout << "Calculating Importance Samples..." << std::endl;
-
-    // A. Read back Hit Data
-    size_t num_hits = sampling_points.size();
-    vk::DeviceSize buffer_size = sizeof(HitDataGPU) * num_hits;
-    std::vector<HitDataGPU> raw_hits(num_hits);
-    readBuffer(hit_data_buffer.buffer, buffer_size, raw_hits.data());
-
-    SamplingMethod method = sampling_methods[current_sampling];
-
-    if (method == SamplingMethod::IMP_COL) {
-        // Extract Colors
-        std::vector<glm::vec4> prev_colors;
-        prev_colors.reserve(num_hits);
-        for(const auto& hit : raw_hits) {
-            prev_colors.push_back(glm::vec4(hit.r, hit.g, hit.b, hit.a));
-        }
-        // Generate based on Color Gradients
-        Sampling::generateImportanceSamples(sampling_points, num_rays, sampling_points, prev_colors);
-    } 
-    else if (method == SamplingMethod::IMP_HIT) {
-        // Extract Flags
-        std::vector<float> prev_flags;
-        prev_flags.reserve(num_hits);
-        for(const auto& hit : raw_hits) {
-            prev_flags.push_back(hit.flag);
-        }
-        // Generate based on Hit/Miss
-        Sampling::generateHitBasedImportanceSamples(sampling_points, num_rays, sampling_points, prev_flags);
-    }
-
-    // D. Upload NEW samples to GPU
-    vk::DeviceSize sample_size = sizeof(RaySample) * sampling_points.size();
-    AllocatedBuffer staging_buffer;
-    createBuffer(vma_allocator, sample_size, vk::BufferUsageFlagBits::eTransferSrc,
-                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, staging_buffer);
-    
-    void* data;
-    vmaMapMemory(vma_allocator, staging_buffer.allocation, &data);
-    memcpy(data, sampling_points.data(), (size_t)sample_size);
-    vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
-
-    copyBuffer(staging_buffer.buffer, sample_data_buffer.buffer, sample_size,
-               command_pool_graphics, &logical_device, graphics_queue);
-               
-    // Staging buffer is destroyed automatically
-}
-
+// ------ HELPER FUNCTIONS
 void Engine::printGpuMemoryUsage()
 {
     // Get memory properties from the physical device
@@ -715,7 +648,15 @@ void Engine::buildBlas(Gameobject& obj)
     obj.blas.device_address = logical_device.getAccelerationStructureAddressKHR(addr_info);
 }
 
+/**
+ * Handles user input
+ */
 void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    if(key == GLFW_KEY_ESCAPE && action == GLFW_PRESS){
+        glfwSetWindowShouldClose(window, GLFW_TRUE);
+        return;
+    }
+
     Engine* engine = reinterpret_cast<Engine*>(glfwGetWindowUserPointer(window));
     if (!engine) return;
 
@@ -734,6 +675,7 @@ void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action,
 
     input.move = glm::vec2(0.f);
 
+    // Static variables so that values is stored in between calls
     static bool is_left = false;
     static bool is_down = false;
 
@@ -815,16 +757,9 @@ void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action,
                 engine->current_sampling = (engine->current_sampling + 1) % sampling_methods.size();
                 engine->logical_device.waitIdle();
 
-                if(sampling_methods[engine->current_sampling] == SamplingMethod::IMP_COL || sampling_methods[engine->current_sampling] == SamplingMethod::IMP_HIT){
-                    engine->updateImportanceSampling();
-                }
-                else{
-                    vmaDestroyBuffer(engine->vma_allocator, engine->sample_data_buffer.buffer, engine->sample_data_buffer.allocation);
-                    vmaDestroyBuffer(engine->vma_allocator, engine->hit_data_buffer.buffer, engine->hit_data_buffer.allocation);
-                    engine->createRayTracingDataBuffers();
-                    engine -> createRayTracingDescriptorSets();
-                    engine -> createPointCloudDescriptorSets();
-                }
+                Sampling::updateSampling(engine -> current_sampling, engine -> num_rays, engine -> sampling_points, engine -> sample_data_buffer, 
+                        engine -> hit_data_buffer, engine -> vma_allocator, engine -> command_pool_graphics,
+                        engine -> graphics_queue, &engine -> logical_device);
             }
             break;
     }
@@ -915,12 +850,15 @@ void Engine::createRTOutputImage() {
     endSingleTimeCommands(cmd, graphics_queue);
 }
 
-// ------ Init Functions
+// ------ INIT FUNCTIONS
 
+/**
+ * Initiate GLFW window and all callbacks necessary
+ */
 bool Engine::initWindow(){
     uint32_t w = win_width;
     uint32_t h = win_height;
-    window = initWindowGLFW("Engine", w, h);
+    window = initWindowGLFW("Torus Engine", w, h);
     glfwSetWindowUserPointer(window, this);
     glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 
@@ -934,7 +872,7 @@ bool Engine::initWindow(){
     return true;
 }
 
-bool Engine::initVulkan(int mssa_val){
+bool Engine::initVulkan(){
     createInstance();
     setupDebugMessanger();
     createSurface();
@@ -2158,78 +2096,30 @@ void Engine::buildTlas(vk::raii::CommandBuffer& cmd)
 }
 
 /**
- * @brief Creates the SSBOs for ray tracing data collection.
- * This includes the input buffer (torus vertices) and output buffer (hit data).
- * Must be called *after* createTorusModel().
+ * Creates the SSBOs for ray tracing data collection.
  */
 void Engine::createRayTracingDataBuffers()
 {
-    // --- 1. Generate Samples based on selected method ---
-    switch(sampling_methods[current_sampling]){
-        case SamplingMethod::HALTON:
-            Sampling::generateHaltonSamples(sampling_points, num_rays);
-            break;
-        case SamplingMethod::LHS:
-            Sampling::generateLatinHypercubeSamples(sampling_points, num_rays);
-            break;
-        case SamplingMethod::STRATIFIED:
-            Sampling::generateStratifiedSamples(sampling_points, num_rays);
-            break;
-        case SamplingMethod::RANDOM:
-            Sampling::generateRandomSamples(sampling_points, num_rays);
-            break;
-        case SamplingMethod::UNIFORM:
-            Sampling::generateUniformSamples(sampling_points, num_rays);
-            break;
-        case SamplingMethod::IMP_COL:
-        case SamplingMethod::IMP_HIT:
-            // Fallback to Halton for the FIRST frame of importance sampling
-            // (Since we have no previous data yet to importance-sample from)
-            if (sampling_points.empty()) {
-                Sampling::generateHaltonSamples(sampling_points, num_rays);
-            }
-            break;
-    }
-
-    if (sampling_points.empty()) {
-        std::cerr << "Error: No sampling points generated!" << std::endl;
-        return;
-    }
-
-    // --- 2. Create Input Buffer (Ray Samples) ---
-    // This buffer holds the UV coordinates that the RayGen shader uses to spawn rays on the torus.
-    vk::DeviceSize sample_size = sizeof(RaySample) * sampling_points.size();
-
-    AllocatedBuffer staging_buffer;
-    createBuffer(vma_allocator, sample_size,
-                vk::BufferUsageFlagBits::eTransferSrc,
-                vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
-                staging_buffer);
-
-    void* data;
-    vmaMapMemory(vma_allocator, staging_buffer.allocation, &data);
-    memcpy(data, sampling_points.data(), (size_t)sample_size);
-    vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
-
+    vk::DeviceSize sample_size = sizeof(RaySample) * num_rays;
     createBuffer(vma_allocator, sample_size,
                 vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
                 vk::MemoryPropertyFlagBits::eDeviceLocal,
                 sample_data_buffer);
-    
-    copyBuffer(staging_buffer.buffer, sample_data_buffer.buffer, sample_size,
-                command_pool_graphics, &logical_device, graphics_queue);
 
-    // --- 3. Create Output Buffer (Hit Data) ---
     // This buffer stores the results (color, position, hit flag) from the Torus Capture RayGen.
-    vk::DeviceSize hit_data_size = sizeof(HitDataGPU) * sampling_points.size();
+    vk::DeviceSize hit_data_size = sizeof(HitDataGPU) * num_rays;
 
     createBuffer(vma_allocator, hit_data_size,
                  vk::BufferUsageFlagBits::eStorageBuffer | 
                  vk::BufferUsageFlagBits::eShaderDeviceAddress |
                  vk::BufferUsageFlagBits::eTransferSrc | 
-                 vk::BufferUsageFlagBits::eTransferDst, // Added TransferDst to allow clearing/filling if needed
+                 vk::BufferUsageFlagBits::eTransferDst,
                  vk::MemoryPropertyFlagBits::eDeviceLocal,
                  hit_data_buffer);
+    
+    Sampling::updateSampling(current_sampling, num_rays, sampling_points, 
+            sample_data_buffer, hit_data_buffer, vma_allocator, 
+            command_pool_graphics, graphics_queue, &logical_device);
 }
 
 void Engine::createRayTracingPipeline()
@@ -2785,8 +2675,8 @@ ImageReadbackData Engine::readImageToCPU(vk::Image image, VkFormat format, uint3
 }
 
 void Engine::captureSceneData() {
-    const int ACCUMULATION_STEPS = 2048; 
-    const int TOTAL_POSITIONS = 336; 
+    const int ACCUMULATION_STEPS = 512; 
+    const int TOTAL_POSITIONS = 2; 
 
     std::cout << "\n--- Starting Dataset Capture ---" << std::endl;
     std::cout << "1. Capturing " << TOTAL_POSITIONS << " Camera Views (from inside Torus)" << std::endl;
@@ -3036,7 +2926,8 @@ void Engine::savePly(const std::string& filename) {
     // 1. Read Hit Buffer from GPU
     size_t num_rays = sampling_points.size();
     std::vector<HitDataGPU> hits(num_rays);
-    readBuffer(hit_data_buffer.buffer, sizeof(HitDataGPU) * num_rays, hits.data());
+    readBuffer(hit_data_buffer.buffer, sizeof(HitDataGPU) * num_rays, hits.data(), vma_allocator,
+                &logical_device, command_pool_transfer, transfer_queue);
 
     // 2. Filter valid points
     std::vector<HitDataGPU> valid_points;
@@ -3069,12 +2960,12 @@ void Engine::savePly(const std::string& filename) {
 
     // 2. Write Data
     for (const auto& p : valid_points) {
-        int r = static_cast<int>(p.r * 255.0f);
-        int g = static_cast<int>(p.g * 255.0f);
-        int b = static_cast<int>(p.b * 255.0f);
+        int r = static_cast<int>(p.color.r * 255.0f);
+        int g = static_cast<int>(p.color.g * 255.0f);
+        int b = static_cast<int>(p.color.b * 255.0f);
         
-        file << p.px << " " << p.py << " " << p.pz << " " 
-             << p.nx << " " << p.ny << " " << p.nz << " "  // <--- Use REAL normals
+        file << p.pos.x << " " << p.pos.y << " " << p.pos.z << " " 
+             << p.normal.x << " " << p.normal.y << " " << p.normal.z << " "  // <--- Use REAL normals
              << r << " " << g << " " << b << "\n";
     }
 

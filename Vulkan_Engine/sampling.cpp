@@ -13,7 +13,7 @@ float Sampling::halton(int index, int base)
     return r;
 }
 
-void Sampling::generateHaltonSamples(std::vector<RaySample> &sampling_points, int &num_rays)
+void Sampling::generateHaltonSamples(std::vector<RaySample> &sampling_points, const int &num_rays)
 {
     sampling_points.clear();
     sampling_points.resize(num_rays);
@@ -29,7 +29,7 @@ void Sampling::generateHaltonSamples(std::vector<RaySample> &sampling_points, in
     sortSamples(sampling_points);
 }
 
-void Sampling::generateStratifiedSamples(std::vector<RaySample> &sampling_points, int &num_rays)
+void Sampling::generateStratifiedSamples(std::vector<RaySample> &sampling_points, const int &num_rays)
 {
     sampling_points.clear();
     sampling_points.resize(num_rays);
@@ -60,7 +60,7 @@ void Sampling::generateStratifiedSamples(std::vector<RaySample> &sampling_points
 
 void Sampling::generateImportanceSamples(
     std::vector<RaySample> &sampling_points, 
-    int &num_rays, 
+    const int &num_rays, 
     const std::vector<RaySample>& prev_samples, 
     const std::vector<glm::vec4>& prev_colors,
     int grid_resolution)
@@ -159,7 +159,7 @@ void Sampling::generateImportanceSamples(
 }
 
 // --- 1. COMPLETELY RANDOM ---
-void Sampling::generateRandomSamples(std::vector<RaySample> &sampling_points, int &num_rays)
+void Sampling::generateRandomSamples(std::vector<RaySample> &sampling_points, const int &num_rays)
 {
     sampling_points.clear();
     sampling_points.resize(num_rays);
@@ -176,7 +176,7 @@ void Sampling::generateRandomSamples(std::vector<RaySample> &sampling_points, in
     sortSamples(sampling_points);
 }
 
-void Sampling::generateUniformSamples(std::vector<RaySample> &sampling_points, int &num_rays)
+void Sampling::generateUniformSamples(std::vector<RaySample> &sampling_points, const int &num_rays)
 {
     sampling_points.clear();
     sampling_points.resize(num_rays);
@@ -204,7 +204,7 @@ void Sampling::generateUniformSamples(std::vector<RaySample> &sampling_points, i
 // --- 3. HIT-BASED IMPORTANCE SAMPLING ---
 void Sampling::generateHitBasedImportanceSamples(
     std::vector<RaySample> &sampling_points, 
-    int &num_rays, 
+    const int &num_rays, 
     const std::vector<RaySample>& prev_samples, 
     const std::vector<float>& prev_flags,
     int grid_resolution)
@@ -287,7 +287,7 @@ void Sampling::generateHitBasedImportanceSamples(
     sortSamples(sampling_points);
 }
 
-void Sampling::generateLatinHypercubeSamples(std::vector<RaySample> &sampling_points, int &num_rays)
+void Sampling::generateLatinHypercubeSamples(std::vector<RaySample> &sampling_points, const int &num_rays)
 {
     sampling_points.clear();
     sampling_points.resize(num_rays);
@@ -356,4 +356,74 @@ void Sampling::sortSamples(std::vector<RaySample> &samples)
     std::sort(samples.begin(), samples.end(), [](const RaySample& a, const RaySample& b) {
         return morton2D(a.uv.x, a.uv.y) < morton2D(b.uv.x, b.uv.y);
     });
+}
+
+void Sampling::updateSampling(const int &method_index, const int& num_rays, std::vector<RaySample> &sampling_points, 
+    AllocatedBuffer &sample_data_buffer, AllocatedBuffer &hit_data_buffer,
+    VmaAllocator &vma_allocator, vk::raii::CommandPool &pool, vk::raii::Queue &queue, vk::raii::Device *device)
+{
+    std::cout << "Updating sampling method..." << std::endl;
+
+    SamplingMethod method = sampling_methods[method_index];
+
+    if(method == SamplingMethod::HALTON){
+        generateHaltonSamples(sampling_points, num_rays);
+    }
+    else if(method == SamplingMethod::LHS){
+        generateLatinHypercubeSamples(sampling_points, num_rays);
+    }
+    else if(method == SamplingMethod::STRATIFIED){
+        generateStratifiedSamples(sampling_points, num_rays);
+    }
+    else if(method == SamplingMethod::RANDOM){
+        generateRandomSamples(sampling_points, num_rays);
+    }
+    else if(method == SamplingMethod::UNIFORM){
+        Sampling::generateUniformSamples(sampling_points, num_rays);
+    }
+    else{ // Importance Sampling branch
+        if(sampling_points.empty()){ // Fall-back, if sampling points is empty then we can't perform importance sampling
+            std::cout << "Can't perform Importance Sampling since sampling points is empty. Falling back to Halton sampling." << std::endl;
+            generateHaltonSamples(sampling_points, num_rays);
+        }
+        else{
+            vk::DeviceSize buffer_size = sizeof(HitDataGPU) * num_rays;
+            std::vector<HitDataGPU> raw_hits(num_rays);
+            readBuffer(hit_data_buffer.buffer, buffer_size, raw_hits.data(), vma_allocator, device, pool, queue);
+            if (method == SamplingMethod::IMP_COL) {
+                // Extract Colors
+                std::vector<glm::vec4> prev_colors;
+                prev_colors.reserve(num_rays);
+                for(const HitDataGPU& hit : raw_hits) {
+                    prev_colors.push_back(hit.color);
+                }
+                // Generate based on Color Gradients
+                generateImportanceSamples(sampling_points, num_rays, sampling_points, prev_colors);
+            } 
+            else if (method == SamplingMethod::IMP_HIT) {
+                // Extract Flags
+                std::vector<float> prev_flags;
+                prev_flags.reserve(num_rays);
+                for(const auto& hit : raw_hits) {
+                    prev_flags.push_back(hit.flag);
+                }
+                // Generate based on Hit/Miss
+                generateHitBasedImportanceSamples(sampling_points, num_rays, sampling_points, prev_flags);
+            }
+        }
+    }
+
+    vk::DeviceSize sample_size = sizeof(RaySample) * sampling_points.size();
+    AllocatedBuffer staging_buffer;
+    createBuffer(vma_allocator, sample_size, vk::BufferUsageFlagBits::eTransferSrc,
+                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, staging_buffer);
+    
+    void* data;
+    vmaMapMemory(vma_allocator, staging_buffer.allocation, &data);
+    memcpy(data, sampling_points.data(), (size_t)sample_size);
+    vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
+
+
+    copyBuffer(staging_buffer.buffer, sample_data_buffer.buffer, sample_size,
+               pool, device, queue);
 }

@@ -122,6 +122,29 @@ void copyBuffer(VkBuffer &src_buffer, VkBuffer &dst_buffer, vk::DeviceSize size,
     endSingleTimeCommands(command_copy_buffer, queue);
 }
 
+/**
+ * Reads the values present in a buffer 
+ * Used for importanceSampling and to save pointcloud info
+ */
+void readBuffer(vk::Buffer buffer, vk::DeviceSize size, void* dst_ptr, VmaAllocator &vma_allocator,
+                vk::raii::Device *logical_device, vk::raii::CommandPool &command_pool,
+                vk::raii::Queue &queue) {
+    AllocatedBuffer staging_buffer;
+    createBuffer(vma_allocator, size, vk::BufferUsageFlagBits::eTransferDst,
+                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                 staging_buffer);
+
+    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool, logical_device);
+    vk::BufferCopy copy_region(0, 0, size);
+    cmd.copyBuffer(buffer, staging_buffer.buffer, copy_region);
+    endSingleTimeCommands(cmd, queue);
+
+    void* data;
+    vmaMapMemory(vma_allocator, staging_buffer.allocation, &data);
+    memcpy(dst_ptr, data, (size_t)size);
+    vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
+}
+
 void copyBufferToImage(const VkBuffer &buffer, VkImage &image, uint32_t width, uint32_t height, vk::raii::Device *logical_device, vk::raii::CommandPool &command_pool, vk::raii::Queue &queue)
 {
     vk::raii::CommandBuffer command_buffer = beginSingleTimeCommands(command_pool, logical_device);

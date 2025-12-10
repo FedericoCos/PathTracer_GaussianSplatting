@@ -130,7 +130,10 @@ namespace std {
     };
 }
 
-
+/**
+ * Structure for enignes buffers
+ * Cleanup itself when going out of scope
+ */
 struct AllocatedBuffer {
     VkBuffer buffer = VK_NULL_HANDLE;
     VmaAllocation allocation = VK_NULL_HANDLE;
@@ -353,6 +356,9 @@ enum class Action{
     SAMPLING_METHOD
 };
 
+/**
+ * Structure that holds user input status
+ */
 struct InputState{
     glm::vec2 move{0.f, 0.f};
     float look_x = 0.f;
@@ -367,10 +373,6 @@ struct InputState{
     bool rot_down = false;
     bool fov_up = false;
     bool fov_down = false;
-
-    // For torus camera
-    bool radius_up = false;
-    bool radius_down = false;
 
     // To switch between the two cameras
     bool reset = false;
@@ -530,17 +532,18 @@ const std::array<SamplingMethod, 8> sampling_methods = {
     SamplingMethod::IMP_HIT,
 };
 
-struct HitDataGPU { // Must match 'struct HitData' in raytracing.glsl
-    // vec3 hit_pos
-    float px, py, pz;
+/**
+ * Structure fille by the GPU to fill the buffer for the sampling methods and the pointcloud
+ */
+struct HitDataGPU { 
+    glm::vec3 pos;
     // float hit_flag
     float flag;
     
-    // vec4 color
-    float r, g, b, a;
+    glm::vec4 color;
     
     // vec3 normal
-    float nx, ny, nz;
+    glm::vec3 normal;
     // float padding
     float padding;
 };
@@ -611,6 +614,11 @@ void copyBufferToImage(
     vk::raii::CommandPool &command_pool, 
     vk::raii::Queue &queue
 );
+
+void readBuffer(vk::Buffer buffer, vk::DeviceSize size, void* dst_ptr,
+                VmaAllocator &vma_allocator,
+                vk::raii::Device *logical_device, vk::raii::CommandPool &command_pool,
+                vk::raii::Queue &queue);
 
 void savePNG(const std::string& filename, const ImageReadbackData& data);
 

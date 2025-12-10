@@ -758,8 +758,8 @@ void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action,
                 engine->logical_device.waitIdle();
 
                 Sampling::updateSampling(engine -> current_sampling, engine -> num_rays, engine -> sampling_points, engine -> sample_data_buffer, 
-                        engine -> hit_data_buffer, engine -> vma_allocator, engine -> command_pool_graphics,
-                        engine -> graphics_queue, &engine -> logical_device);
+                        engine -> hit_data_buffer, engine -> vma_allocator, engine -> command_pool_transfer,
+                        engine -> transfer_queue, &engine -> logical_device);
             }
             break;
     }
@@ -2119,7 +2119,7 @@ void Engine::createRayTracingDataBuffers()
     
     Sampling::updateSampling(current_sampling, num_rays, sampling_points, 
             sample_data_buffer, hit_data_buffer, vma_allocator, 
-            command_pool_graphics, graphics_queue, &logical_device);
+            command_pool_transfer, transfer_queue, &logical_device);
 }
 
 void Engine::createRayTracingPipeline()

@@ -5,14 +5,14 @@
 
 #include "../Helpers/GLFWhelper.h"
 
-class Engine;
-
 
 
 namespace Swapchain{
-    SwapChainBundle createSwapChain(Engine &engine);
+    SwapChainBundle createSwapChain(const vk::raii::PhysicalDevice &physical_device, const vk::raii::Device &logical_device,
+                                    const vk::raii::SurfaceKHR &surface, const QueueFamilyIndices &queue_indices, 
+                                    const int &win_width, const int &win_height);
 
     vk::Format chooseSwapSurfaceFormat(const std::vector<vk::SurfaceFormatKHR>& available_formats);
-    vk::Extent2D chooseSwapExtent(const vk::SurfaceCapabilitiesKHR& capabilities, GLFWwindow * window);
+    vk::Extent2D chooseSwapExtent(const vk::SurfaceCapabilitiesKHR& capabilities, const int &win_width, const int &win_height);
     vk::PresentModeKHR chooseSwapPresentMode(const std::vector<vk::PresentModeKHR> &available_present_modes);
 };

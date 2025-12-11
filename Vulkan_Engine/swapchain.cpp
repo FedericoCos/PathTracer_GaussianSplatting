@@ -1,5 +1,4 @@
 #include "swapchain.h"
-#include "engine.h"
 
 
 vk::Format Swapchain::chooseSwapSurfaceFormat(const std::vector<vk::SurfaceFormatKHR>& available_formats){
@@ -11,16 +10,14 @@ vk::Format Swapchain::chooseSwapSurfaceFormat(const std::vector<vk::SurfaceForma
     return format_it != available_formats.end() ? format_it -> format : available_formats[0].format;
 }
 
-vk::Extent2D Swapchain::chooseSwapExtent(const vk::SurfaceCapabilitiesKHR& capabilities, GLFWwindow * window){
+vk::Extent2D Swapchain::chooseSwapExtent(const vk::SurfaceCapabilitiesKHR& capabilities, const int &win_width, const int &win_height){
     if(capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()){
         return capabilities.currentExtent;
     }
-    int width, height;
-    glfwGetFramebufferSize(window, &width, &height);
 
     return {
-        std::clamp<uint32_t>(width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
-        std::clamp<uint32_t>(height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height)
+        std::clamp<uint32_t>(win_width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
+        std::clamp<uint32_t>(win_height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height)
     };
 }
 
@@ -31,24 +28,29 @@ vk::PresentModeKHR Swapchain::chooseSwapPresentMode(const std::vector<vk::Presen
         }) ? vk::PresentModeKHR::eMailbox : vk::PresentModeKHR::eFifo;
 }
 
-
-SwapChainBundle Swapchain::createSwapChain(Engine &engine){
+/**
+ * Creates the swapchain, with all its images and image views
+ * The result is in the form of a bundle
+ */
+SwapChainBundle Swapchain::createSwapChain(const vk::raii::PhysicalDevice &physical_device, const vk::raii::Device &logical_device,
+                                    const vk::raii::SurfaceKHR &surface, const QueueFamilyIndices &queue_indices, 
+                                    const int &win_width, const int &win_height){
     SwapChainBundle swapchain;
 
-    auto surface_capabilities = engine.physical_device.getSurfaceCapabilitiesKHR(engine.surface);
-    swapchain.format = chooseSwapSurfaceFormat(engine.physical_device.getSurfaceFormatsKHR(engine.surface));
-    swapchain.extent = chooseSwapExtent(surface_capabilities, engine.window);
+    auto surface_capabilities = physical_device.getSurfaceCapabilitiesKHR(surface);
+    swapchain.format = chooseSwapSurfaceFormat(physical_device.getSurfaceFormatsKHR(surface));
+    swapchain.extent = chooseSwapExtent(surface_capabilities, win_width, win_height);
 
     auto min_image_count = std::max(3u, surface_capabilities.minImageCount);
     min_image_count = (surface_capabilities.maxImageCount > 0 && min_image_count > surface_capabilities.maxImageCount) ?
                         surface_capabilities.maxImageCount : min_image_count;
     
 
-    uint32_t queue_family_indices[] = {engine.queue_indices.graphics_family.value(),
-                                        engine.queue_indices.present_family.value()};
+    uint32_t queue_family_indices[] = {queue_indices.graphics_family.value(),
+                                        queue_indices.present_family.value()};
 
     vk::SwapchainCreateInfoKHR swapchain_create_info;
-    swapchain_create_info.surface = engine.surface;
+    swapchain_create_info.surface = surface;
     swapchain_create_info.minImageCount = min_image_count;
     swapchain_create_info.imageFormat = swapchain.format;
     swapchain_create_info.imageColorSpace = vk::ColorSpaceKHR::eSrgbNonlinear;
@@ -57,7 +59,7 @@ SwapChainBundle Swapchain::createSwapChain(Engine &engine){
     swapchain_create_info.imageUsage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst;
     swapchain_create_info.preTransform = surface_capabilities.currentTransform;
     swapchain_create_info.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
-    swapchain_create_info.presentMode = chooseSwapPresentMode(engine.physical_device.getSurfacePresentModesKHR(engine.surface));
+    swapchain_create_info.presentMode = chooseSwapPresentMode(physical_device.getSurfacePresentModesKHR(surface));
     swapchain_create_info.clipped = true;
 
     if(queue_family_indices[0] != queue_family_indices[1]){
@@ -71,7 +73,7 @@ SwapChainBundle Swapchain::createSwapChain(Engine &engine){
         swapchain_create_info.pQueueFamilyIndices = nullptr;
     }
 
-    swapchain.swapchain = vk::raii::SwapchainKHR(engine.logical_device, swapchain_create_info);
+    swapchain.swapchain = vk::raii::SwapchainKHR(logical_device, swapchain_create_info);
 
     swapchain.images = swapchain.swapchain.getImages();
 
@@ -89,7 +91,7 @@ SwapChainBundle Swapchain::createSwapChain(Engine &engine){
 
     for(auto image : swapchain.images){
         imageview_create_info.image = image;
-        swapchain.image_views.emplace_back(engine.logical_device, imageview_create_info);
+        swapchain.image_views.emplace_back(logical_device, imageview_create_info);
     }
 
     return std::move(swapchain);

@@ -331,6 +331,9 @@ struct QueueFamilyIndices {
     }
 };
 
+/**
+ * Swapchain bundle to better manage it and track its components
+ */
 struct SwapChainBundle{
     vk::raii::SwapchainKHR swapchain = nullptr;
     std::vector<vk::Image> images;

@@ -861,9 +861,7 @@ void Engine::createRTOutputImage() {
  * Initiate GLFW window and all callbacks necessary
  */
 bool Engine::initWindow(){
-    uint32_t w = win_width;
-    uint32_t h = win_height;
-    window = initWindowGLFW("Torus Engine", w, h);
+    window = initWindowGLFW("Torus Engine", win_width, win_height);
     glfwSetWindowUserPointer(window, this);
     glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 
@@ -893,7 +891,7 @@ bool Engine::initVulkan(){
     loadRT();
 
     // Get swapchain and swapchain images
-    swapchain = Swapchain::createSwapChain(*this);
+    swapchain = Swapchain::createSwapChain(physical_device, logical_device, surface, queue_indices, win_width, win_height);
     if(swapchain.image_views.empty() || swapchain.image_views.size() <= 0){
         std::cout << "Problem with the image views" << std::endl;
     }
@@ -2551,7 +2549,7 @@ void Engine::recreateSwapChain(){
     // 1. Recreate Swapchain
     swapchain.image_views.clear();
     swapchain.swapchain = nullptr; // Release old swapchain
-    swapchain = Swapchain::createSwapChain(*this);
+    swapchain = Swapchain::createSwapChain(physical_device, logical_device, surface, queue_indices, win_width, win_height);
 
     // 2. Recreate Depth Image (Used by Point Cloud overlay)
     // Destroy old depth image

@@ -97,11 +97,6 @@ public:
 
     // Ray Tracing TLAS members
     AccelerationStructure tlas;
-    AllocatedBuffer tlas_instance_buffer;
-    void * tlas_instance_buffer_mapped = nullptr;
-    AllocatedBuffer tlas_scratch_buffer;
-    uint64_t tlas_scratch_addr = 0;
-    const uint32_t MAX_TLAS_INSTANCES = 1024;
 
     AllocatedImage rt_output_image;
 
@@ -315,23 +310,24 @@ private:
 
     void loadRT();
 
+    void createMemoryAllocator();
+
     void createCommandPool();
+
     void createGraphicsCommandBuffers();
 
     void createSyncObjects();
 
     void createPipelines();
     void loadScene(const std::string& scene_path);
-    void loadManualLights(const std::string& lights_path);
     void createTorusModel();
     void buildBlas(Gameobject& obj);
-    void createTlasResources();
-    void buildTlas(vk::raii::CommandBuffer& cmd);
     void createRayTracingDataBuffers();
 
     void createPointCloudPipeline();
     void createPointCloudDescriptorSets();
 
+    void initStaticTlas();
 
     void createUniformBuffers();
     void createDescriptorPool();

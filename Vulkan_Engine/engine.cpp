@@ -828,7 +828,7 @@ void Engine::createRTOutputImage() {
     rt_output_image = Image::createImage(
         swapchain.extent.width, swapchain.extent.height,
         1, vk::SampleCountFlagBits::e1, 
-        rt_format, // Or eR16G16B16A16Sfloat for HDR
+        rt_format,
         vk::ImageTiling::eOptimal,
         vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst,
         vk::MemoryPropertyFlagBits::eDeviceLocal, 
@@ -900,25 +900,13 @@ bool Engine::initVulkan(){
     }
 
     // Memory Allocator stage
-    VmaAllocatorCreateInfo allocator_info{};
-    allocator_info.physicalDevice = *physical_device;
-    allocator_info.device = *logical_device;
-    allocator_info.instance = *instance;              
-    allocator_info.vulkanApiVersion = VK_API_VERSION_1_4;
-    allocator_info.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT |
-                           VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
-    VkResult res = vmaCreateAllocator(&allocator_info, &vma_allocator);
-    if (res != VK_SUCCESS) {
-        throw std::runtime_error("vmaCreateAllocator failed");
-    }
-    
+    createMemoryAllocator();
+
     std::cout << "Memory status after creation" << std::endl;
     printGpuMemoryUsage();
 
     // Command creation
     createCommandPool();
-
-    createTlasResources();
 
     createRTOutputImage();
 
@@ -941,12 +929,11 @@ bool Engine::initVulkan(){
 
     debug_cube = createDebugCube();
 
-
     createTorusModel();
 
     createRayTracingDataBuffers();
-
     createGlobalBindlessBuffers();
+    initStaticTlas();
 
     createUniformBuffers();
     createDescriptorPool();
@@ -1070,7 +1057,28 @@ void Engine::loadRT()
     rt_props.as_props = as_props.get<vk::PhysicalDeviceAccelerationStructurePropertiesKHR>();
 }
 
+/**
+ * Creates dynamic memory allocator to handle memory far better than handling it manually
+ */
+void Engine::createMemoryAllocator()
+{
+    VmaAllocatorCreateInfo allocator_info{};
+    allocator_info.physicalDevice = *physical_device;
+    allocator_info.device = *logical_device;
+    allocator_info.instance = *instance;
+    allocator_info.vulkanApiVersion = VK_API_VERSION_1_4;
+    allocator_info.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT |
+                           VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
+    VkResult res = vmaCreateAllocator(&allocator_info, &vma_allocator);
+    if (res != VK_SUCCESS)
+    {
+        throw std::runtime_error("vmaCreateAllocator failed");
+    }
+}
 
+/**
+ * Extracting the command pools for the graphics queu and the transfer queue
+ */
 void Engine::createCommandPool(){
     vk::CommandPoolCreateInfo pool_info;
     pool_info.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
@@ -1083,6 +1091,7 @@ void Engine::createCommandPool(){
 
     command_pool_transfer = vk::raii::CommandPool(logical_device, pool_info);
 }
+
 
 void Engine::createPipelines()
 {
@@ -1264,6 +1273,149 @@ void Engine::createTorusModel()
     torus.materials.push_back(std::move(torusMat));
 
     createModel(torus); 
+}
+
+/**
+ * Builds the Top-Level Acceleration Structure ONCE.
+ * Optimizes memory by destroying scratch and instance buffers immediately after build.
+ * This setup is possible since all the scenes are static, and no object is moving
+ * If objects were moving, TLAS would need to be reconstructed every frame, or at least every time something moves
+ */
+void Engine::initStaticTlas()
+{
+    // --- 1. Gather all object instances ---
+    std::vector<vk::AccelerationStructureInstanceKHR> instances;
+
+    auto add_instance = [&](Gameobject& obj) {
+        if (obj.blas.as == nullptr) return; // Skip objects without BLAS
+        
+        vk::AccelerationStructureInstanceKHR instance{};
+        
+        // Transpose GLM matrix (column-major) to Vulkan matrix (row-major)
+        glm::mat4 transp_model = glm::transpose(obj.model_matrix);
+        memcpy(&instance.transform, &transp_model, sizeof(vk::TransformMatrixKHR));
+        
+        instance.instanceCustomIndex = obj.mesh_info_offset;
+        instance.mask = 0xFF; 
+        instance.instanceShaderBindingTableRecordOffset = 0; 
+        instance.flags = static_cast<VkGeometryInstanceFlagBitsKHR>(
+            vk::GeometryInstanceFlagBitsKHR::eTriangleFacingCullDisable
+        );
+        instance.accelerationStructureReference = obj.blas.device_address;
+        
+        instances.push_back(instance);
+    };
+
+    // Iterate scene objects (skipping torus as per your original logic)
+    for (Gameobject& obj : scene_objs) {
+        if(&obj != &torus)
+            add_instance(obj);
+    }
+    
+    if (use_rt_box) {
+        add_instance(rt_box);
+    }
+
+    if (instances.empty()) return;
+
+    // --- 2. Create Temporary Instance Buffer ---
+    // We create this locally, map it, fill it, and will destroy it at the end of this function.
+    AllocatedBuffer staging_instances;
+    vk::DeviceSize instance_size = instances.size() * sizeof(vk::AccelerationStructureInstanceKHR);
+
+    createBuffer(vma_allocator, instance_size,
+                 vk::BufferUsageFlagBits::eShaderDeviceAddress | vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR,
+                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                 staging_instances);
+
+    void* data;
+    vmaMapMemory(vma_allocator, staging_instances.allocation, &data);
+    memcpy(data, instances.data(), static_cast<size_t>(instance_size));
+    vmaUnmapMemory(vma_allocator, staging_instances.allocation);
+
+    // --- 3. Get Build Sizes ---
+    vk::AccelerationStructureGeometryInstancesDataKHR instances_data;
+    instances_data.arrayOfPointers = vk::False;
+    instances_data.data.deviceAddress = getBufferDeviceAddress(staging_instances.buffer);
+
+    vk::AccelerationStructureGeometryKHR tlas_geometry;
+    tlas_geometry.geometryType = vk::GeometryTypeKHR::eInstances;
+    tlas_geometry.geometry.instances = instances_data;
+    // Static scenes are usually opaque for better performance
+    tlas_geometry.flags = vk::GeometryFlagBitsKHR::eOpaque; 
+
+    vk::AccelerationStructureBuildGeometryInfoKHR build_info;
+    build_info.type = vk::AccelerationStructureTypeKHR::eTopLevel;
+    // OPTIMIZATION: Removed eAllowUpdate, added ePreferFastTrace
+    build_info.flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace;
+    build_info.mode = vk::BuildAccelerationStructureModeKHR::eBuild;
+    build_info.geometryCount = 1;
+    build_info.pGeometries = &tlas_geometry;
+
+    uint32_t primitive_count = static_cast<uint32_t>(instances.size());
+    vk::AccelerationStructureBuildSizesInfoKHR size_info;
+    vkGetAccelerationStructureBuildSizesKHR(
+        *logical_device,
+        static_cast<VkAccelerationStructureBuildTypeKHR>(vk::AccelerationStructureBuildTypeKHR::eDevice),
+        reinterpret_cast<const VkAccelerationStructureBuildGeometryInfoKHR*>(&build_info),
+        &primitive_count,
+        reinterpret_cast<VkAccelerationStructureBuildSizesInfoKHR*>(&size_info)
+    );
+
+    // --- 4. Create Persistent TLAS Buffer & Object ---
+    createBuffer(vma_allocator, size_info.accelerationStructureSize,
+                 vk::BufferUsageFlagBits::eAccelerationStructureStorageKHR | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+                 vk::MemoryPropertyFlagBits::eDeviceLocal,
+                 tlas.buffer);
+
+    vk::AccelerationStructureCreateInfoKHR as_create_info;
+    as_create_info.buffer = tlas.buffer.buffer;
+    as_create_info.size = size_info.accelerationStructureSize;
+    as_create_info.type = vk::AccelerationStructureTypeKHR::eTopLevel;
+
+    VkAccelerationStructureKHR vk_as;
+    vkCreateAccelerationStructureKHR(*logical_device, reinterpret_cast<const VkAccelerationStructureCreateInfoKHR*>(&as_create_info), nullptr, &vk_as);
+    tlas.as = vk::raii::AccelerationStructureKHR(logical_device, vk_as);
+
+    // --- 5. Create Temporary Scratch Buffer ---
+    AllocatedBuffer scratch_buffer;
+    createBuffer(vma_allocator, size_info.buildScratchSize,
+                 vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+                 vk::MemoryPropertyFlagBits::eDeviceLocal,
+                 scratch_buffer);
+
+    build_info.dstAccelerationStructure = *tlas.as;
+    build_info.scratchData.deviceAddress = getBufferDeviceAddress(scratch_buffer.buffer);
+
+    // --- 6. Execute Build on GPU ---
+    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+
+    vk::AccelerationStructureBuildRangeInfoKHR range_info;
+    range_info.primitiveCount = primitive_count;
+    range_info.primitiveOffset = 0;
+    range_info.firstVertex = 0;
+    range_info.transformOffset = 0;
+    
+    const VkAccelerationStructureBuildRangeInfoKHR* p_range = range_info;
+    vkCmdBuildAccelerationStructuresKHR(*cmd, 1, reinterpret_cast<const VkAccelerationStructureBuildGeometryInfoKHR*>(&build_info), &p_range);
+
+    // Memory Barrier to ensure build finishes before Ray Tracing shaders start
+    vk::MemoryBarrier2 barrier;
+    barrier.srcStageMask = vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR;
+    barrier.srcAccessMask = vk::AccessFlagBits2::eAccelerationStructureWriteKHR;
+    barrier.dstStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
+    barrier.dstAccessMask = vk::AccessFlagBits2::eAccelerationStructureReadKHR;
+    
+    vk::DependencyInfo dep_info;
+    dep_info.memoryBarrierCount = 1;
+    dep_info.pMemoryBarriers = &barrier;
+    cmd.pipelineBarrier2(dep_info);
+
+    endSingleTimeCommands(cmd, graphics_queue);
+
+    // --- 7. Store Address ---
+    vk::AccelerationStructureDeviceAddressInfoKHR addr_info(*tlas.as);
+    tlas.device_address = logical_device.getAccelerationStructureAddressKHR(addr_info);
 }
 
 void Engine::createUniformBuffers()
@@ -1670,10 +1822,6 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     auto& cmd = graphics_command_buffer[current_frame];
     cmd.begin({});
 
-    // 1. Always Build TLAS (Required for ray queries in both modes)
-    if(accumulation_frame == 0) // This is possible since we are using static scenes, remove for changing scenes
-        buildTlas(cmd); 
-
     // Bind RT Pipeline & Descriptors (Shared by both modes)
     cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline);
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.layout, 0, {*rt_descriptor_sets[current_frame]}, {});
@@ -1946,181 +2094,6 @@ void Engine::updateUniformBuffer(uint32_t current_image)
 
     // --- 6. Copy Data to GPU ---
     memcpy(uniform_buffers_mapped[current_image], &ubo, sizeof(ubo));
-}
-
-/**
- * @brief Creates persistent buffers for building the TLAS each frame.
- * This includes the instance buffer, the scratch buffer, and the TLAS object itself.
- */
-void Engine::createTlasResources()
-{
-    // 1. Create the Instance Buffer (Host Visible)
-    vk::DeviceSize instance_buffer_size = sizeof(vk::AccelerationStructureInstanceKHR) * MAX_TLAS_INSTANCES;
-    
-    createBuffer(vma_allocator, instance_buffer_size,
-                 vk::BufferUsageFlagBits::eShaderDeviceAddress | vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR,
-                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
-                 tlas_instance_buffer);
-    
-    // Map it permanently
-    vmaMapMemory(vma_allocator, tlas_instance_buffer.allocation, &tlas_instance_buffer_mapped);
-
-    // Get its device address
-    uint64_t instance_buffer_addr = getBufferDeviceAddress(tlas_instance_buffer.buffer);
-
-    // 2. Get Build Sizes for the TLAS
-    // We do a dummy setup to get the required buffer sizes
-    
-    vk::AccelerationStructureGeometryInstancesDataKHR instances_data;
-    instances_data.arrayOfPointers = vk::False;
-    instances_data.data.deviceAddress = instance_buffer_addr;
-
-    vk::AccelerationStructureGeometryKHR tlas_geometry;
-    tlas_geometry.geometryType = vk::GeometryTypeKHR::eInstances;
-    tlas_geometry.geometry.instances = instances_data;
-    tlas_geometry.flags = vk::GeometryFlagBitsKHR::eOpaque; // Instances are considered opaque
-
-    vk::AccelerationStructureBuildGeometryInfoKHR build_info;
-    build_info.type = vk::AccelerationStructureTypeKHR::eTopLevel;
-    build_info.flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace | vk::BuildAccelerationStructureFlagBitsKHR::eAllowUpdate; // <-- Allow updates
-    build_info.geometryCount = 1;
-    build_info.pGeometries = &tlas_geometry;
-
-    uint32_t primitive_count = MAX_TLAS_INSTANCES;
-    vk::AccelerationStructureBuildSizesInfoKHR size_info;
-    vkGetAccelerationStructureBuildSizesKHR(
-        *logical_device,
-        static_cast<VkAccelerationStructureBuildTypeKHR>(vk::AccelerationStructureBuildTypeKHR::eDevice),
-        reinterpret_cast<const VkAccelerationStructureBuildGeometryInfoKHR*>(&build_info),
-        &primitive_count,
-        reinterpret_cast<VkAccelerationStructureBuildSizesInfoKHR*>(&size_info)
-    );
-
-    // 3. Create TLAS Buffer
-    createBuffer(vma_allocator, size_info.accelerationStructureSize,
-                 vk::BufferUsageFlagBits::eAccelerationStructureStorageKHR | vk::BufferUsageFlagBits::eShaderDeviceAddress,
-                 vk::MemoryPropertyFlagBits::eDeviceLocal,
-                 tlas.buffer);
-
-    // 4. Create TLAS Object
-    vk::AccelerationStructureCreateInfoKHR as_create_info;
-    as_create_info.buffer = tlas.buffer.buffer;
-    as_create_info.size = size_info.accelerationStructureSize;
-    as_create_info.type = vk::AccelerationStructureTypeKHR::eTopLevel;
-
-    VkAccelerationStructureKHR vk_as;
-    if (vkCreateAccelerationStructureKHR(*logical_device, reinterpret_cast<const VkAccelerationStructureCreateInfoKHR*>(&as_create_info), nullptr, &vk_as) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create TLAS object!");
-    }
-    tlas.as = vk::raii::AccelerationStructureKHR(logical_device, vk_as);
-
-    // 5. Create persistent Scratch Buffer
-    createBuffer(vma_allocator, size_info.buildScratchSize,
-                 vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
-                 vk::MemoryPropertyFlagBits::eDeviceLocal,
-                 tlas_scratch_buffer);
-    tlas_scratch_addr = getBufferDeviceAddress(tlas_scratch_buffer.buffer);
-
-    // 6. Get the TLAS device address
-    vk::AccelerationStructureDeviceAddressInfoKHR addr_info(*tlas.as);
-    tlas.device_address = logical_device.getAccelerationStructureAddressKHR(addr_info);
-}
-
-/**
- * @brief Builds the Top-Level Acceleration Structure (TLAS) for the current frame.
- * This collects all valid BLASs, updates their transforms, and rebuilds the TLAS.
- */
-void Engine::buildTlas(vk::raii::CommandBuffer& cmd)
-{
-    // 1. Gather all object instances
-    std::vector<vk::AccelerationStructureInstanceKHR> instances;
-
-    auto gather_instances = [&](Gameobject& obj) {
-        if (obj.blas.as == nullptr) return; // Skip objects without a BLAS (like the torus)
-        
-        vk::AccelerationStructureInstanceKHR instance;
-        
-        // The transform matrix is row-major. GLM is column-major. So we transpose.
-        glm::mat4 transp_model = glm::transpose(obj.model_matrix);
-        memcpy(&instance.transform, &transp_model, sizeof(vk::TransformMatrixKHR));
-        
-        instance.instanceCustomIndex = obj.mesh_info_offset;
-        instance.mask = 0xFF; // All rays hit
-        instance.instanceShaderBindingTableRecordOffset = 0; // Only one hit group
-        instance.flags = static_cast<VkGeometryInstanceFlagBitsKHR>(vk::GeometryInstanceFlagBitsKHR::eTriangleFacingCullDisable);
-        instance.accelerationStructureReference = obj.blas.device_address;
-        
-        instances.push_back(instance);
-    };
-
-    for (Gameobject& obj : scene_objs) {
-        if(&obj != &torus)
-            gather_instances(obj);
-    }
-    // gather_instances(debug_cube);
-    if (use_rt_box) {
-        gather_instances(rt_box);
-    }
-
-    if (instances.empty()) {
-        return; // Nothing to build
-    }
-
-    // 2. Copy instance data to the host-visible buffer
-    memcpy(tlas_instance_buffer_mapped, instances.data(), instances.size() * sizeof(vk::AccelerationStructureInstanceKHR));
-
-    // 3. Add barrier: Wait for CPU buffer write to be visible to the GPU
-    vk::MemoryBarrier2 mem_barrier;
-    mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eHost;
-    mem_barrier.srcAccessMask = vk::AccessFlagBits2::eHostWrite;
-    mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR;
-    mem_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead;
-    cmd.pipelineBarrier2(vk::DependencyInfo({}, 1, &mem_barrier, 0, nullptr, 0, nullptr));
-
-    // 4. Set up the build info
-    vk::AccelerationStructureGeometryInstancesDataKHR instances_data;
-    instances_data.arrayOfPointers = vk::False;
-    instances_data.data.deviceAddress = getBufferDeviceAddress(tlas_instance_buffer.buffer);
-
-    vk::AccelerationStructureGeometryKHR tlas_geometry;
-    tlas_geometry.geometryType = vk::GeometryTypeKHR::eInstances;
-    tlas_geometry.geometry.instances = instances_data;
-    tlas_geometry.flags = vk::GeometryFlagBitsKHR::eOpaque;
-
-    vk::AccelerationStructureBuildGeometryInfoKHR build_info;
-    build_info.type = vk::AccelerationStructureTypeKHR::eTopLevel;
-    build_info.flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace | vk::BuildAccelerationStructureFlagBitsKHR::eAllowUpdate;
-    build_info.mode = vk::BuildAccelerationStructureModeKHR::eBuild; // Re-build every frame
-    build_info.dstAccelerationStructure = *tlas.as;
-    build_info.geometryCount = 1;
-    build_info.pGeometries = &tlas_geometry;
-    build_info.scratchData.deviceAddress = tlas_scratch_addr;
-
-    vk::AccelerationStructureBuildRangeInfoKHR range_info;
-    range_info.primitiveCount = static_cast<uint32_t>(instances.size());
-    range_info.primitiveOffset = 0;
-    range_info.firstVertex = 0;
-    range_info.transformOffset = 0;
-    
-    const VkAccelerationStructureBuildRangeInfoKHR* p_build_range = 
-        reinterpret_cast<const VkAccelerationStructureBuildRangeInfoKHR*>(&range_info);
-    const VkAccelerationStructureBuildRangeInfoKHR* const p_build_range_const_ptr = p_build_range;
-
-    // 5. Record the build command
-    vkCmdBuildAccelerationStructuresKHR(
-        *cmd, 
-        1, 
-        reinterpret_cast<const VkAccelerationStructureBuildGeometryInfoKHR*>(&build_info), 
-        &p_build_range_const_ptr
-    );
-
-    // 6. Add barrier: Wait for TLAS build to finish before any ray tracing
-    vk::MemoryBarrier2 build_barrier;
-    build_barrier.srcStageMask = vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR;
-    build_barrier.srcAccessMask = vk::AccessFlagBits2::eAccelerationStructureWriteKHR;
-    build_barrier.dstStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR; // For the *next* step
-    build_barrier.dstAccessMask = vk::AccessFlagBits2::eAccelerationStructureReadKHR;
-    cmd.pipelineBarrier2(vk::DependencyInfo({}, 1, &build_barrier, 0, nullptr, 0, nullptr));
 }
 
 /**
@@ -2758,10 +2731,6 @@ void Engine::captureSceneData() {
 
             vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device);
 
-            // Rebuild TLAS (Scene might be dynamic, or just to be safe)
-            if(frame == 0)
-                buildTlas(cmd);
-
             // Bind RT Pipeline
             cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline);
             cmd.bindDescriptorSets(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.layout, 0, {*rt_descriptor_sets[current_frame]}, {});
@@ -2862,9 +2831,6 @@ void Engine::captureSceneData() {
         updateUniformBuffer(current_frame); 
 
         vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device);
-
-        if(frame == 0)
-            buildTlas(cmd);
 
         cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline);
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.layout, 0, {*rt_descriptor_sets[current_frame]}, {});

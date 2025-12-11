@@ -316,12 +316,15 @@ struct UniformBufferObject {
     glm::vec2 pad;
 };
 
+/**
+ * Structure that holds the queue indices
+ */
 struct QueueFamilyIndices {
     std::optional<uint32_t> graphics_family;
     std::optional<uint32_t> present_family;
     std::optional<uint32_t> transfer_family;
 
-    bool isComplete() const{
+    bool isComplete() const{ // returns true if all the indices hold a valid value
         return graphics_family.has_value() && 
             present_family.has_value() &&
             transfer_family.has_value();

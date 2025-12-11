@@ -769,7 +769,9 @@ void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action,
                         input.fov_up || input.fov_down) && input.consumed;
 }
 
-
+/**
+ * Callback function for mouse click-imput
+ */
 void Engine::mouse_button_callback(GLFWwindow *window, int button, int action, int mods)
 {
     Engine *engine = reinterpret_cast<Engine *>(glfwGetWindowUserPointer(window));
@@ -783,6 +785,9 @@ void Engine::mouse_button_callback(GLFWwindow *window, int button, int action, i
     }
 }
 
+/**
+ * Callback function for mouse movement
+ */
 void Engine::cursor_position_callback(GLFWwindow *window, double x_pos, double y_pos)
 {
     Engine *engine = reinterpret_cast<Engine *>(glfwGetWindowUserPointer(window));
@@ -791,7 +796,7 @@ void Engine::cursor_position_callback(GLFWwindow *window, double x_pos, double y
     }
 
     static bool first_mouse = true;
-    static double last_x, last_y;
+    static float last_x, last_y;
 
     if(first_mouse){
         last_x = x_pos;
@@ -799,15 +804,15 @@ void Engine::cursor_position_callback(GLFWwindow *window, double x_pos, double y
         first_mouse = false;
     }
 
-    double x_offset = x_pos - last_x;
-    double y_offset = y_pos - last_y;
+    float x_offset = x_pos - last_x;
+    float y_offset = y_pos - last_y;
 
     last_x = x_pos;
     last_y = y_pos;
 
     if(engine -> input.left_mouse){
-        engine -> input.look_x = static_cast<float>(-x_offset);
-        engine -> input.look_y = static_cast<float>(-y_offset);
+        engine -> input.look_x = -x_offset;
+        engine -> input.look_y = -y_offset;
     }
     else{
         engine -> input.look_x = 0.f;
@@ -872,39 +877,20 @@ bool Engine::initWindow(){
     return true;
 }
 
+/**
+ * Initializes the whole Vulkan Engine
+ */
 bool Engine::initVulkan(){
+    // Instance right now is created with the validation layers. Modify it for testing at full performance
     createInstance();
     setupDebugMessanger();
+
     createSurface();
 
     // Get device and queues
-    physical_device = Device::pickPhysicalDevice(*this);
-    logical_device = Device::createLogicalDevice(*this, queue_indices); 
-    graphics_queue = Device::getQueue(*this, queue_indices.graphics_family.value());
-    present_queue = Device::getQueue(*this, queue_indices.present_family.value());
-    transfer_queue = Device::getQueue(*this, queue_indices.transfer_family.value());
+    createDevice();
 
-    // Load Ray Tracing function pointers
-    vkGetAccelerationStructureBuildSizesKHR = reinterpret_cast<PFN_vkGetAccelerationStructureBuildSizesKHR>(logical_device.getProcAddr("vkGetAccelerationStructureBuildSizesKHR"));
-    vkCreateAccelerationStructureKHR = reinterpret_cast<PFN_vkCreateAccelerationStructureKHR>(logical_device.getProcAddr("vkCreateAccelerationStructureKHR"));
-    vkCmdBuildAccelerationStructuresKHR = reinterpret_cast<PFN_vkCmdBuildAccelerationStructuresKHR>(logical_device.getProcAddr("vkCmdBuildAccelerationStructuresKHR"));
-    vkGetAccelerationStructureDeviceAddressKHR = reinterpret_cast<PFN_vkGetAccelerationStructureDeviceAddressKHR>(logical_device.getProcAddr("vkGetAccelerationStructureDeviceAddressKHR"));
-    vkCreateRayTracingPipelinesKHR = reinterpret_cast<PFN_vkCreateRayTracingPipelinesKHR>(logical_device.getProcAddr("vkCreateRayTracingPipelinesKHR"));
-    vkGetRayTracingShaderGroupHandlesKHR = reinterpret_cast<PFN_vkGetRayTracingShaderGroupHandlesKHR>(logical_device.getProcAddr("vkGetRayTracingShaderGroupHandlesKHR"));
-    vkCmdTraceRaysKHR = reinterpret_cast<PFN_vkCmdTraceRaysKHR>(logical_device.getProcAddr("vkCmdTraceRaysKHR"));
-
-    if (!vkGetAccelerationStructureBuildSizesKHR || !vkCreateAccelerationStructureKHR || 
-        !vkCmdBuildAccelerationStructuresKHR || !vkGetAccelerationStructureDeviceAddressKHR || 
-        !vkCreateRayTracingPipelinesKHR || !vkGetRayTracingShaderGroupHandlesKHR || !vkCmdTraceRaysKHR) {
-        throw std::runtime_error("Failed to load ray tracing pipeline function pointers!");
-    }
-    
-    // Get RT properties
-    auto rt_pipeline_props = physical_device.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceRayTracingPipelinePropertiesKHR>();
-    rt_props.pipeline_props = rt_pipeline_props.get<vk::PhysicalDeviceRayTracingPipelinePropertiesKHR>();
-    
-    auto as_props = physical_device.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceAccelerationStructurePropertiesKHR>();
-    rt_props.as_props = as_props.get<vk::PhysicalDeviceAccelerationStructurePropertiesKHR>();
+    loadRT();
 
     // Get swapchain and swapchain images
     swapchain = Swapchain::createSwapChain(*this);
@@ -983,6 +969,9 @@ bool Engine::initVulkan(){
     return true;
 }
 
+/**
+ * Create instance to start the Engine
+ */
 void Engine::createInstance(){
     constexpr vk::ApplicationInfo app_info{ 
         "Engine", // application name
@@ -1040,6 +1029,47 @@ void Engine::createSurface(){
         throw std::runtime_error("Failed to create window surface!");
     }
     surface = vk::raii::SurfaceKHR(instance, _surface);
+}
+
+/**
+ * Uses Device helper functions to create physical device, logical device, and necessary queues
+ */
+void Engine::createDevice(){
+    physical_device = Device::pickPhysicalDevice(instance);
+    logical_device = Device::createLogicalDevice(physical_device, surface, queue_indices); 
+    graphics_queue = Device::getQueue(logical_device, queue_indices.graphics_family.value());
+    present_queue = Device::getQueue(logical_device, queue_indices.present_family.value());
+    transfer_queue = Device::getQueue(logical_device, queue_indices.transfer_family.value());
+}
+
+
+/**
+ * Loads Raytracing functions pointers and properties
+ */
+void Engine::loadRT()
+{
+    // Load Ray Tracing function pointers
+    vkGetAccelerationStructureBuildSizesKHR = reinterpret_cast<PFN_vkGetAccelerationStructureBuildSizesKHR>(logical_device.getProcAddr("vkGetAccelerationStructureBuildSizesKHR"));
+    vkCreateAccelerationStructureKHR = reinterpret_cast<PFN_vkCreateAccelerationStructureKHR>(logical_device.getProcAddr("vkCreateAccelerationStructureKHR"));
+    vkCmdBuildAccelerationStructuresKHR = reinterpret_cast<PFN_vkCmdBuildAccelerationStructuresKHR>(logical_device.getProcAddr("vkCmdBuildAccelerationStructuresKHR"));
+    vkGetAccelerationStructureDeviceAddressKHR = reinterpret_cast<PFN_vkGetAccelerationStructureDeviceAddressKHR>(logical_device.getProcAddr("vkGetAccelerationStructureDeviceAddressKHR"));
+    vkCreateRayTracingPipelinesKHR = reinterpret_cast<PFN_vkCreateRayTracingPipelinesKHR>(logical_device.getProcAddr("vkCreateRayTracingPipelinesKHR"));
+    vkGetRayTracingShaderGroupHandlesKHR = reinterpret_cast<PFN_vkGetRayTracingShaderGroupHandlesKHR>(logical_device.getProcAddr("vkGetRayTracingShaderGroupHandlesKHR"));
+    vkCmdTraceRaysKHR = reinterpret_cast<PFN_vkCmdTraceRaysKHR>(logical_device.getProcAddr("vkCmdTraceRaysKHR"));
+
+    if (!vkGetAccelerationStructureBuildSizesKHR || !vkCreateAccelerationStructureKHR ||
+        !vkCmdBuildAccelerationStructuresKHR || !vkGetAccelerationStructureDeviceAddressKHR ||
+        !vkCreateRayTracingPipelinesKHR || !vkGetRayTracingShaderGroupHandlesKHR || !vkCmdTraceRaysKHR)
+    {
+        throw std::runtime_error("Failed to load ray tracing pipeline function pointers!");
+    }
+
+    // Get RT properties
+    auto rt_pipeline_props = physical_device.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceRayTracingPipelinePropertiesKHR>();
+    rt_props.pipeline_props = rt_pipeline_props.get<vk::PhysicalDeviceRayTracingPipelinePropertiesKHR>();
+
+    auto as_props = physical_device.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceAccelerationStructurePropertiesKHR>();
+    rt_props.as_props = as_props.get<vk::PhysicalDeviceAccelerationStructurePropertiesKHR>();
 }
 
 

@@ -311,6 +311,10 @@ private:
     void createInstance();
     void createSurface();
 
+    void createDevice();
+
+    void loadRT();
+
     void createCommandPool();
     void createGraphicsCommandBuffers();
 

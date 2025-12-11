@@ -3,14 +3,12 @@
 // Base class for the engine
 #include "../Helpers/GeneralHeaders.h"
 
-class Engine; // Forward Declaration
-
 namespace Device{
-    vk::raii::PhysicalDevice pickPhysicalDevice(const Engine &engine);
-    vk::raii::Device createLogicalDevice(const Engine &engine, QueueFamilyIndices &indices);
-    vk::raii::Queue getQueue(const Engine &engine, const uint32_t &indices);
+    vk::raii::PhysicalDevice pickPhysicalDevice(const vk::raii::Instance &instance);
+    vk::raii::Device createLogicalDevice(const vk::raii::PhysicalDevice &physical_device, const vk::raii::SurfaceKHR &surface, QueueFamilyIndices &indices);
+    vk::raii::Queue getQueue(const vk::raii::Device &logical_device, const uint32_t &indices);
 
     bool isDeviceSuitable(const vk::raii::PhysicalDevice& device, bool descrete);
-    QueueFamilyIndices findQueueFamilies(const Engine& engine);
+    QueueFamilyIndices findQueueFamilies(const vk::raii::PhysicalDevice &physical_device, const vk::raii::SurfaceKHR &surface);
 };
 

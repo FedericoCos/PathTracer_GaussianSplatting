@@ -1,5 +1,4 @@
 #include "device.h"
-#include "engine.h"
 
 std::vector<const char*> device_extensions = {
     vk::KHRSwapchainExtensionName, // extension required for presenting rendered images to the window
@@ -17,6 +16,11 @@ std::vector<const char*> device_extensions = {
     vk::EXTDescriptorIndexingExtensionName
 };
 
+
+/**
+ * Checks wheter a device is suitable for the application.
+ * If descrete == true, then it only picks discrete GPUs
+ */
 bool Device::isDeviceSuitable(const vk::raii::PhysicalDevice &device, bool descrete)
 {
     auto device_properties = device.getProperties();
@@ -99,8 +103,12 @@ bool Device::isDeviceSuitable(const vk::raii::PhysicalDevice &device, bool descr
     return supportsRequiredFeatures && supportsRtFeatures && supportsVulkan12Features;
 }
 
-vk::raii::PhysicalDevice Device::pickPhysicalDevice(const Engine& engine){
-    auto devices = engine.instance.enumeratePhysicalDevices();
+/**
+ * Picks asuitable physical device based on what is defined in function isDeviceSuitable
+ * Looks first for discrete GPUs
+ */
+vk::raii::PhysicalDevice Device::pickPhysicalDevice(const vk::raii::Instance &instance){
+    auto devices = instance.enumeratePhysicalDevices();
 
     if(devices.empty()){
         throw std::runtime_error("failed to find GPUs with Vulkan support!");
@@ -127,12 +135,14 @@ vk::raii::PhysicalDevice Device::pickPhysicalDevice(const Engine& engine){
     throw std::runtime_error("failed to find GPU with all the necessary features");
 }
 
-
-QueueFamilyIndices Device::findQueueFamilies(const Engine& engine){
+/**
+ * Find the indices for the queue family for later extraction
+ */
+QueueFamilyIndices Device::findQueueFamilies(const vk::raii::PhysicalDevice &physical_device, const vk::raii::SurfaceKHR &surface){
     QueueFamilyIndices indices;
 
     // Get all queue families available on the physical device
-    std::vector<vk::QueueFamilyProperties> queue_family_properties = engine.physical_device.getQueueFamilyProperties();
+    std::vector<vk::QueueFamilyProperties> queue_family_properties = physical_device.getQueueFamilyProperties();
 
     uint32_t i = 0;
     for(const auto& queue_family : queue_family_properties){
@@ -149,7 +159,7 @@ QueueFamilyIndices Device::findQueueFamilies(const Engine& engine){
         }
 
         // Find a presentation queue
-        if(engine.physical_device.getSurfaceSupportKHR(i, *engine.surface)){
+        if(physical_device.getSurfaceSupportKHR(i, surface)){
             indices.present_family = i;
         }
 
@@ -166,9 +176,12 @@ QueueFamilyIndices Device::findQueueFamilies(const Engine& engine){
     return indices;
 }
 
-vk::raii::Device Device::createLogicalDevice(const Engine &engine, QueueFamilyIndices &indices){
+/**
+ * Creates the logical device given the physical device picked in a previous section
+ */
+vk::raii::Device Device::createLogicalDevice(const vk::raii::PhysicalDevice &physical_device, const vk::raii::SurfaceKHR &surface, QueueFamilyIndices &indices){
     // find the index of the first queue fammily that supports graphics
-    indices = findQueueFamilies(engine);
+    indices = findQueueFamilies(physical_device, surface);
     std::set<uint32_t> unique_queue_families = {
         indices.graphics_family.value(),
         indices.present_family.value(),
@@ -253,10 +266,13 @@ vk::raii::Device Device::createLogicalDevice(const Engine &engine, QueueFamilyIn
         &feature_chain.get<vk::PhysicalDeviceFeatures2>()    // pNext -> features chain
     };
 
-    return std::move(vk::raii::Device(engine.physical_device, device_create_info));
+    return std::move(vk::raii::Device(physical_device, device_create_info));
 }
 
-vk::raii::Queue Device::getQueue(const Engine &engine, const uint32_t &index){
-    return std::move(vk::raii::Queue(engine.logical_device, index, 0));
+/**
+ * Extracts the queue requested if present
+ */
+vk::raii::Queue Device::getQueue(const vk::raii::Device &logical_device, const uint32_t &index){
+    return std::move(vk::raii::Queue(logical_device, index, 0));
 }
 

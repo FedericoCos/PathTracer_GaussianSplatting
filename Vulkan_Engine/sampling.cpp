@@ -358,6 +358,9 @@ void Sampling::sortSamples(std::vector<RaySample> &samples)
     });
 }
 
+/**
+ * General function that updates the sampling method
+ */
 void Sampling::updateSampling(const int &method_index, const int& num_rays, std::vector<RaySample> &sampling_points, 
     AllocatedBuffer &sample_data_buffer, AllocatedBuffer &hit_data_buffer,
     VmaAllocator &vma_allocator, vk::raii::CommandPool &pool, vk::raii::Queue &queue, vk::raii::Device *device)

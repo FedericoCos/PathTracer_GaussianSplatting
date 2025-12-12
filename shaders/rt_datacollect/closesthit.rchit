@@ -555,18 +555,17 @@ void main()
     
     mat3 TBN = mat3(T, B, N);
 
-    float tex_lod = 0.0;
-    if (payload.last_bsdf_pdf <= 0.0) {
-        // Primary ray: geometric LOD
-        if (mat.albedo_id > 0) {
-            tex_lod = computeLOD(gl_WorldRayOriginEXT, gl_WorldRayDirectionEXT, gl_HitTEXT, N_geo, mat.albedo_id);
-        }
-    } else {
-        // Secondary ray: roughness-based blur
-        tex_lod = clamp(mat.roughness_factor * 5.0 + log2(gl_HitTEXT * 0.1 + 1.0), 0.0, 8.0);
-    }
-
     if (abs(Tw) > 0.0001 && mat.normal_id > 0) {
+        float tex_lod = 0.0;
+        if (payload.last_bsdf_pdf <= 0.0) {
+            // Primary ray: geometric LOD
+            if (mat.albedo_id > 0) {
+                tex_lod = computeLOD(gl_WorldRayOriginEXT, gl_WorldRayDirectionEXT, gl_HitTEXT, N_geo, mat.albedo_id);
+            }
+        } else {
+            // Secondary ray: roughness-based blur
+            tex_lod = clamp(mat.roughness_factor * 5.0 + log2(gl_HitTEXT * 0.1 + 1.0), 0.0, 8.0);
+        }
         vec3 map_val = sampleTexture(mat.normal_id, (mat.uv_normal * vec4(tex_coord, 0.0, 1.0)).xy, tex_lod).xyz;
         vec3 normal_map = map_val * 2.0 - 1.0;
         // --- SOFTEN NORMALS FOR CLOTH ---
@@ -586,7 +585,7 @@ void main()
 
     vec4 base_color_sample = vec4(1.0);
     if (mat.albedo_id > 0) {
-        base_color_sample = sampleTexture(mat.albedo_id, tex_coord, tex_lod);
+        base_color_sample = sampleTexture(mat.albedo_id, tex_coord, 0);
     }
 
     // WORKFLOW A: SPECULAR - GLOSSINESS
@@ -601,7 +600,7 @@ void main()
         float glossiness = mat.roughness_factor; // We stored glossiness here in C++
 
         if (mat.sg_id > 0) {
-            vec4 sg_tex = sampleTexture(mat.sg_id, tex_coord, tex_lod);
+            vec4 sg_tex = sampleTexture(mat.sg_id, tex_coord, 0);
             specular_color *= sg_tex.rgb; // RGB is Specular Color
             glossiness *= sg_tex.a;       // A is Glossiness
         }
@@ -622,7 +621,7 @@ void main()
         roughness = mat.roughness_factor;
         
         if (mat.mr_id > 0) {
-            vec4 mr_sample = sampleTexture(mat.mr_id, tex_coord, tex_lod);
+            vec4 mr_sample = sampleTexture(mat.mr_id, tex_coord, 0);
             metallic *= mr_sample.b; // glTF is Blue for Metallic
             roughness *= mr_sample.g; // glTF is Green for Roughness
         }
@@ -637,20 +636,20 @@ void main()
     float clearcoat = mat.clearcoat_factor;
     float cc_roughness = mat.clearcoat_roughness_factor; 
     if (mat.clearcoat_id > 0) { 
-        clearcoat *= sampleTexture(mat.clearcoat_id, tex_coord, tex_lod).r;
+        clearcoat *= sampleTexture(mat.clearcoat_id, tex_coord, 0).r;
     }
     if (mat.clearcoat_roughness_id > 0) {
-        cc_roughness *= sampleTexture(mat.clearcoat_roughness_id, tex_coord, tex_lod).r;
+        cc_roughness *= sampleTexture(mat.clearcoat_roughness_id, tex_coord, 0).r;
     }
 
     // Occlusion
     float ao = mat.occlusion_strength; 
-    if (mat.occlusion_id > 0) ao *= sampleTexture(mat.occlusion_id, tex_coord, tex_lod).r;
+    if (mat.occlusion_id > 0) ao *= sampleTexture(mat.occlusion_id, tex_coord, 0).r;
     
     // Emissive
     vec3 emissive = mat.emissive_factor_and_pad.xyz;
     if (mat.emissive_id > 0){ 
-        emissive *= sampleTexture(mat.emissive_id, (mat.uv_emissive * vec4(tex_coord, 0.0, 1.0)).xy, tex_lod).rgb;
+        emissive *= sampleTexture(mat.emissive_id, (mat.uv_emissive * vec4(tex_coord, 0.0, 1.0)).xy, 0).rgb;
     }
     float transmission = mat.transmission_factor; 
 

@@ -17,13 +17,13 @@ static const char* VmaResultToString(VkResult r) {
     }
 }
 
-vk::raii::CommandBuffer beginSingleTimeCommands(vk::raii::CommandPool& command_pool, vk::raii::Device *logical_device){
+vk::raii::CommandBuffer beginSingleTimeCommands(const vk::raii::CommandPool& command_pool, const vk::raii::Device &logical_device){
     vk::CommandBufferAllocateInfo alloc_info;
     alloc_info.commandPool = command_pool;
     alloc_info.level = vk::CommandBufferLevel::ePrimary;
     alloc_info.commandBufferCount = 1;
 
-    vk::raii::CommandBuffer command_buffer = std::move(logical_device -> allocateCommandBuffers(alloc_info).front());
+    vk::raii::CommandBuffer command_buffer = std::move(logical_device.allocateCommandBuffers(alloc_info).front());
 
     vk::CommandBufferBeginInfo command_buffer_begin_info;
     command_buffer_begin_info.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
@@ -33,7 +33,7 @@ vk::raii::CommandBuffer beginSingleTimeCommands(vk::raii::CommandPool& command_p
     return command_buffer;
 }
 
-void endSingleTimeCommands(vk::raii::CommandBuffer &command_buffer, vk::raii::Queue& queue)
+void endSingleTimeCommands(const vk::raii::CommandBuffer &command_buffer, const vk::raii::Queue& queue)
 {
     command_buffer.end();
 
@@ -113,7 +113,7 @@ void createBuffer(
     allocated_buffer.p_allocator = &vma_allocator;
 }
 
-void copyBuffer(VkBuffer &src_buffer, VkBuffer &dst_buffer, vk::DeviceSize size, vk::raii::CommandPool &command_pool, vk::raii::Device *logical_device, vk::raii::Queue &queue)
+void copyBuffer(VkBuffer &src_buffer, VkBuffer &dst_buffer, vk::DeviceSize size, vk::raii::CommandPool &command_pool, vk::raii::Device &logical_device, vk::raii::Queue &queue)
 {
     vk::raii::CommandBuffer command_copy_buffer = beginSingleTimeCommands(command_pool, logical_device);
 
@@ -127,7 +127,7 @@ void copyBuffer(VkBuffer &src_buffer, VkBuffer &dst_buffer, vk::DeviceSize size,
  * Used for importanceSampling and to save pointcloud info
  */
 void readBuffer(vk::Buffer buffer, vk::DeviceSize size, void* dst_ptr, VmaAllocator &vma_allocator,
-                vk::raii::Device *logical_device, vk::raii::CommandPool &command_pool,
+                vk::raii::Device &logical_device, vk::raii::CommandPool &command_pool,
                 vk::raii::Queue &queue) {
     AllocatedBuffer staging_buffer;
     createBuffer(vma_allocator, size, vk::BufferUsageFlagBits::eTransferDst,
@@ -145,7 +145,7 @@ void readBuffer(vk::Buffer buffer, vk::DeviceSize size, void* dst_ptr, VmaAlloca
     vmaUnmapMemory(vma_allocator, staging_buffer.allocation);
 }
 
-void copyBufferToImage(const VkBuffer &buffer, VkImage &image, uint32_t width, uint32_t height, vk::raii::Device *logical_device, vk::raii::CommandPool &command_pool, vk::raii::Queue &queue)
+void copyBufferToImage(const VkBuffer &buffer, VkImage &image, uint32_t width, uint32_t height, vk::raii::Device &logical_device, vk::raii::CommandPool &command_pool, vk::raii::Queue &queue)
 {
     vk::raii::CommandBuffer command_buffer = beginSingleTimeCommands(command_pool, logical_device);
     vk::BufferImageCopy region;

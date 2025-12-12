@@ -69,17 +69,15 @@ public:
     QueueFamilyIndices queue_indices;
 
     // Device variables
-    vk::raii::Queue graphics_queue = nullptr;
     vk::raii::Queue present_queue = nullptr;
-    vk::raii::Queue transfer_queue = nullptr;
 
     // Swapchain variables
     SwapChainBundle swapchain;
 
     // Command pools variables
-    vk::raii::CommandPool command_pool_graphics = nullptr;
     std::vector<vk::raii::CommandBuffer> graphics_command_buffer;
-    vk::raii::CommandPool command_pool_transfer = nullptr;
+
+    PoolQueue pool_and_queue;
 
     // Uniform buffer variables
     std::vector<AllocatedBuffer> uniform_buffers;

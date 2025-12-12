@@ -181,13 +181,13 @@ void Gameobject::createDefaultTexture(Engine& engine, AllocatedImage& texture, g
 
     texture = Image::createImage(1, 1, 1, vk::SampleCountFlagBits::e1, vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal,
                 vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
-                vk::MemoryPropertyFlagBits::eDeviceLocal, engine);
+                vk::MemoryPropertyFlagBits::eDeviceLocal, engine.vma_allocator);
     
-    texture.image_view = Image::createImageView(texture, engine);
+    texture.image_view = Image::createImageView(texture, engine.logical_device);
 
-    Image::transitionImageLayout(texture.image, 1, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, engine);
-    copyBufferToImage(staging_buffer.buffer, texture.image, 1, 1, &engine.logical_device, engine.command_pool_transfer, engine.transfer_queue);
-    Image::transitionImageLayout(texture.image, 1, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, engine);
+    Image::transitionImageLayout(texture.image, 1, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, engine.pool_and_queue, engine.logical_device);
+    copyBufferToImage(staging_buffer.buffer, texture.image, 1, 1, engine.logical_device, engine.pool_and_queue.command_pool_transfer, engine.pool_and_queue.transfer_queue);
+    Image::transitionImageLayout(texture.image, 1, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, engine.pool_and_queue, engine.logical_device);
 }
 
 bool Gameobject::inputUpdate(InputState &input, float &dtime)
@@ -359,7 +359,7 @@ void Gameobject::loadTextures(const tinygltf::Model& model, const std::string& b
         }
 
         std::cout << "Creating texture: " << image.uri << std::endl;
-        textures.push_back(Image::createTextureImage(engine, texture_path.c_str(), format));
+        textures.push_back(Image::createTextureImage(texture_path.c_str(), format, engine.physical_device, engine.logical_device, engine.pool_and_queue, engine.vma_allocator));
         max_mips = std::max<uint32_t>(max_mips, textures.back().mip_levels);
         image_index++;
     }

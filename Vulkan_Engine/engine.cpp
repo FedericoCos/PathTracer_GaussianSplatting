@@ -503,7 +503,7 @@ void Engine::createModel(Gameobject &obj)
                 vk::MemoryPropertyFlagBits::eDeviceLocal, obj.geometry_buffer);
     
     copyBuffer(staging_buffer.buffer, obj.geometry_buffer.buffer, total_size,
-                command_pool_transfer, &logical_device, transfer_queue);
+                pool_and_queue.command_pool_transfer, logical_device, pool_and_queue.transfer_queue);
 
     // We need to exclude the torus, since it casts the rays
     // For the moment
@@ -619,7 +619,7 @@ void Engine::buildBlas(Gameobject& obj)
     uint64_t scratch_addr = getBufferDeviceAddress(scratch_buffer.buffer);
 
     // 6. Build the BLAS on the GPU
-    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(pool_and_queue.command_pool_graphics, logical_device);
 
     build_info.mode = vk::BuildAccelerationStructureModeKHR::eBuild;
     build_info.dstAccelerationStructure = *obj.blas.as;
@@ -641,7 +641,7 @@ void Engine::buildBlas(Gameobject& obj)
     barrier.dstAccessMask = vk::AccessFlagBits2::eAccelerationStructureReadKHR;
     cmd.pipelineBarrier2(vk::DependencyInfo({}, 1, &barrier, 0, nullptr, 0, nullptr));
 
-    endSingleTimeCommands(cmd, graphics_queue);
+    endSingleTimeCommands(cmd, pool_and_queue.graphics_queue);
 
     // 8. Get the device address for the TLAS
     vk::AccelerationStructureDeviceAddressInfoKHR addr_info(*obj.blas.as);
@@ -758,8 +758,8 @@ void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action,
                 engine->logical_device.waitIdle();
 
                 Sampling::updateSampling(engine -> current_sampling, engine -> num_rays, engine -> sampling_points, engine -> sample_data_buffer, 
-                        engine -> hit_data_buffer, engine -> vma_allocator, engine -> command_pool_transfer,
-                        engine -> transfer_queue, &engine -> logical_device);
+                        engine -> hit_data_buffer, engine -> vma_allocator, engine -> pool_and_queue.command_pool_transfer,
+                        engine -> pool_and_queue.transfer_queue, engine -> logical_device);
             }
             break;
     }
@@ -832,10 +832,10 @@ void Engine::createRTOutputImage() {
         vk::ImageTiling::eOptimal,
         vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst,
         vk::MemoryPropertyFlagBits::eDeviceLocal, 
-        *this
+        vma_allocator
     );
 
-    rt_output_image.image_view = Image::createImageView(rt_output_image, *this);
+    rt_output_image.image_view = Image::createImageView(rt_output_image, logical_device);
 
     // Usage: TransferDst (from RT image) | TransferSrc (to CPU buffer)
     capture_resolve_image = Image::createImage(
@@ -846,13 +846,13 @@ void Engine::createRTOutputImage() {
         vk::ImageTiling::eOptimal,
         vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc,
         vk::MemoryPropertyFlagBits::eDeviceLocal, 
-        *this
+        vma_allocator
     );
 
     // Transition to General Layout (Ready for RayGen writing)
-    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(pool_and_queue.command_pool_graphics, logical_device);
     transitionImage(cmd, rt_output_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
-    endSingleTimeCommands(cmd, graphics_queue);
+    endSingleTimeCommands(cmd, pool_and_queue.graphics_queue);
 }
 
 // ------ INIT FUNCTIONS
@@ -910,11 +910,11 @@ bool Engine::initVulkan(){
 
     createRTOutputImage();
 
-    Image::createDepthResources(physical_device, depth_image, swapchain.extent.width, swapchain.extent.height, *this);
+    Image::createDepthResources(physical_device, logical_device, depth_image, swapchain.extent.width, swapchain.extent.height, vma_allocator);
     std::cout << "Memory usage after depth image creation" << std::endl;
     printGpuMemoryUsage();
 
-    blue_noise_txt = Image::createTextureImage(*this, blue_noise_txt_path, vk::Format::eR8G8B8A8Srgb);
+    blue_noise_txt = Image::createTextureImage(blue_noise_txt_path, vk::Format::eR8G8B8A8Srgb, physical_device, logical_device, pool_and_queue, vma_allocator);
     blue_noise_txt_sampler = Image::createTextureSampler(physical_device, &logical_device, 1);
     std::cout << "Memory usage after blue noise creation" << std::endl;
     printGpuMemoryUsage();
@@ -1022,9 +1022,9 @@ void Engine::createSurface(){
 void Engine::createDevice(){
     physical_device = Device::pickPhysicalDevice(instance);
     logical_device = Device::createLogicalDevice(physical_device, surface, queue_indices); 
-    graphics_queue = Device::getQueue(logical_device, queue_indices.graphics_family.value());
+    pool_and_queue.graphics_queue = Device::getQueue(logical_device, queue_indices.graphics_family.value());
     present_queue = Device::getQueue(logical_device, queue_indices.present_family.value());
-    transfer_queue = Device::getQueue(logical_device, queue_indices.transfer_family.value());
+    pool_and_queue.transfer_queue = Device::getQueue(logical_device, queue_indices.transfer_family.value());
 }
 
 
@@ -1084,12 +1084,12 @@ void Engine::createCommandPool(){
     pool_info.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
     pool_info.queueFamilyIndex = queue_indices.graphics_family.value();
 
-    command_pool_graphics = vk::raii::CommandPool(logical_device, pool_info);
+    pool_and_queue.command_pool_graphics = vk::raii::CommandPool(logical_device, pool_info);
 
     pool_info.flags = vk::CommandPoolCreateFlagBits::eTransient;
     pool_info.queueFamilyIndex = queue_indices.transfer_family.value();
 
-    command_pool_transfer = vk::raii::CommandPool(logical_device, pool_info);
+    pool_and_queue.command_pool_transfer = vk::raii::CommandPool(logical_device, pool_info);
 }
 
 
@@ -1388,7 +1388,7 @@ void Engine::initStaticTlas()
     build_info.scratchData.deviceAddress = getBufferDeviceAddress(scratch_buffer.buffer);
 
     // --- 6. Execute Build on GPU ---
-    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(pool_and_queue.command_pool_graphics, logical_device);
 
     vk::AccelerationStructureBuildRangeInfoKHR range_info;
     range_info.primitiveCount = primitive_count;
@@ -1411,7 +1411,7 @@ void Engine::initStaticTlas()
     dep_info.pMemoryBarriers = &barrier;
     cmd.pipelineBarrier2(dep_info);
 
-    endSingleTimeCommands(cmd, graphics_queue);
+    endSingleTimeCommands(cmd, pool_and_queue.graphics_queue);
 
     // --- 7. Store Address ---
     vk::AccelerationStructureDeviceAddressInfoKHR addr_info(*tlas.as);
@@ -1472,7 +1472,7 @@ void Engine::createGraphicsCommandBuffers(){
     graphics_command_buffer.clear();
 
     vk::CommandBufferAllocateInfo alloc_info;
-    alloc_info.commandPool = command_pool_graphics;
+    alloc_info.commandPool = pool_and_queue.command_pool_graphics;
     /**
      * Level parameter specifies if the allocated command buffers are primary or secondary
      * primary -> can be submitted to a queue for execution, but cannot bel called from other command buffers
@@ -1777,7 +1777,7 @@ void Engine::createGlobalBindlessBuffers()
                      vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
                      vk::MemoryPropertyFlagBits::eDeviceLocal, buffer);
                      
-        copyBuffer(staging_buffer.buffer, buffer.buffer, data_size, command_pool_graphics, &logical_device, graphics_queue);
+        copyBuffer(staging_buffer.buffer, buffer.buffer, data_size, pool_and_queue.command_pool_graphics, logical_device, pool_and_queue.graphics_queue);
     };
     
     upload_buffer(all_vertices_buffer, sizeof(Vertex) * global_scene_vertices.size(), global_scene_vertices.data());
@@ -2043,7 +2043,7 @@ void Engine::drawFrame(){
     submit_info.signalSemaphoreCount = 1;
     submit_info.pSignalSemaphores = &*render_finished_semaphores[image_index];
 
-    graphics_queue.submit(submit_info, *in_flight_fences[current_frame]);
+    pool_and_queue.graphics_queue.submit(submit_info, *in_flight_fences[current_frame]);
 
     vk::PresentInfoKHR present_info_KHR;
     present_info_KHR.waitSemaphoreCount = 1;
@@ -2120,7 +2120,7 @@ void Engine::createRayTracingDataBuffers()
     
     Sampling::updateSampling(current_sampling, num_rays, sampling_points, 
             sample_data_buffer, hit_data_buffer, vma_allocator, 
-            command_pool_transfer, transfer_queue, &logical_device);
+            pool_and_queue.command_pool_transfer, pool_and_queue.transfer_queue, logical_device);
 }
 
 void Engine::createRayTracingPipeline()
@@ -2529,7 +2529,7 @@ void Engine::recreateSwapChain(){
     if (depth_image.image) {
         vmaDestroyImage(vma_allocator, depth_image.image, depth_image.allocation);
     }
-    Image::createDepthResources(physical_device, depth_image, swapchain.extent.width, swapchain.extent.height, *this);
+    Image::createDepthResources(physical_device, logical_device, depth_image, swapchain.extent.width, swapchain.extent.height, vma_allocator);
 
     // 3. Recreate Ray Tracing Output Image
     // This helper (defined earlier) destroys the old image and creates a new one 
@@ -2564,8 +2564,8 @@ void Engine::cleanup(){
 
     // Destroying sync objects
     graphics_command_buffer.clear();
-    command_pool_graphics = nullptr;
-    command_pool_transfer = nullptr;
+    pool_and_queue.command_pool_graphics = nullptr;
+    pool_and_queue.command_pool_transfer = nullptr;
 
     if (rt_output_image.image) {
          vmaDestroyImage(vma_allocator, rt_output_image.image, rt_output_image.allocation);
@@ -2619,7 +2619,7 @@ void Engine::updateTorusRTBuffer()
     // Copy from Staging -> Existing Device Local Buffer
     // This updates the data effectively "moving" the rays source
     copyBuffer(staging_buffer.buffer, torus_vertex_data_buffer.buffer, vertex_data_size,
-               command_pool_graphics, &logical_device, graphics_queue);
+               pool_and_queue.command_pool_graphics, logical_device, pool_and_queue.graphics_queue);
 
     // Staging buffer destructor cleans itself up here
 }
@@ -2636,7 +2636,7 @@ ImageReadbackData Engine::readImageToCPU(vk::Image image, VkFormat format, uint3
                  staging_buffer);
 
     // 2. Copy Command
-    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(pool_and_queue.command_pool_graphics, logical_device);
 
     vk::BufferImageCopy region;
     region.bufferOffset = 0;
@@ -2647,7 +2647,7 @@ ImageReadbackData Engine::readImageToCPU(vk::Image image, VkFormat format, uint3
     region.imageExtent = vk::Extent3D{width, height, 1};
     
     cmd.copyImageToBuffer(image, vk::ImageLayout::eTransferSrcOptimal, staging_buffer.buffer, {region});
-    endSingleTimeCommands(cmd, graphics_queue);
+    endSingleTimeCommands(cmd, pool_and_queue.graphics_queue);
 
     // 3. Read & Swizzle
     ImageReadbackData read_data;
@@ -2729,7 +2729,7 @@ void Engine::captureSceneData() {
             accumulation_frame = frame;
             updateUniformBuffer(current_frame); 
 
-            vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+            vk::raii::CommandBuffer cmd = beginSingleTimeCommands(pool_and_queue.command_pool_graphics, logical_device);
 
             // Bind RT Pipeline
             cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline);
@@ -2754,12 +2754,12 @@ void Engine::captureSceneData() {
                 callable_region, 
                 swapchain.extent.width, swapchain.extent.height, 1);
 
-            endSingleTimeCommands(cmd, graphics_queue);
+            endSingleTimeCommands(cmd, pool_and_queue.graphics_queue);
         }
 
         // 3. Save the Resulting Image
         // (Float32 Accumulation Buffer -> Int8 Staging Buffer)
-        vk::raii::CommandBuffer cmd_copy = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+        vk::raii::CommandBuffer cmd_copy = beginSingleTimeCommands(pool_and_queue.command_pool_graphics, logical_device);
 
         transitionImage(cmd_copy, capture_resolve_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, vk::ImageAspectFlagBits::eColor);
         transitionImage(cmd_copy, rt_output_image.image, vk::ImageLayout::eGeneral, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
@@ -2782,7 +2782,7 @@ void Engine::captureSceneData() {
         transitionImage(cmd_copy, rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
         transitionImage(cmd_copy, capture_resolve_image.image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
 
-        endSingleTimeCommands(cmd_copy, graphics_queue);
+        endSingleTimeCommands(cmd_copy, pool_and_queue.graphics_queue);
 
         // Readback and Save
         ImageReadbackData data = readImageToCPU(capture_resolve_image.image, capture_resolve_image.image_format, swapchain.extent.width, swapchain.extent.height);
@@ -2830,7 +2830,7 @@ void Engine::captureSceneData() {
         accumulation_frame = frame;
         updateUniformBuffer(current_frame); 
 
-        vk::raii::CommandBuffer cmd = beginSingleTimeCommands(command_pool_graphics, &logical_device);
+        vk::raii::CommandBuffer cmd = beginSingleTimeCommands(pool_and_queue.command_pool_graphics, logical_device);
 
         cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline);
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.layout, 0, {*rt_descriptor_sets[current_frame]}, {});
@@ -2854,7 +2854,7 @@ void Engine::captureSceneData() {
             callable_region, 
             side, side, 1);
             
-        endSingleTimeCommands(cmd, graphics_queue);
+        endSingleTimeCommands(cmd, pool_and_queue.graphics_queue);
         
         if (frame % 100 == 0) std::cout << "Accumulating Point Cloud: " << frame << "/" << ACCUMULATION_STEPS << "\r" << std::flush;
     }
@@ -2921,7 +2921,7 @@ void Engine::savePly(const std::string& filename) {
     size_t num_rays = sampling_points.size();
     std::vector<HitDataGPU> hits(num_rays);
     readBuffer(hit_data_buffer.buffer, sizeof(HitDataGPU) * num_rays, hits.data(), vma_allocator,
-                &logical_device, command_pool_transfer, transfer_queue);
+                logical_device, pool_and_queue.command_pool_transfer, pool_and_queue.transfer_queue);
 
     // 2. Filter valid points
     std::vector<HitDataGPU> valid_points;

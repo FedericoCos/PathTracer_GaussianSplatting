@@ -332,6 +332,17 @@ struct QueueFamilyIndices {
 };
 
 /**
+ * Structure to hold the commandpools and relative queue
+ */
+struct PoolQueue{
+    vk::raii::CommandPool command_pool_graphics = nullptr;
+    vk::raii::Queue graphics_queue = nullptr;
+
+    vk::raii::CommandPool command_pool_transfer = nullptr;
+    vk::raii::Queue transfer_queue = nullptr;
+};
+
+/**
  * Swapchain bundle to better manage it and track its components
  */
 struct SwapChainBundle{
@@ -585,9 +596,9 @@ struct LightCDF {
 
 static const char* VmaResultToString(VkResult r);
 
-vk::raii::CommandBuffer beginSingleTimeCommands(vk::raii::CommandPool& command_pool, vk::raii::Device *logical_device);
+vk::raii::CommandBuffer beginSingleTimeCommands(const vk::raii::CommandPool &command_pool, const vk::raii::Device &logical_device);
 
-void endSingleTimeCommands(vk::raii::CommandBuffer& command_buffer, vk::raii::Queue& queue);
+void endSingleTimeCommands(const vk::raii::CommandBuffer& command_buffer, const vk::raii::Queue& queue);
 
 vk::Format findSupportedFormat(vk::raii::PhysicalDevice& physical_device, const std::vector<vk::Format>& candidates, vk::ImageTiling tiling, vk::FormatFeatureFlags features);
 
@@ -607,7 +618,7 @@ void createBuffer(
 void copyBuffer(
     VkBuffer &src_buffer,VkBuffer &dst_buffer, vk::DeviceSize size,
     vk::raii::CommandPool& command_pool,
-    vk::raii::Device *logical_device,
+    vk::raii::Device &logical_device,
     vk::raii::Queue& queue
 );
 
@@ -616,14 +627,14 @@ void copyBufferToImage(
     VkImage& image,
     uint32_t width,
     uint32_t height,
-    vk::raii::Device *logical_device, 
+    vk::raii::Device &logical_device, 
     vk::raii::CommandPool &command_pool, 
     vk::raii::Queue &queue
 );
 
 void readBuffer(vk::Buffer buffer, vk::DeviceSize size, void* dst_ptr,
                 VmaAllocator &vma_allocator,
-                vk::raii::Device *logical_device, vk::raii::CommandPool &command_pool,
+                vk::raii::Device &logical_device, vk::raii::CommandPool &command_pool,
                 vk::raii::Queue &queue);
 
 void savePNG(const std::string& filename, const ImageReadbackData& data);

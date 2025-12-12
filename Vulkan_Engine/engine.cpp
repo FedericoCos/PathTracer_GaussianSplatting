@@ -821,40 +821,6 @@ void Engine::cursor_position_callback(GLFWwindow *window, double x_pos, double y
     }
 }
 
-void Engine::createRTOutputImage() {
-    // Create Image: Storage (for writing) | TransferSrc (for copy/blit) | TransferDst (for clear)
-    vk::Format rt_format = vk::Format::eR32G32B32A32Sfloat;
-    
-    rt_output_image = Image::createImage(
-        swapchain.extent.width, swapchain.extent.height,
-        1, vk::SampleCountFlagBits::e1, 
-        rt_format,
-        vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst,
-        vk::MemoryPropertyFlagBits::eDeviceLocal, 
-        vma_allocator
-    );
-
-    rt_output_image.image_view = Image::createImageView(rt_output_image, logical_device);
-
-    // Usage: TransferDst (from RT image) | TransferSrc (to CPU buffer)
-    capture_resolve_image = Image::createImage(
-        swapchain.extent.width, swapchain.extent.height,
-        1, vk::SampleCountFlagBits::e1, 
-        // vk::Format::eR8G8B8A8Unorm, // Standard format for saving to disk (JPG/PNG)
-        vk::Format::eB8G8R8A8Srgb,
-        vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc,
-        vk::MemoryPropertyFlagBits::eDeviceLocal, 
-        vma_allocator
-    );
-
-    // Transition to General Layout (Ready for RayGen writing)
-    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(pool_and_queue.command_pool_graphics, logical_device);
-    transitionImage(cmd, rt_output_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
-    endSingleTimeCommands(cmd, pool_and_queue.graphics_queue);
-}
-
 // ------ INIT FUNCTIONS
 
 /**
@@ -914,7 +880,7 @@ bool Engine::initVulkan(){
     std::cout << "Memory usage after depth image creation" << std::endl;
     printGpuMemoryUsage();
 
-    blue_noise_txt = Image::createTextureImage(blue_noise_txt_path, vk::Format::eR8G8B8A8Srgb, physical_device, logical_device, pool_and_queue, vma_allocator);
+    blue_noise_txt = Image::createTextureImage(blue_noise_txt_path, vk::Format::eR32G32B32A32Sfloat, physical_device, logical_device, pool_and_queue, vma_allocator);
     blue_noise_txt_sampler = Image::createTextureSampler(physical_device, &logical_device, 1);
     std::cout << "Memory usage after blue noise creation" << std::endl;
     printGpuMemoryUsage();
@@ -1092,11 +1058,46 @@ void Engine::createCommandPool(){
     pool_and_queue.command_pool_transfer = vk::raii::CommandPool(logical_device, pool_info);
 }
 
+/**
+ * Creates the output image for the raytracing pipeline and the image used to save pictures for dataset
+ */
+void Engine::createRTOutputImage() {
+    // Create Image: Storage (for writing) | TransferSrc (for copy/blit) | TransferDst (for clear)
+    vk::Format rt_format = vk::Format::eR32G32B32A32Sfloat;
+    
+    rt_output_image = Image::createImage(
+        swapchain.extent.width, swapchain.extent.height,
+        1, vk::SampleCountFlagBits::e1, 
+        rt_format,
+        vk::ImageTiling::eOptimal,
+        vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst,
+        vk::MemoryPropertyFlagBits::eDeviceLocal, 
+        vma_allocator
+    );
+
+    rt_output_image.image_view = Image::createImageView(rt_output_image, logical_device);
+
+    // Usage: TransferDst (from RT image) | TransferSrc (to CPU buffer)
+    capture_resolve_image = Image::createImage(
+        swapchain.extent.width, swapchain.extent.height,
+        1, vk::SampleCountFlagBits::e1, 
+        // vk::Format::eR8G8B8A8Unorm, // Standard format for saving to disk (JPG/PNG)
+        swapchain.format, // Setting the format to the same of the Swapchain for consistency between what we see and what we save
+        vk::ImageTiling::eOptimal,
+        vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc,
+        vk::MemoryPropertyFlagBits::eDeviceLocal, 
+        vma_allocator
+    );
+
+    // Transition to General Layout (Ready for RayGen writing)
+    vk::raii::CommandBuffer cmd = beginSingleTimeCommands(pool_and_queue.command_pool_transfer, logical_device);
+    transitionImage(cmd, rt_output_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
+    endSingleTimeCommands(cmd, pool_and_queue.transfer_queue);
+}
+
 
 void Engine::createPipelines()
 {
-    // Creating the pipeline of the objects in the scene
-
     createPointCloudPipeline();
 }
 
@@ -2551,6 +2552,7 @@ void Engine::recreateSwapChain(){
     camera.modAspectRatio(swapchain.extent.width * 1.0 / swapchain.extent.height);
 
     std::cout << "Swapchain recreated: " << swapchain.extent.width << "x" << swapchain.extent.height << std::endl;
+    printGpuMemoryUsage();
 }
 
 // ------ Closing functions

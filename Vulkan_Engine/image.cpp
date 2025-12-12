@@ -5,8 +5,16 @@ AllocatedImage Image::createTextureImage(const char * path, vk::Format format, v
 {
     int tex_width,tex_height, tex_channels;
 
-    stbi_uc* pixels = stbi_load(path, &tex_width, &tex_height,&tex_channels, STBI_rgb_alpha);
+    void* pixels;
+    if(format == vk::Format::eR32G32B32A32Sfloat){
+        pixels = stbi_loadf(path, &tex_width, &tex_height,&tex_channels, STBI_rgb_alpha);
+    }else{
+        pixels = stbi_load(path, &tex_width, &tex_height,&tex_channels, STBI_rgb_alpha);
+    }
     vk::DeviceSize image_size = tex_width * tex_height * 4;
+    if (format == vk::Format::eR32G32B32A32Sfloat) {
+        image_size *= 4; // 4 bytes per component (float) vs 1 byte (uchar)
+    }
 
     if(!pixels){
         throw std::runtime_error("failed to load texture image");

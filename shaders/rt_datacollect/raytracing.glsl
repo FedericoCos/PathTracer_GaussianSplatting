@@ -76,6 +76,12 @@ struct LightCDF {
     vec2 padding;
 };
 
+struct PunctualCDF {
+    float cumulative_probability;
+    uint light_index;
+    vec2 padding;
+};
+
 struct PointLight {
     vec4 position;
     vec4 color;
@@ -146,12 +152,13 @@ layout(set = 0, binding = 7, scalar) buffer readonly AllMeshInfo { MeshInfo info
 // --- NEW BINDINGS (8 & 9) ---
 layout(set = 0, binding = 8, scalar) buffer readonly LightTriBuffer { LightTriangle tris[]; } light_triangles;
 layout(set = 0, binding = 9, scalar) buffer readonly LightCDFBuffer { LightCDF entries[]; } light_cdf;
+layout(set = 0, binding = 10, scalar) buffer readonly PunctualCDFBuffer { PunctualCDF entries[]; } punctual_cdf;
 
 // --- SHIFTED BINDINGS ---
-layout(set = 0, binding = 10, rgba32f) uniform image2D rt_output_image;
-layout(set = 0, binding = 11) uniform sampler2D blueNoiseTex;
-layout(set = 0, binding = 12, scalar) buffer LightBuffer { PunctualLight lights[]; } scene_lights;
-layout(set = 0, binding = 13) uniform sampler2D global_textures[];
+layout(set = 0, binding = 11, rgba32f) uniform image2D rt_output_image;
+layout(set = 0, binding = 12) uniform sampler2D blueNoiseTex;
+layout(set = 0, binding = 13, scalar) buffer LightBuffer { PunctualLight lights[]; } scene_lights;
+layout(set = 0, binding = 14) uniform sampler2D global_textures[];
 
 // --- 6. RANDOM NUMBER GENERATOR (PCG Hash) ---
 // Returns a random float [0, 1] and updates state

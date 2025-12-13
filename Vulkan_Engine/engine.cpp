@@ -1615,7 +1615,8 @@ void Engine::createGlobalBindlessBuffers()
 
     // --- NEW: Light Sampling Vectors ---
     std::vector<LightTriangle> global_light_triangles;
-    std::vector<float> light_triangle_fluxes; // Temp storage for CDF build
+    std::vector<float> light_triangle_fluxes;
+    std::vector<float> punctlight_fluxes;
 
     global_texture_descriptors.clear();
 
@@ -1759,14 +1760,31 @@ void Engine::createGlobalBindlessBuffers()
     }
 
     ubo.punctual_flux = 0.f;
+    std::vector<PunctualLightCDF> global_punctual_pdf;
     if(global_punctual_lights.size() > 0){
-        for (const auto& l : global_punctual_lights) {
+        punctlight_fluxes.reserve(global_punctual_lights.size());
+        float running_sum = 0.0f;
+        for (size_t i = 0; i < global_punctual_lights.size(); i++) {
+            const auto& l = global_punctual_lights[i];
             if (l.type == 1) { // Directional
-                ubo.punctual_flux += l.intensity * 400.0f; // Assuming a scene cross-section of ~20x20m = 400m^2.
+                punctlight_fluxes.push_back(l.intensity * 400.0f);
+                ubo.punctual_flux += punctlight_fluxes[i]; // Assuming a scene cross-section of ~20x20m = 400m^2.
             } else { // Point or Spot
                 // Flux (Lumens) = Intensity (Candela) * SolidAngle (4PI)
-                ubo.punctual_flux += l.intensity * 12.566f; // 4 * PI
+                punctlight_fluxes.push_back(l.intensity * 12.566f);
+                ubo.punctual_flux += punctlight_fluxes[i]; // 4 * PI
             }
+        }
+
+        for(size_t i = 0; i < punctlight_fluxes.size(); i++){
+            running_sum += punctlight_fluxes[i];
+
+            PunctualLightCDF cdf_entry;
+            cdf_entry.cumulative_probability = (ubo.punctual_flux > 0.0f) ? (running_sum / ubo.punctual_flux) : 0.0f;
+            cdf_entry.light_index = static_cast<uint32_t>(i);
+            cdf_entry.padding[0] = 0.0f; cdf_entry.padding[1] = 0.0f;
+            
+            global_punctual_pdf.push_back(cdf_entry);
         }
     }
     else{
@@ -1807,6 +1825,7 @@ void Engine::createGlobalBindlessBuffers()
     // --- NEW: Upload Light Buffers ---
     upload_buffer(light_triangle_buffer, sizeof(LightTriangle) * global_light_triangles.size(), global_light_triangles.data());
     upload_buffer(light_cdf_buffer, sizeof(LightCDF) * global_light_cdf.size(), global_light_cdf.data());
+    upload_buffer(punctual_cdf_buffer, sizeof(PunctualLightCDF) * global_punctual_pdf.size(), global_punctual_pdf.data());
     upload_buffer(punctual_light_buffer, sizeof(PunctualLight) * global_punctual_lights.size(), global_punctual_lights.data());
     
     std::cout << "Built Light CDF: " << num_light_triangles << " emissive triangles. Total Flux: " << ubo.emissive_flux << std::endl;
@@ -2161,15 +2180,17 @@ void Engine::createRayTracingPipeline()
     // Binding 9: Light CDF
     bindings.emplace_back(9, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
 
-    // Binding 10: Output Image
-    bindings.emplace_back(10, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eRaygenKHR, nullptr);
+    bindings.emplace_back(10, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
 
-    bindings.emplace_back(11, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eRaygenKHR, nullptr);
+    // Output Image
+    bindings.emplace_back(11, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eRaygenKHR, nullptr);
 
-    bindings.emplace_back(12, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
+    bindings.emplace_back(12, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eRaygenKHR, nullptr);
 
-    // Binding 11: Textures (Must be LAST)
-    bindings.emplace_back(13, vk::DescriptorType::eCombinedImageSampler, static_cast<uint32_t>(MAX_BINDLESS_TEXTURES), 
+    bindings.emplace_back(13, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
+
+    // Textures (Must be LAST)
+    bindings.emplace_back(14, vk::DescriptorType::eCombinedImageSampler, static_cast<uint32_t>(MAX_BINDLESS_TEXTURES), 
                           vk::ShaderStageFlagBits::eClosestHitKHR | vk::ShaderStageFlagBits::eAnyHitKHR, nullptr);
 
     // --- FLAGS ---
@@ -2417,6 +2438,17 @@ void Engine::createRayTracingDescriptorSets()
         l_cdf_write.pBufferInfo = &l_cdf_info;
         writes.push_back(l_cdf_write);
 
+        // --- Binding 10: Punctual CDF ---
+        vk::DescriptorBufferInfo p_cdf_info(punctual_cdf_buffer.buffer, 0, VK_WHOLE_SIZE);
+        vk::WriteDescriptorSet p_cdf_write;
+        p_cdf_write.dstSet = *rt_descriptor_sets[i];
+        p_cdf_write.dstBinding = 10;
+        p_cdf_write.dstArrayElement = 0;
+        p_cdf_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+        p_cdf_write.descriptorCount = 1;
+        p_cdf_write.pBufferInfo = &p_cdf_info;
+        writes.push_back(p_cdf_write);
+
         // --- Binding 10: Output Image (Shifted) ---
         vk::DescriptorImageInfo storage_image_info;
         storage_image_info.imageView = *rt_output_image.image_view;
@@ -2424,7 +2456,7 @@ void Engine::createRayTracingDescriptorSets()
 
         vk::WriteDescriptorSet output_write;
         output_write.dstSet = *rt_descriptor_sets[i];
-        output_write.dstBinding = 10;
+        output_write.dstBinding = 11;
         output_write.dstArrayElement = 0;
         output_write.descriptorType = vk::DescriptorType::eStorageImage;
         output_write.descriptorCount = 1;
@@ -2433,7 +2465,7 @@ void Engine::createRayTracingDescriptorSets()
 
         vk::WriteDescriptorSet noise_write;
         noise_write.dstSet = *rt_descriptor_sets[i];
-        noise_write.dstBinding = 11;
+        noise_write.dstBinding = 12;
         noise_write.dstArrayElement = 0;
         noise_write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
         noise_write.descriptorCount = 1;
@@ -2446,7 +2478,7 @@ void Engine::createRayTracingDescriptorSets()
         vk::DescriptorBufferInfo light_info(punctual_light_buffer.buffer, 0, VK_WHOLE_SIZE);
         vk::WriteDescriptorSet light_write;
         light_write.dstSet = *rt_descriptor_sets[i];
-        light_write.dstBinding = 12;
+        light_write.dstBinding = 13;
         light_write.dstArrayElement = 0;
         light_write.descriptorType = vk::DescriptorType::eStorageBuffer;
         light_write.descriptorCount = 1;
@@ -2457,7 +2489,7 @@ void Engine::createRayTracingDescriptorSets()
         if (!global_texture_descriptors.empty()) {
             vk::WriteDescriptorSet texture_write;
             texture_write.dstSet = *rt_descriptor_sets[i];
-            texture_write.dstBinding = 13;
+            texture_write.dstBinding = 14;
             texture_write.dstArrayElement = 0;
             texture_write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
             texture_write.descriptorCount = static_cast<uint32_t>(global_texture_descriptors.size());

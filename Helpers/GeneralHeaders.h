@@ -592,6 +592,12 @@ struct LightCDF {
     float padding[2];
 };
 
+struct PunctualLightCDF{
+    float cumulative_probability;
+    uint32_t light_index;
+    glm::vec2 padding;
+};
+
 // ------ Helper Functions
 
 static const char* VmaResultToString(VkResult r);

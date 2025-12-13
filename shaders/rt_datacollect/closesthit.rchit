@@ -191,14 +191,18 @@ void samplePunctualLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float rough
 {
     uint num_lights = scene_lights.lights.length();
 
-    // 1. Pick ONE random light
-    // (For Sponza with ~10-50 lights, this is better than iterating all)
-    // PDF of choosing this light = 1.0 / num_lights
     float r_select = getBlueNoise(4); // Use different noise channel if possible
-    uint light_idx = uint(r_select * float(num_lights));
-    
-    // Clamp to be safe
-    light_idx = min(light_idx, num_lights - 1);
+    uint light_idx = 0;
+    uint left = 0, right = num_lights;
+    while (left < right) {
+        uint mid = (left + right) >> 1; // Bit shift is faster
+        if (punctual_cdf.entries[mid].cumulative_probability < r_select) {
+            left = mid + 1;
+        } else {
+            light_idx = mid;
+            right = mid;
+        }
+    }
     
     PunctualLight light = scene_lights.lights[light_idx];
     
@@ -293,7 +297,6 @@ void samplePunctualLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float rough
 void sampleLights_SG(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, vec3 F0, float transmission, inout vec3 Lo)
 {
     uint num_lights = light_cdf.entries.length();
-    if (num_lights == 0) return;
 
     float r_select = getBlueNoise(4);
 
@@ -393,7 +396,6 @@ void sampleLights_SG(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness,
 void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, float metallic, vec3 F0, float transmission, inout vec3 Lo) 
 {
     uint num_lights = light_cdf.entries.length();
-    if (num_lights == 0) return;
 
     float r_select = getBlueNoise(7);
     

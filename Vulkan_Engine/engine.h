@@ -237,6 +237,7 @@ private:
     // For emission light
     AllocatedBuffer light_triangle_buffer;
     AllocatedBuffer light_cdf_buffer;
+    AllocatedBuffer punctual_cdf_buffer;
     uint32_t num_light_triangles = 0;
     uint32_t accumulation_frame = -1;
 

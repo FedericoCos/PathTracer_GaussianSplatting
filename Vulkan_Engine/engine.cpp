@@ -1815,6 +1815,7 @@ void Engine::createGlobalBindlessBuffers()
     }
     else{
         global_punctual_lights.emplace_back();
+        global_punctual_pdf.push_back({1.f, 0, {0.f, 0.f}});
     }
 
     ubo.total_flux = ubo.emissive_flux + ubo.punctual_flux;

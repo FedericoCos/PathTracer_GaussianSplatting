@@ -1122,6 +1122,7 @@ void Engine::loadScene(const std::string &scene_path)
     // --- 1. Parse Settings ---
     std::string rtbox_path = "";
 
+    global_punctual_lights.clear();
     if (scene_data.contains("settings")) {
         const auto& settings = scene_data["settings"];
         this->use_rt_box = settings.value("use_rt_box", false);
@@ -1139,7 +1140,7 @@ void Engine::loadScene(const std::string &scene_path)
             };
         }
         else{
-            ubo.ambient_light = glm::vec4(1.f);
+            ubo.ambient_light = glm::vec4(0.f, 0.f, 0.f, 1.f);
         }
 
         if (settings.contains("torus_settings")) {
@@ -1151,6 +1152,25 @@ void Engine::loadScene(const std::string &scene_path)
             torus_config.minor_segments = t_set.value("minor_segments", 500);
 
             num_rays = t_set.value("num_rays", num_rays);
+        }
+
+        if(settings.contains("sun")){
+            const auto& sun_set = settings["sun"];
+            PunctualLight l{};
+            l.color = glm::vec3(
+                sun_set["color"][0],
+                sun_set["color"][1],
+                sun_set["color"][2]
+            );
+            l.direction = glm::vec3(
+                sun_set["direction"][0],
+                sun_set["direction"][1],
+                sun_set["direction"][2]
+            );
+            l.intensity = sun_set.value("intensity", 1.0f);
+            l.type = 1;
+
+            global_punctual_lights.push_back(l);
         }
     }
 
@@ -1600,8 +1620,6 @@ void Engine::createGlobalBindlessBuffers()
     global_texture_descriptors.clear();
 
     int current_texture_offset = 0;
-
-    global_punctual_lights.clear();
     
     // Helper lambda to aggregate a single game object
     auto aggregate_object = [&](Gameobject& obj) {

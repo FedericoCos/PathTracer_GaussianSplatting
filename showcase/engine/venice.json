@@ -1,0 +1,27 @@
+{
+  "settings": {
+    "use_rt_box": false,
+    "rt_box_file": "resources/rtbox.json",
+    "panel_shadows_enabled": false,
+
+    "torus_settings": {
+        "major_radius": 20.5,
+        "minor_radius": 1.0,
+        "height": 0,
+        "major_segments": 500,
+        "minor_segments": 500,
+        "num_rays": 1000000
+    },
+
+    "ambient_light": [0.53, 0.81, 0.92, 1]
+  },
+  "objects": [
+    {
+      "model": "resources/venice/scene.gltf",
+      "position": [0, 0, 0],
+      "scale": [1, 1, 1],
+      "rotation": [0.0, 0.0, 0.0]
+    }
+
+  ]
+}

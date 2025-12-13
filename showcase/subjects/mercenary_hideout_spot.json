@@ -1,0 +1,33 @@
+{
+  "settings": {
+    "use_rt_box": true,
+    "rt_box_file": "showcase/subjects/mercenary_hideout_spot_box.json",
+    "panel_shadows_enabled": false,
+
+    "torus_settings": {
+        "major_radius": 20.5,
+        "minor_radius": 1.0,
+        "height": 0,
+        "major_segments": 500,
+        "minor_segments": 500,
+        "num_rays": 1000000
+    },
+
+    "sun": {
+        "color": [0.2, 0.28, 0.5],
+        "direction": [-0.5, 0.0, -1.0],
+        "intensity": 1.0
+    },
+
+    "ambient_light": [0.04, 0.05, 0.19, 1]
+  },
+  "objects": [
+    {
+      "model": "resources/mercenary_hideout_spot/scene.gltf",
+      "position": [0, 0, 0],
+      "scale": [0.5, 0.5, 0.5],
+      "rotation": [0.0, 0.0, 0.0]
+    }
+
+  ]
+}

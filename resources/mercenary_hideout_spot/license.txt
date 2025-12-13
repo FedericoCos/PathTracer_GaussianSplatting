@@ -1,0 +1,11 @@
+Model Information:
+* title:	Mercenary Hideout Spot
+* source:	https://sketchfab.com/3d-models/mercenary-hideout-spot-5c8edf1cba5c465492e15a5f1d840ec2
+* author:	SilkevdSmissen (https://sketchfab.com/SilkevdSmissen)
+
+Model License:
+* license type:	CC-BY-NC-ND-4.0 (http://creativecommons.org/licenses/by-nc-nd/4.0/)
+* requirements:	Author must be credited. No commercial use. Modified versions can not be distributed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Mercenary Hideout Spot" (https://sketchfab.com/3d-models/mercenary-hideout-spot-5c8edf1cba5c465492e15a5f1d840ec2) by SilkevdSmissen (https://sketchfab.com/SilkevdSmissen) licensed under CC-BY-NC-ND-4.0 (http://creativecommons.org/licenses/by-nc-nd/4.0/)

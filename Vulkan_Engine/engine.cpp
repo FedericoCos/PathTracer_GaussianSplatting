@@ -912,7 +912,7 @@ bool Engine::initVulkan(){
     printGpuMemoryUsage();
 
     // PIPELINE CREATION
-    createPipelines();
+    createPointCloudPipeline();
     createRayTracingPipeline();
 
     loadScene("main_scene.json");
@@ -1121,11 +1121,37 @@ void Engine::createRTOutputImage() {
     endSingleTimeCommands(cmd, pool_and_queue.transfer_queue);
 }
 
-
-void Engine::createPipelines()
+/**
+ * Creates the raster pipeline for the pointcloud
+ */
+void Engine::createPointCloudPipeline()
 {
-    createPointCloudPipeline();
+    // 1. Create Descriptor Set Layout
+    std::vector<vk::DescriptorSetLayoutBinding> bindings = {
+        // Binding 0: Main UBO (view, proj)
+        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBuffer, 1,
+                                       vk::ShaderStageFlagBits::eVertex, nullptr),
+        // Binding 1: Hit Data Buffer
+        vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eStorageBuffer, 1,
+                                       vk::ShaderStageFlagBits::eVertex, nullptr),
+        // --- cBinding 2: Torus Vertex Buffer ---
+        vk::DescriptorSetLayoutBinding(2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eVertex, nullptr)
+    };
+    point_cloud_pipeline.descriptor_set_layout = Pipeline::createDescriptorSetLayout(bindings, logical_device);
+    
+    // 2. Create Pipeline
+    point_cloud_pipeline.pipeline = Pipeline::createGraphicsPipeline(
+        &point_cloud_pipeline,
+        v_shader_pointcloud,
+        f_shader_pointcloud,
+        TransparencyMode::POINTCLOUD,
+        vk::CullModeFlagBits::eNone, // No culling for points
+        logical_device,
+        physical_device,
+        swapchain.format
+    );
 }
+
 
 void Engine::loadScene(const std::string &scene_path)
 {
@@ -1544,32 +1570,6 @@ void Engine::createSyncObjects(){
     for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++){
         in_flight_fences.emplace_back(vk::raii::Fence(logical_device, {vk::FenceCreateFlagBits::eSignaled}));
     }
-}
-
-void Engine::createPointCloudPipeline()
-{
-    // 1. Create Descriptor Set Layout
-    std::vector<vk::DescriptorSetLayoutBinding> bindings = {
-        // Binding 0: Main UBO (view, proj)
-        vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eUniformBuffer, 1,
-                                       vk::ShaderStageFlagBits::eVertex, nullptr),
-        // Binding 1: Hit Data Buffer
-        vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eStorageBuffer, 1,
-                                       vk::ShaderStageFlagBits::eVertex, nullptr),
-        // --- cBinding 2: Torus Vertex Buffer ---
-        vk::DescriptorSetLayoutBinding(2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eVertex, nullptr)
-    };
-    point_cloud_pipeline.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings);
-    
-    // 2. Create Pipeline
-    point_cloud_pipeline.pipeline = Pipeline::createGraphicsPipeline(
-        *this,
-        &point_cloud_pipeline,
-        v_shader_pointcloud,
-        f_shader_pointcloud,
-        TransparencyMode::POINTCLOUD,
-        vk::CullModeFlagBits::eNone // No culling for points
-    );
 }
 
 void Engine::createPointCloudDescriptorSets()
@@ -2189,7 +2189,6 @@ void Engine::createRayTracingDataBuffers()
 
 void Engine::createRayTracingPipeline()
 {
-    // --- 1. DESCRIPTOR SET LAYOUT ---
     std::vector<vk::DescriptorSetLayoutBinding> bindings;
 
     bindings.emplace_back(0, vk::DescriptorType::eAccelerationStructureKHR, 1, vk::ShaderStageFlagBits::eRaygenKHR | vk::ShaderStageFlagBits::eClosestHitKHR, nullptr);
@@ -2220,7 +2219,6 @@ void Engine::createRayTracingPipeline()
                           vk::ShaderStageFlagBits::eClosestHitKHR | vk::ShaderStageFlagBits::eAnyHitKHR, nullptr);
 
     // --- FLAGS ---
-    // Size is now 12 (Indices 0 to 11)
     std::vector<vk::DescriptorBindingFlags> binding_flags(bindings.size(), vk::DescriptorBindingFlags{});
     binding_flags.back() = vk::DescriptorBindingFlagBits::ePartiallyBound | vk::DescriptorBindingFlagBits::eVariableDescriptorCount;
 
@@ -2233,97 +2231,21 @@ void Engine::createRayTracingPipeline()
     layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
     layout_info.pBindings = bindings.data();
 
-    rt_pipeline.descriptor_set_layout = Pipeline::createDescriptorSetLayout(*this, bindings, layout_info);
-    // --- 2. SHADER MODULES ---
-    // We need to load 5 shaders now.
-    
-    // Group 0: RayGen (Torus Capture)
-    vk::raii::ShaderModule rgen_torus = Pipeline::createShaderModule(Pipeline::readFile(rt_rgen_shader), &logical_device);
-    
-    // Group 1: RayGen (Camera View)
-    vk::raii::ShaderModule rgen_camera = Pipeline::createShaderModule(Pipeline::readFile("shaders/rt_datacollect/raygen_camera.rgen.spv"), &logical_device);
-    
-    // Group 2: Miss (Primary - Sky/Background)
-    vk::raii::ShaderModule rmiss_primary = Pipeline::createShaderModule(Pipeline::readFile(rt_rmiss_shader), &logical_device);
-    
-    // Group 3: Miss (Shadow - Visibility)
-    vk::raii::ShaderModule rmiss_shadow = Pipeline::createShaderModule(Pipeline::readFile("shaders/rt_datacollect/shadow.rmiss.spv"), &logical_device);
-    
-    // Group 4: Closest Hit (PBR + Shadows)
-    vk::raii::ShaderModule rchit = Pipeline::createShaderModule(Pipeline::readFile(rt_rchit_shader), &logical_device);
+    rt_pipeline.descriptor_set_layout = Pipeline::createDescriptorSetLayout(bindings, logical_device, layout_info);
 
-    vk::raii::ShaderModule ranyhit = Pipeline::createShaderModule(Pipeline::readFile("shaders/rt_datacollect/alpha.rahit.spv"), &logical_device);
-
-    std::vector<vk::PipelineShaderStageCreateInfo> stages;
-    stages.push_back({{}, vk::ShaderStageFlagBits::eRaygenKHR, *rgen_torus, "main"});      // 0
-    stages.push_back({{}, vk::ShaderStageFlagBits::eRaygenKHR, *rgen_camera, "main"});     // 1
-    stages.push_back({{}, vk::ShaderStageFlagBits::eMissKHR, *rmiss_primary, "main"});     // 2
-    stages.push_back({{}, vk::ShaderStageFlagBits::eMissKHR, *rmiss_shadow, "main"});      // 3
-    stages.push_back({{}, vk::ShaderStageFlagBits::eClosestHitKHR, *rchit, "main"});       // 4
-    stages.push_back({{}, vk::ShaderStageFlagBits::eAnyHitKHR, *ranyhit, "main"});
-
-    // --- 3. SHADER GROUPS ---
-    std::vector<vk::RayTracingShaderGroupCreateInfoKHR> groups;
-
-    // Group 0: RayGen Torus
-    groups.push_back({vk::RayTracingShaderGroupTypeKHR::eGeneral, 0, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR});
-    
-    // Group 1: RayGen Camera
-    groups.push_back({vk::RayTracingShaderGroupTypeKHR::eGeneral, 1, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR});
-    
-    // Group 2: Miss Primary
-    groups.push_back({vk::RayTracingShaderGroupTypeKHR::eGeneral, 2, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR});
-    
-    // Group 3: Miss Shadow
-    groups.push_back({vk::RayTracingShaderGroupTypeKHR::eGeneral, 3, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR});
-    
-    // Group 4: Hit Group (Triangle Closest Hit)
-    groups.push_back({
-        vk::RayTracingShaderGroupTypeKHR::eTrianglesHitGroup, 
-        VK_SHADER_UNUSED_KHR, // General
-        4,                    // Closest Hit
-        5,                    // Any Hit <--- ATTACH HERE
-        VK_SHADER_UNUSED_KHR  // Intersection
-    });
-
-    // --- 4. PIPELINE LAYOUT ---
-    // Push constants needed for Torus Model Matrix & Geometry info
-    vk::PushConstantRange push_constant;
-    push_constant.stageFlags = vk::ShaderStageFlagBits::eRaygenKHR; // Used by both RayGens
-    push_constant.offset = 0;
-    push_constant.size = sizeof(RayPushConstant);
-
-    vk::PipelineLayoutCreateInfo pipeline_layout_info;
-    pipeline_layout_info.setLayoutCount = 1;
-    pipeline_layout_info.pSetLayouts = &*rt_pipeline.descriptor_set_layout;
-    pipeline_layout_info.pushConstantRangeCount = 1;
-    pipeline_layout_info.pPushConstantRanges = &push_constant;
-
-    rt_pipeline.layout = vk::raii::PipelineLayout(logical_device, pipeline_layout_info);
-
-    // --- 5. PIPELINE CREATION ---
-    vk::RayTracingPipelineCreateInfoKHR pipeline_info;
-    pipeline_info.stageCount = static_cast<uint32_t>(stages.size());
-    pipeline_info.pStages = stages.data();
-    pipeline_info.groupCount = static_cast<uint32_t>(groups.size());
-    pipeline_info.pGroups = groups.data();
-    pipeline_info.maxPipelineRayRecursionDepth = 2; // 1 for primary, 2 for reflection/shadow recursion
-    pipeline_info.layout = *rt_pipeline.layout;
-
-    VkPipeline vk_pipeline;
-    VkResult res = vkCreateRayTracingPipelinesKHR(
-        *logical_device,
-        VK_NULL_HANDLE, // Deferred Operation
-        VK_NULL_HANDLE, // Pipeline Cache
-        1, pipeline_info,
-        nullptr, &vk_pipeline
+    // --- 2. PIPELINE CREATION (Refactored Call) ---
+    rt_pipeline.pipeline = Pipeline::createRayTracingPipeline(
+        &rt_pipeline,
+        logical_device,
+        rt_rgen_shader,                                     // Torus RGen (0)
+        "shaders/rt_datacollect/raygen_camera.rgen.spv",    // Camera RGen (1)
+        rt_rmiss_shader,                                    // Primary Miss (2)
+        "shaders/rt_datacollect/shadow.rmiss.spv",          // Shadow Miss (3)
+        rt_rchit_shader,                                    // Closest Hit (4)
+        "shaders/rt_datacollect/alpha.rahit.spv",           // Any Hit (Attached to 4)
+        sizeof(RayPushConstant),
+        vkCreateRayTracingPipelinesKHR
     );
-
-    if (res != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create ray tracing pipeline!");
-    }
-
-    rt_pipeline.pipeline = vk::raii::Pipeline(logical_device, vk_pipeline);
 }
 
 void Engine::createRayTracingDescriptorSets()

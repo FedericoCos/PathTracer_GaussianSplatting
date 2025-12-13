@@ -324,7 +324,6 @@ private:
 
     void createSyncObjects();
 
-    void createPipelines();
     void loadScene(const std::string& scene_path);
     void createTorusModel();
     void buildBlas(Gameobject& obj);

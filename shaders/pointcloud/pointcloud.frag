@@ -8,8 +8,5 @@ void main() {
         discard;
     }
 
-    // Input is LINEAR.
-    // If your Swapchain is SRGB (vk::Format::eB8G8R8A8Srgb), the GPU
-    // will automatically convert Linear -> SRGB here.
     outColor = vec4(in_color_and_flag.rgb, 1.0);
 }

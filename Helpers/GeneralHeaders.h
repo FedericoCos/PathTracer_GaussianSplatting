@@ -538,14 +538,13 @@ enum class SamplingMethod {
     LHS
 };
 
-const std::array<SamplingMethod, 8> sampling_methods = {
+const std::array<SamplingMethod, 7> sampling_methods = {
     SamplingMethod::RANDOM,
     SamplingMethod::UNIFORM,
     SamplingMethod::STRATIFIED,
     SamplingMethod::LHS,
     SamplingMethod::HALTON,
     SamplingMethod::IMP_COL,
-    SamplingMethod::HALTON,
     SamplingMethod::IMP_HIT,
 };
 

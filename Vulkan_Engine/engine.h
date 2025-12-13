@@ -185,20 +185,22 @@ private:
         {GLFW_KEY_D, Action::MOVE_RIGHT},
         {GLFW_KEY_W, Action::MOVE_FORWARD},
         {GLFW_KEY_S, Action::MOVE_BACKWARD},
+
         {GLFW_KEY_UP, Action::SPEED_UP},
         {GLFW_KEY_DOWN, Action::SPEED_DOWN},
         {GLFW_KEY_RIGHT, Action::ROT_UP},
         {GLFW_KEY_LEFT, Action::ROT_DOWN},
+        
         {GLFW_KEY_L, Action::FOV_UP},
         {GLFW_KEY_K, Action::FOV_DOWN},
         {GLFW_KEY_R, Action::RESET},
         {GLFW_KEY_C, Action::SWITCH},
 
         // TORUS
-        {GLFW_KEY_1, Action::MAJ_RAD_DOWN},
-        {GLFW_KEY_2, Action::MAJ_RAD_UP},
-        {GLFW_KEY_3, Action::MIN_RAD_DOWN},
-        {GLFW_KEY_4, Action::MIN_RAD_UP},
+        {GLFW_KEY_Z, Action::MAJ_RAD_DOWN},
+        {GLFW_KEY_X, Action::MAJ_RAD_UP},
+        {GLFW_KEY_Q, Action::MIN_RAD_DOWN},
+        {GLFW_KEY_E, Action::MIN_RAD_UP},
         {GLFW_KEY_M, Action::HEIGHT_UP},
         {GLFW_KEY_N, Action::HEIGHT_DOWN},
 
@@ -208,8 +210,13 @@ private:
 
         {GLFW_KEY_V, Action::CAPTURE_DATA},
 
-        {GLFW_KEY_B, Action::SAMPLING_METHOD},
-
+        {GLFW_KEY_1, Action::SAMPLING_METHOD},
+        {GLFW_KEY_2, Action::SAMPLING_METHOD},
+        {GLFW_KEY_3, Action::SAMPLING_METHOD},
+        {GLFW_KEY_4, Action::SAMPLING_METHOD},
+        {GLFW_KEY_5, Action::SAMPLING_METHOD},
+        {GLFW_KEY_6, Action::SAMPLING_METHOD},
+        {GLFW_KEY_7, Action::SAMPLING_METHOD},
     };
     std::unordered_set<int> pressed_keys;
 

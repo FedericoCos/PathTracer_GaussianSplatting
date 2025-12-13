@@ -754,7 +754,33 @@ void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action,
         case Action::SAMPLING_METHOD: 
             if (action == GLFW_PRESS){
                 engine -> accumulation_frame = 0;
-                engine->current_sampling = (engine->current_sampling + 1) % sampling_methods.size();
+                switch (key)
+                {
+                case GLFW_KEY_1:
+                    engine -> current_sampling = 0; // Random
+                    break;
+                case GLFW_KEY_2:
+                    engine -> current_sampling = 1; // Uniform
+                    break;
+                case GLFW_KEY_3:
+                    engine -> current_sampling = 2; // Startified
+                    break;
+                case GLFW_KEY_4:
+                    engine -> current_sampling = 3; // LHV
+                    break;
+                case GLFW_KEY_5:
+                    engine -> current_sampling = 4; // Halton
+                    break;
+                case GLFW_KEY_6:
+                    engine -> current_sampling = 5; // Imp color
+                    break;
+                case GLFW_KEY_7:
+                    engine -> current_sampling = 6; // Imp Hit
+                    break;
+                
+                default:
+                    break;
+                }
                 engine->logical_device.waitIdle();
 
                 Sampling::updateSampling(engine -> current_sampling, engine -> num_rays, engine -> sampling_points, engine -> sample_data_buffer, 

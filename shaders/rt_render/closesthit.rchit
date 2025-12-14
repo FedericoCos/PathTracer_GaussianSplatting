@@ -356,16 +356,25 @@ void main()
 
     if (abs(Tw) > 0.0001 && mat.normal_id > 0) {
         float tex_lod = 0.0;
-        if (payload.last_bsdf_pdf <= 0.0) {
-            if (mat.albedo_id > 0) tex_lod = computeLOD(gl_WorldRayOriginEXT, gl_WorldRayDirectionEXT, gl_HitTEXT, N_geo, mat.albedo_id);
-        } else {
-            tex_lod = clamp(mat.roughness_factor * 5.0 + log2(gl_HitTEXT * 0.1 + 1.0), 0.0, 8.0);
+        if(ubo.use_lod > 0.0){
+            if (payload.last_bsdf_pdf <= 0.0) {
+                if (mat.albedo_id > 0) tex_lod = computeLOD(gl_WorldRayOriginEXT, gl_WorldRayDirectionEXT, gl_HitTEXT, N_geo, mat.albedo_id);
+            } else {
+                tex_lod = clamp(mat.roughness_factor * 5.0 + log2(gl_HitTEXT * 0.1 + 1.0), 0.0, 8.0);
+            }
+            vec3 map_val = sampleTexture(mat.normal_id, (mat.uv_normal * vec4(tex_coord, 0.0, 1.0)).xy, tex_lod).xyz;
+            vec3 normal_map = map_val * 2.0 - 1.0;
+            normal_map.xy *= ubo.lod_factor;
+            normal_map = normalize(normal_map);
+            N = safeNormalize(TBN * normal_map);
         }
-        vec3 map_val = sampleTexture(mat.normal_id, (mat.uv_normal * vec4(tex_coord, 0.0, 1.0)).xy, tex_lod).xyz;
-        vec3 normal_map = map_val * 2.0 - 1.0;
-        normal_map.xy *= 0.5;
-        normal_map = normalize(normal_map);
-        N = safeNormalize(TBN * normal_map);
+        else{
+            vec3 map_val = sampleTexture(mat.normal_id, (mat.uv_normal * vec4(tex_coord, 0.0, 1.0)).xy, 0).xyz;
+            vec3 normal_map = map_val * 2.0 - 1.0;
+            normal_map.xy *= ubo.lod_factor;
+            normal_map = normalize(normal_map);
+            N = safeNormalize(TBN * normal_map);
+        }
     }
 
     vec3 albedo;

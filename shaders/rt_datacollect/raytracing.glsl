@@ -143,7 +143,8 @@ layout(set = 0, binding = 4) uniform UniformBufferObject {
     float p_emissive;
     float fov;
     float win_height;
-    vec2 padding;
+    float use_lod;
+    float lod_factor;
 } ubo;
 layout(set = 0, binding = 5, scalar) buffer readonly AllVertices { InputVertex v[]; } all_vertices;
 layout(set = 0, binding = 6, scalar) buffer readonly AllIndices { uint i[]; } all_indices;

@@ -313,7 +313,8 @@ struct UniformBufferObject {
 
     float fov = 60.f;
     float height = 720.f;
-    glm::vec2 pad;
+    float use_lod = 0.f;
+    float lod_factor = 1.f;
 };
 
 /**

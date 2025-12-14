@@ -1224,6 +1224,9 @@ void Engine::loadScene(const std::string &scene_path)
 
             global_punctual_lights.push_back(l);
         }
+
+        ubo.use_lod = settings.value("use_lod", ubo.use_lod);
+        ubo.lod_factor = settings.value("lod_factor", ubo.lod_factor);
     }
 
     // --- 2. Load Objects ---

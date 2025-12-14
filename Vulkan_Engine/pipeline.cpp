@@ -172,63 +172,84 @@ vk::raii::ShaderModule Pipeline::createShaderModule(const std::vector<char>& cod
 vk::raii::Pipeline Pipeline::createRayTracingPipeline(
     PipelineInfo* p_info, 
     vk::raii::Device &logical_device, 
-    const std::string& rgen_torus_path,
-    const std::string& rgen_camera_path,
-    const std::string& rmiss_primary_path,
-    const std::string& rmiss_shadow_path,
-    const std::string& rchit_path,
-    const std::string& rahit_path,
+    const RayTracingShaders &rt_render_shader,
+    const RayTracingShaders &rt_torus_shader,
     uint32_t push_constant_size,
     PFN_vkCreateRayTracingPipelinesKHR &vkCreateRayTracingPipelinesKHR)
 {
-    // 1. Load Shaders
-    vk::raii::ShaderModule rgen_torus = createShaderModule(readFile(rgen_torus_path), logical_device);
-    vk::raii::ShaderModule rgen_camera = createShaderModule(readFile(rgen_camera_path), logical_device);
-    vk::raii::ShaderModule rmiss_primary = createShaderModule(readFile(rmiss_primary_path), logical_device);
-    vk::raii::ShaderModule rmiss_shadow = createShaderModule(readFile(rmiss_shadow_path), logical_device);
-    vk::raii::ShaderModule rchit = createShaderModule(readFile(rchit_path), logical_device);
-    vk::raii::ShaderModule ranyhit = createShaderModule(readFile(rahit_path), logical_device);
+    // --- 1. Load Shaders ---
+    
+    // Set A: Torus Sampling Shaders
+    vk::raii::ShaderModule rgen_torus = createShaderModule(readFile(rt_torus_shader.rt_rgen), logical_device);
+    vk::raii::ShaderModule rmiss_primary_torus = createShaderModule(readFile(rt_torus_shader.rt_rmiss), logical_device);
+    vk::raii::ShaderModule rmiss_shadow_torus = createShaderModule(readFile(rt_torus_shader.rt_shadow_miss), logical_device);
+    vk::raii::ShaderModule rchit_torus = createShaderModule(readFile(rt_torus_shader.rt_rchit), logical_device);
+    vk::raii::ShaderModule ranyhit_torus = createShaderModule(readFile(rt_torus_shader.rt_rahit), logical_device);
+
+    // Set B: Camera Render Shaders
+    vk::raii::ShaderModule rgen_camera = createShaderModule(readFile(rt_render_shader.rt_rgen), logical_device);
+    vk::raii::ShaderModule rmiss_primary_render = createShaderModule(readFile(rt_render_shader.rt_rmiss), logical_device);
+    vk::raii::ShaderModule rmiss_shadow_render = createShaderModule(readFile(rt_render_shader.rt_shadow_miss), logical_device);
+    vk::raii::ShaderModule rchit_render = createShaderModule(readFile(rt_render_shader.rt_rchit), logical_device);
+    vk::raii::ShaderModule ranyhit_render = createShaderModule(readFile(rt_render_shader.rt_rahit), logical_device);
 
     std::vector<vk::PipelineShaderStageCreateInfo> stages;
 
-    // Stage 0: RayGen (Torus Capture)
-    stages.push_back({{}, vk::ShaderStageFlagBits::eRaygenKHR, *rgen_torus, "main"});     
-    // Stage 1: RayGen (Camera View)
-    stages.push_back({{}, vk::ShaderStageFlagBits::eRaygenKHR, *rgen_camera, "main"});    
-    // Stage 2: Miss (Primary - Sky/Background)
-    stages.push_back({{}, vk::ShaderStageFlagBits::eMissKHR, *rmiss_primary, "main"});    
-    // Stage 3: Miss (Shadow - Visibility)
-    stages.push_back({{}, vk::ShaderStageFlagBits::eMissKHR, *rmiss_shadow, "main"});     
-    // Stage 4: Closest Hit (PBR + Shadows)
-    stages.push_back({{}, vk::ShaderStageFlagBits::eClosestHitKHR, *rchit, "main"});      
-    // Stage 5: Any Hit (Alpha testing)
-    stages.push_back({{}, vk::ShaderStageFlagBits::eAnyHitKHR, *ranyhit, "main"});
+    // --- STAGE MAPPING ---
+    // Indices 0-4: Torus Pass
+    stages.push_back({{}, vk::ShaderStageFlagBits::eRaygenKHR, *rgen_torus, "main"});          // Stage 0
+    stages.push_back({{}, vk::ShaderStageFlagBits::eMissKHR, *rmiss_primary_torus, "main"});   // Stage 1
+    stages.push_back({{}, vk::ShaderStageFlagBits::eMissKHR, *rmiss_shadow_torus, "main"});    // Stage 2
+    stages.push_back({{}, vk::ShaderStageFlagBits::eClosestHitKHR, *rchit_torus, "main"});     // Stage 3
+    stages.push_back({{}, vk::ShaderStageFlagBits::eAnyHitKHR, *ranyhit_torus, "main"});       // Stage 4
 
-    // 2. Define Shader Groups
+    // Indices 5-9: Camera Pass
+    stages.push_back({{}, vk::ShaderStageFlagBits::eRaygenKHR, *rgen_camera, "main"});         // Stage 5
+    stages.push_back({{}, vk::ShaderStageFlagBits::eMissKHR, *rmiss_primary_render, "main"});  // Stage 6
+    stages.push_back({{}, vk::ShaderStageFlagBits::eMissKHR, *rmiss_shadow_render, "main"});   // Stage 7
+    stages.push_back({{}, vk::ShaderStageFlagBits::eClosestHitKHR, *rchit_render, "main"});    // Stage 8
+    stages.push_back({{}, vk::ShaderStageFlagBits::eAnyHitKHR, *ranyhit_render, "main"});      // Stage 9
+
+    // --- 2. Define Shader Groups ---
     std::vector<vk::RayTracingShaderGroupCreateInfoKHR> groups;
-    
-    // Group 0: RayGen Torus (Uses Stage 0)
+
+    // --- RAYGEN GROUPS ---
+    // Group 0: RayGen Torus (Stage 0)
     groups.push_back({vk::RayTracingShaderGroupTypeKHR::eGeneral, 0, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR});
+    // Group 1: RayGen Camera (Stage 5)
+    groups.push_back({vk::RayTracingShaderGroupTypeKHR::eGeneral, 5, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR});
 
-    // Group 1: RayGen Camera (Uses Stage 1)
+    // --- MISS GROUPS ---
+    // Group 2: Miss Camera Primary (Stage 6)
+    groups.push_back({vk::RayTracingShaderGroupTypeKHR::eGeneral, 6, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR});
+    // Group 3: Miss Camera Shadow (Stage 7)
+    groups.push_back({vk::RayTracingShaderGroupTypeKHR::eGeneral, 7, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR});
+
+    // Group 4: Miss Torus Primary (Stage 1)
     groups.push_back({vk::RayTracingShaderGroupTypeKHR::eGeneral, 1, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR});
-
-    // Group 2: Miss Primary (Uses Stage 2)
+    // Group 5: Miss Torus Shadow (Stage 2) <--- NEW: CRITICAL FIX
     groups.push_back({vk::RayTracingShaderGroupTypeKHR::eGeneral, 2, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR});
 
-    // Group 3: Miss Shadow (Uses Stage 3)
-    groups.push_back({vk::RayTracingShaderGroupTypeKHR::eGeneral, 3, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR, VK_SHADER_UNUSED_KHR});
-
-    // Group 4: Hit Group (Triangle Closest Hit + Any Hit) (Uses Stage 4 and 5)
+    // --- HIT GROUPS ---
+    // Group 6: Hit Group Camera (Stages 8 & 9)
     groups.push_back({
         vk::RayTracingShaderGroupTypeKHR::eTrianglesHitGroup, 
-        VK_SHADER_UNUSED_KHR, // General
-        4,                    // Closest Hit index
-        5,                    // Any Hit index
-        VK_SHADER_UNUSED_KHR  // Intersection
+        VK_SHADER_UNUSED_KHR, 
+        8, // Closest Hit Camera
+        9, // Any Hit Camera
+        VK_SHADER_UNUSED_KHR
     });
 
-    // 3. Create Pipeline Layout
+    // Group 7: Hit Group Torus (Stages 3 & 4)
+    groups.push_back({
+        vk::RayTracingShaderGroupTypeKHR::eTrianglesHitGroup, 
+        VK_SHADER_UNUSED_KHR, 
+        3, // Closest Hit Torus
+        4, // Any Hit Torus
+        VK_SHADER_UNUSED_KHR
+    });
+
+    // --- 3. Create Pipeline Layout ---
     vk::PushConstantRange push_constant;
     push_constant.stageFlags = vk::ShaderStageFlagBits::eRaygenKHR;
     push_constant.offset = 0;
@@ -242,7 +263,7 @@ vk::raii::Pipeline Pipeline::createRayTracingPipeline(
 
     p_info->layout = vk::raii::PipelineLayout(logical_device, pipeline_layout_info);
 
-    // 4. Create the Pipeline
+    // --- 4. Create the Pipeline ---
     vk::RayTracingPipelineCreateInfoKHR pipeline_info;
     pipeline_info.stageCount = static_cast<uint32_t>(stages.size());
     pipeline_info.pStages = stages.data();
@@ -269,6 +290,8 @@ vk::raii::Pipeline Pipeline::createRayTracingPipeline(
 
     return vk::raii::Pipeline(logical_device, vk_pipeline);
 }
+
+
 vk::raii::DescriptorSetLayout Pipeline::createDescriptorSetLayout(std::vector<vk::DescriptorSetLayoutBinding> &bindings, vk::raii::Device &logical_device)
 {
     vk::DescriptorSetLayoutCreateInfo layout_info({}, bindings.size(), bindings.data());

@@ -501,6 +501,14 @@ struct RayTracingProperties {
     vk::PhysicalDeviceAccelerationStructurePropertiesKHR as_props;
 };
 
+struct RayTracingShaders {
+    const std::string rt_rgen;
+    const std::string rt_rmiss;
+    const std::string rt_rchit;
+    const std::string rt_rahit;
+    const std::string rt_shadow_miss;
+};
+
 struct MeshInfo {
     uint32_t material_index; // Index into all_materials_buffer
     uint32_t vertex_offset;  // Offset into all_vertices_buffer

@@ -1,0 +1,62 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_buffer_reference : require
+
+#define RAY_TRACING
+#include "raytracing.glsl"
+
+hitAttributeEXT vec2 hitAttrib;
+
+layout(location = 0) rayPayloadInEXT RayPayload payload;
+
+void main() {
+    // 1. Get Geometry Info
+    MeshInfo info = all_mesh_info.info[gl_InstanceCustomIndexEXT + gl_GeometryIndexEXT];
+    MaterialData mat = all_materials.materials[info.material_index];
+
+    // Optimize: If material is fully opaque, we shouldn't be here (handle via Instance Mask or Shader Group),
+    // but as a fallback, just accept the hit.
+    float alpha_cutoff = mat.alpha_cutoff;
+    bool is_blend = (mat.pad > 0.5);
+    
+    // If no alpha test needed, accept hit
+    if (alpha_cutoff == 0.0 && !is_blend) return; 
+
+    // 2. Fetch Indices to get UVs
+    uint i0 = all_indices.i[info.index_offset + gl_PrimitiveID * 3 + 0];
+    uint i1 = all_indices.i[info.index_offset + gl_PrimitiveID * 3 + 1]; 
+    uint i2 = all_indices.i[info.index_offset + gl_PrimitiveID * 3 + 2];
+
+    vec2 uv0 = all_vertices.v[info.vertex_offset + i0].tex_coord; 
+    vec2 uv1 = all_vertices.v[info.vertex_offset + i1].tex_coord;
+    vec2 uv2 = all_vertices.v[info.vertex_offset + i2].tex_coord;
+
+    // 3. Interpolate UV
+    const vec3 bary = vec3(1.0 - hitAttrib.x - hitAttrib.y, hitAttrib.x, hitAttrib.y); 
+    vec2 tex_coord = uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
+
+    // 4. Sample Alpha
+    // Note: We use LOD 0 because AnyHit doesn't support implicit derivatives easily
+    float alpha = mat.base_color_factor.a;
+    if (mat.albedo_id > 0) {
+        alpha *= textureLod(global_textures[nonuniformEXT(mat.albedo_id)], tex_coord, 0.0).a;
+    }
+
+    // 5. Decision
+    if (alpha_cutoff > 0.0) {
+        // MASK MODE
+        if (alpha < alpha_cutoff) {
+            ignoreIntersectionEXT; // Hardware resumes traversal instantly
+        }
+    } 
+    else if (is_blend) {
+        // BLEND MODE (Stochastic)
+        // If we want to simulate transparency, we roll the dice.
+        // If random > alpha, we ignore the hit (light passes through).
+        if (rnd(payload.seed) > alpha) {
+            ignoreIntersectionEXT;
+        }
+    }
+}

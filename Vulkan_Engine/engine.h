@@ -143,9 +143,22 @@ private:
     vk::raii::Context context;
 
 
-    const std::string rt_rgen_shader = "shaders/rt_datacollect/raygen.rgen.spv";
-    const std::string rt_rmiss_shader = "shaders/rt_datacollect/miss.rmiss.spv";
-    const std::string rt_rchit_shader = "shaders/rt_datacollect/closesthit.rchit.spv";
+    // Shaders for rendering
+    const RayTracingShaders rt_render_shader{
+        "shaders/rt_render/raygen_camera.rgen.spv",
+        "shaders/rt_render/miss.rmiss.spv",
+        "shaders/rt_render/closesthit.rchit.spv",
+        "shaders/rt_render/alpha.rahit.spv",
+        "shaders/rt_render/shadow.rmiss.spv"
+    };
+
+    const RayTracingShaders rt_torus_shader{
+        "shaders/rt_datacollect/raygen.rgen.spv",
+        "shaders/rt_datacollect/miss.rmiss.spv",
+        "shaders/rt_datacollect/closesthit.rchit.spv",
+        "shaders/rt_datacollect/alpha.rahit.spv",
+        "shaders/rt_datacollect/shadow.rmiss.spv"
+    };
 
     const std::string v_shader_pointcloud = "shaders/pointcloud/pointcloud.vert.spv";
     const std::string f_shader_pointcloud = "shaders/pointcloud/pointcloud.frag.spv";
@@ -263,11 +276,12 @@ private:
     PFN_vkCmdTraceRaysKHR vkCmdTraceRaysKHR = nullptr;
 
     // Ray tracing variables
-    uint32_t handle_size;
-    uint32_t sbt_entry_size;
-    uint64_t sbt_address;
-    vk::StridedDeviceAddressRegionKHR rmiss_region;
-    vk::StridedDeviceAddressRegionKHR rhit_region;
+    vk::StridedDeviceAddressRegionKHR rgen_region_camera;
+    vk::StridedDeviceAddressRegionKHR rgen_region_torus;
+    vk::StridedDeviceAddressRegionKHR rmiss_region_camera;
+    vk::StridedDeviceAddressRegionKHR rmiss_region_torus;
+    vk::StridedDeviceAddressRegionKHR rhit_region_camera;
+    vk::StridedDeviceAddressRegionKHR rhit_region_torus;
     vk::StridedDeviceAddressRegionKHR callable_region;
 
 

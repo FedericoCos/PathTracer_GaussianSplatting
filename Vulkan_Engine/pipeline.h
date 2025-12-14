@@ -18,12 +18,8 @@ namespace Pipeline{
     vk::raii::Pipeline createRayTracingPipeline(
         PipelineInfo* p_info, 
         vk::raii::Device &logical_device, 
-        const std::string& rgen_torus,
-        const std::string& rgen_camera,
-        const std::string& rmiss_primary,
-        const std::string& rmiss_shadow,
-        const std::string& rchit,
-        const std::string& rahit,
+        const RayTracingShaders &rt_render_shader,
+        const RayTracingShaders &rt_torus_shader,
         uint32_t push_constant_size,
         PFN_vkCreateRayTracingPipelinesKHR &vkCreateRayTracingPipelinesKHR
     );

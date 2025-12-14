@@ -1863,15 +1863,6 @@ void Engine::createGlobalBindlessBuffers()
 // ------ Render Loop Functions
 
 void Engine::run(){
-    // --- Common SBT Setup ---
-    auto align_up = [&](uint32_t size, uint32_t alignment) { return (size + alignment - 1) & ~(alignment - 1); };
-    handle_size = rt_props.pipeline_props.shaderGroupHandleSize;
-    sbt_entry_size = align_up(handle_size, rt_props.pipeline_props.shaderGroupBaseAlignment);
-    sbt_address = getBufferDeviceAddress(sbt_buffer.buffer);
-    rmiss_region = vk::StridedDeviceAddressRegionKHR{sbt_address + 2 * sbt_entry_size, sbt_entry_size, 2 * sbt_entry_size};
-    rhit_region = vk::StridedDeviceAddressRegionKHR{sbt_address + 4 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
-    callable_region= vk::StridedDeviceAddressRegionKHR{};
-
     while(!glfwWindowShouldClose(window)){
         accumulation_frame++;
         glfwPollEvents();
@@ -1887,11 +1878,10 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     auto& cmd = graphics_command_buffer[current_frame];
     cmd.begin({});
 
-    // Bind RT Pipeline & Descriptors (Shared by both modes)
+    // Common Bindings
     cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline);
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.layout, 0, {*rt_descriptor_sets[current_frame]}, {});
     
-    // Push Constants (Shared)
     RayPushConstant p_const;
     p_const.model = torus.model_matrix;
     p_const.major_radius = torus.getMajorRadius();
@@ -1899,20 +1889,21 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     p_const.height = torus.getHeight();
     cmd.pushConstants<RayPushConstant>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, p_const);
 
-
     // =========================================================
-    // MODE A: POINT CLOUD ANALYSIS (Pressed 'P')
+    // MODE A: TORUS SAMPLING (Point Cloud)
     // =========================================================
     if(render_point_cloud)
     {
-        // 1. Run Data Capture Pass (RayGen 0: Torus -> Scene)
-        // This calculates positions and colors using the updated raygen.rgen
-        vk::StridedDeviceAddressRegionKHR rgen_torus{sbt_address + 0 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
         uint32_t side = static_cast<uint32_t>(std::ceil(std::sqrt(sampling_points.size())));
         
-        vkCmdTraceRaysKHR(*cmd, rgen_torus, rmiss_region, rhit_region, callable_region, side, side, 1);
+        vkCmdTraceRaysKHR(*cmd, 
+            rgen_region_torus, 
+            rmiss_region_torus, 
+            rhit_region_torus, 
+            callable_region, 
+            side, side, 1);
         
-        // Barrier: Ensure RT is done writing to hit_buffer before Vertex Shader reads it
+        // ... [Rest of Point Cloud Barrier and Drawing Logic remains identical] ...
         vk::MemoryBarrier2 mem_barrier;
         mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
         mem_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
@@ -1923,7 +1914,6 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         dep_info.pMemoryBarriers = &mem_barrier;
         cmd.pipelineBarrier2(dep_info);
 
-        // 2. Prepare Swapchain for Rasterization (Clear Screen)
         transition_image_layout(image_index, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal,
                                 {}, vk::AccessFlagBits2::eColorAttachmentWrite,
                                 vk::PipelineStageFlagBits2::eTopOfPipe, vk::PipelineStageFlagBits2::eColorAttachmentOutput);
@@ -1931,9 +1921,9 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         vk::RenderingAttachmentInfo color_att{};
         color_att.imageView = swapchain.image_views[image_index];
         color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-        color_att.loadOp = vk::AttachmentLoadOp::eClear; // Clear previous frame
+        color_att.loadOp = vk::AttachmentLoadOp::eClear; 
         color_att.storeOp = vk::AttachmentStoreOp::eStore;
-        color_att.clearValue = vk::ClearColorValue{std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}}; // Black Background
+        color_att.clearValue = vk::ClearColorValue{std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}}; 
 
         vk::RenderingAttachmentInfo depth_att{};
         depth_att.imageView = depth_image.image_view;
@@ -1952,9 +1942,8 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         cmd.beginRendering(render_info);
         cmd.setViewport(0, vk::Viewport(0.f, 0.f, (float)swapchain.extent.width, (float)swapchain.extent.height, 0.f, 1.f));
         cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapchain.extent));
-        cmd.setCullMode(vk::CullModeFlagBits::eNone); // Required for dynamic state
+        cmd.setCullMode(vk::CullModeFlagBits::eNone); 
 
-        // Draw Point Cloud
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.pipeline);
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.layout, 0, {*point_cloud_descriptor_sets[current_frame]}, {});
         
@@ -1964,37 +1953,37 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         pc_data.minor_radius = torus.getMinorRadius();
         pc_data.height = torus.getHeight();
 
-        // --- Toggle 'O': Show Scene Point Cloud ---
         if (render_final_pointcloud) {
-            pc_data.mode = 0; // World Hit
+            pc_data.mode = 0; 
             cmd.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data);
             cmd.draw(static_cast<uint32_t>(sampling_points.size()), 1, 0, 0);
         }
 
-        // --- Toggle 'T': Show Projected Torus Surface ---
         if (show_projected_torus) {
-            pc_data.mode = 1; // Torus UV Surface
+            pc_data.mode = 1; 
             cmd.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data);
             cmd.draw(static_cast<uint32_t>(sampling_points.size()), 1, 0, 0);
         }
 
         cmd.endRendering();
 
-        // Transition to Present
         transition_image_layout(image_index, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::ePresentSrcKHR,
                                 vk::AccessFlagBits2::eColorAttachmentWrite, {},
                                 vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::PipelineStageFlagBits2::eBottomOfPipe);
     }
     // =========================================================
-    // MODE B: STANDARD RENDER (Normal View)
+    // MODE B: CAMERA RENDER
     // =========================================================
     else 
     {
-        // 1. Run Camera View Pass (RayGen 1: Camera -> Scene)
-        vk::StridedDeviceAddressRegionKHR rgen_camera{sbt_address + 1 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
-        vkCmdTraceRaysKHR(*cmd, rgen_camera, rmiss_region, rhit_region, callable_region, swapchain.extent.width, swapchain.extent.height, 1);
+        vkCmdTraceRaysKHR(*cmd, 
+            rgen_region_camera, 
+            rmiss_region_camera, 
+            rhit_region_camera, 
+            callable_region, 
+            swapchain.extent.width, swapchain.extent.height, 1);
         
-        // 2. Transition & Copy to Swapchain
+        // ... [Rest of Blit/Barrier logic remains identical] ...
         vk::ImageMemoryBarrier2 image_barrier;
         image_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
         image_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
@@ -2031,18 +2020,16 @@ void Engine::recordCommandBuffer(uint32_t image_index){
         blitRegion.dstSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
 
         cmd.blitImage(
-            rt_output_image.image,            // Source (Float32)
+            rt_output_image.image,            
             vk::ImageLayout::eTransferSrcOptimal,
-            swapchain.images[image_index],    // Dest (Int8 / Swapchain)
+            swapchain.images[image_index],    
             vk::ImageLayout::eTransferDstOptimal,
-            blitRegion,                       // <--- FIXED: Pass the object directly (implicit ArrayProxy)
+            blitRegion,                       
             vk::Filter::eNearest
         );
 
-        // Restore RT Image Layout
         transitionImage(cmd, rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
 
-        // Transition Swapchain to Present
         transition_image_layout(image_index, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::ePresentSrcKHR,
                                 vk::AccessFlagBits2::eTransferWrite, {},
                                 vk::PipelineStageFlagBits2::eTransfer, vk::PipelineStageFlagBits2::eBottomOfPipe);
@@ -2238,12 +2225,8 @@ void Engine::createRayTracingPipeline()
     rt_pipeline.pipeline = Pipeline::createRayTracingPipeline(
         &rt_pipeline,
         logical_device,
-        rt_rgen_shader,                                     // Torus RGen (0)
-        "shaders/rt_datacollect/raygen_camera.rgen.spv",    // Camera RGen (1)
-        rt_rmiss_shader,                                    // Primary Miss (2)
-        "shaders/rt_datacollect/shadow.rmiss.spv",          // Shadow Miss (3)
-        rt_rchit_shader,                                    // Closest Hit (4)
-        "shaders/rt_datacollect/alpha.rahit.spv",           // Any Hit (Attached to 4)
+        rt_render_shader,
+        rt_torus_shader,
         sizeof(RayPushConstant),
         vkCreateRayTracingPipelinesKHR
     );
@@ -2456,56 +2439,61 @@ void Engine::createShaderBindingTable()
     uint32_t handle_size = rt_props.pipeline_props.shaderGroupHandleSize;
     uint32_t sbt_entry_alignment = rt_props.pipeline_props.shaderGroupBaseAlignment;
     
-    // Helper lambda to align a size
     auto align_up = [&](uint32_t size, uint32_t alignment) {
         return (size + alignment - 1) & ~(alignment - 1);
     };
     
-    // The size of each entry in the SBT must be the handle size, aligned up to the BASE alignment
     uint32_t sbt_entry_size = align_up(handle_size, sbt_entry_alignment);
     
-    // We have 5 groups total
-    uint32_t group_count = 5;
+    // Total groups is now 8
+    uint32_t group_count = 8; 
 
-    // Total SBT size
     vk::DeviceSize sbt_size = group_count * sbt_entry_size;
 
-    // 2. Create SBT Buffer (Host Visible)
+    // 2. Create SBT Buffer
     createBuffer(vma_allocator, sbt_size,
                  vk::BufferUsageFlagBits::eShaderDeviceAddress | vk::BufferUsageFlagBits::eShaderBindingTableKHR,
                  vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
                  sbt_buffer);
 
-    // 3. Get the shader group handles from the pipeline
+    // 3. Get Handles
     std::vector<uint8_t> shader_handles(group_count * handle_size);
-    
     VkResult res = vkGetRayTracingShaderGroupHandlesKHR(
-        *logical_device,
-        *rt_pipeline.pipeline,
-        0, // firstGroup
-        group_count, // groupCount
-        shader_handles.size(), // dataSize
-        shader_handles.data() // pData
+        *logical_device, *rt_pipeline.pipeline, 
+        0, group_count, 
+        shader_handles.size(), shader_handles.data()
     );
-    if (res != VK_SUCCESS) {
-        throw std::runtime_error("Failed to get ray tracing shader group handles!");
-    }
+    if (res != VK_SUCCESS) throw std::runtime_error("Failed to get handles!");
 
-    // 4. Map and copy handles into the SBT with padding/alignment
+    // 4. Copy Data
     void* sbt_mapped;
     vmaMapMemory(vma_allocator, sbt_buffer.allocation, &sbt_mapped);
-    
     uint8_t* p_data = static_cast<uint8_t*>(sbt_mapped);
-    
     for(uint32_t i = 0; i < group_count; i++) {
-        // Source: Packed tightly in shader_handles (stride = handle_size)
-        // Dest: Aligned in SBT buffer (stride = sbt_entry_size)
-        memcpy(p_data + (i * sbt_entry_size), 
-               shader_handles.data() + (i * handle_size), 
-               handle_size);
+        memcpy(p_data + (i * sbt_entry_size), shader_handles.data() + (i * handle_size), handle_size);
     }
-    
     vmaUnmapMemory(vma_allocator, sbt_buffer.allocation);
+
+    // --- 5. PRE-CALCULATE REGIONS (Performance Fix) ---
+    vk::DeviceAddress sbt_base = getBufferDeviceAddress(sbt_buffer.buffer);
+
+    // RayGen Regions (Single Shader)
+    rgen_region_torus =  vk::StridedDeviceAddressRegionKHR{ sbt_base + 0 * sbt_entry_size, sbt_entry_size, sbt_entry_size };
+    rgen_region_camera = vk::StridedDeviceAddressRegionKHR{ sbt_base + 1 * sbt_entry_size, sbt_entry_size, sbt_entry_size };
+
+    // Miss Regions (2 Shaders: Primary + Shadow)
+    // Camera uses Groups 2 & 3
+    rmiss_region_camera = vk::StridedDeviceAddressRegionKHR{ sbt_base + 2 * sbt_entry_size, sbt_entry_size, 2 * sbt_entry_size };
+    // Torus uses Groups 4 & 5 (We now have 2 shaders here!)
+    rmiss_region_torus =  vk::StridedDeviceAddressRegionKHR{ sbt_base + 4 * sbt_entry_size, sbt_entry_size, 2 * sbt_entry_size };
+
+    // Hit Regions (Single Group)
+    // Camera uses Group 6
+    rhit_region_camera = vk::StridedDeviceAddressRegionKHR{ sbt_base + 6 * sbt_entry_size, sbt_entry_size, sbt_entry_size };
+    // Torus uses Group 7
+    rhit_region_torus =  vk::StridedDeviceAddressRegionKHR{ sbt_base + 7 * sbt_entry_size, sbt_entry_size, sbt_entry_size };
+
+    callable_region = vk::StridedDeviceAddressRegionKHR{};
 }
 
 void Engine::recreateSwapChain(){
@@ -2687,10 +2675,7 @@ void Engine::captureSceneData() {
     logical_device.waitIdle();
 
     // --- SETUP ---
-    // Save original state
     bool original_cloud_state = activate_point_cloud;
-    // Turn OFF point cloud rendering for the images. 
-    // We want the "Normal Scene" as seen by a camera inside the torus.
     activate_point_cloud = false; 
 
     std::vector<FrameData> recorded_frames;
@@ -2701,17 +2686,6 @@ void Engine::captureSceneData() {
     std::uniform_real_distribution<> alpha_dist(0.0f, 360.0f);
     std::uniform_real_distribution<> beta_dist(-45.f, 45.f);
 
-    // Common SBT setup
-    auto align_up = [&](uint32_t size, uint32_t alignment) { return (size + alignment - 1) & ~(alignment - 1); };
-    uint32_t handle_size = rt_props.pipeline_props.shaderGroupHandleSize;
-    uint32_t sbt_entry_size = align_up(handle_size, rt_props.pipeline_props.shaderGroupBaseAlignment);
-    uint64_t sbt_address = getBufferDeviceAddress(sbt_buffer.buffer);
-
-    // Shader regions
-    vk::StridedDeviceAddressRegionKHR rmiss_region{sbt_address + 2 * sbt_entry_size, sbt_entry_size, 2 * sbt_entry_size};
-    vk::StridedDeviceAddressRegionKHR rhit_region{sbt_address + 4 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
-    vk::StridedDeviceAddressRegionKHR callable_region{};
-
     // =========================================================
     // PHASE 1: CAMERA IMAGES (View from INSIDE Torus)
     // =========================================================
@@ -2719,24 +2693,18 @@ void Engine::captureSceneData() {
         float alpha = alpha_dist(gen);
         float beta = beta_dist(gen);
         
-        // 1. Position Camera INSIDE the torus
-        // This updates the View Matrix in the UBO
         camera.updateToroidalAngles(alpha, beta, torus.getMajorRadius(), torus.getHeight());
 
-        // 2. Accumulate 5000 Frames for this Viewpoint
+        // Accumulate Frames
         for (int frame = 0; frame < ACCUMULATION_STEPS; ++frame) {
-            
-            // Update UBO (Frame Count is critical for mixing: 1/1, 1/2, 1/3...)
             accumulation_frame = frame;
             updateUniformBuffer(current_frame); 
 
             vk::raii::CommandBuffer cmd = beginSingleTimeCommands(pool_and_queue.command_pool_graphics, logical_device);
 
-            // Bind RT Pipeline
             cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline);
             cmd.bindDescriptorSets(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.layout, 0, {*rt_descriptor_sets[current_frame]}, {});
 
-            // Push Constants (Camera/Model transforms)
             RayPushConstant p_const;
             p_const.model = torus.model_matrix;
             p_const.major_radius = torus.getMajorRadius();
@@ -2744,22 +2712,18 @@ void Engine::captureSceneData() {
             p_const.height = torus.getHeight();
             cmd.pushConstants<RayPushConstant>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, p_const);
 
-            // --- TRACE CAMERA RAYS ONLY ---
-            // RayGen Index 1: "raygen_camera.rgen"
-            vk::StridedDeviceAddressRegionKHR rgen_camera{sbt_address + 1 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
-            
+            // --- TRACE CAMERA RAYS (Use Camera Regions) ---
             vkCmdTraceRaysKHR(*cmd, 
-                rgen_camera, // Use Camera Shader
-                rmiss_region, 
-                rhit_region, 
+                rgen_region_camera, 
+                rmiss_region_camera, 
+                rhit_region_camera, 
                 callable_region, 
                 swapchain.extent.width, swapchain.extent.height, 1);
 
             endSingleTimeCommands(cmd, pool_and_queue.graphics_queue);
         }
 
-        // 3. Save the Resulting Image
-        // (Float32 Accumulation Buffer -> Int8 Staging Buffer)
+        // --- Save Image Logic (Unchanged) ---
         vk::raii::CommandBuffer cmd_copy = beginSingleTimeCommands(pool_and_queue.command_pool_graphics, logical_device);
 
         transitionImage(cmd_copy, capture_resolve_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, vk::ImageAspectFlagBits::eColor);
@@ -2779,16 +2743,14 @@ void Engine::captureSceneData() {
             blitRegion, vk::Filter::eNearest
         );
 
-        // Reset RT Image for next loop (back to General)
         transitionImage(cmd_copy, rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
         transitionImage(cmd_copy, capture_resolve_image.image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
 
         endSingleTimeCommands(cmd_copy, pool_and_queue.graphics_queue);
 
-        // Readback and Save
         ImageReadbackData data = readImageToCPU(capture_resolve_image.image, capture_resolve_image.image_format, swapchain.extent.width, swapchain.extent.height);
         
-        // Downscale loop (same as before)...
+        // Downscale
         uint32_t target_w = data.width / 2;
         uint32_t target_h = data.height / 2;
         std::vector<uint8_t> resized_pixels(target_w * target_h * 4);
@@ -2809,10 +2771,9 @@ void Engine::captureSceneData() {
         std::string full_save_path = "dataset/train/r_" + std::to_string(i) + ".jpg";
         saveJPG(full_save_path, data);
 
-        // Metadata
         FrameData frame_data;
         frame_data.file_path = "./train/r_" + std::to_string(i); 
-        frame_data.transform_matrix = glm::inverse(camera.getViewMatrix()); // Camera-to-World
+        frame_data.transform_matrix = glm::inverse(camera.getViewMatrix()); 
         
         if (i % 4 == 0) test_frames.push_back(frame_data);
         else recorded_frames.push_back(frame_data);
@@ -2824,10 +2785,7 @@ void Engine::captureSceneData() {
     // =========================================================
     // PHASE 2: POINT CLOUD GENERATION (Rays FROM Torus Surface)
     // =========================================================
-    // We run this ONCE, but accumulate 5000 samples per point to remove noise from the PLY.
-    
     for (int frame = 0; frame < ACCUMULATION_STEPS; ++frame) {
-        
         accumulation_frame = frame;
         updateUniformBuffer(current_frame); 
 
@@ -2843,15 +2801,13 @@ void Engine::captureSceneData() {
         p_const.height = torus.getHeight();
         cmd.pushConstants<RayPushConstant>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, p_const);
 
-        // --- TRACE TORUS RAYS ONLY ---
-        // RayGen Index 0: "raygen.rgen" (The Torus Surface sampler)
-        vk::StridedDeviceAddressRegionKHR rgen_torus{sbt_address + 0 * sbt_entry_size, sbt_entry_size, sbt_entry_size};
+        // --- TRACE TORUS RAYS (Use Torus Regions) ---
         uint32_t side = static_cast<uint32_t>(std::ceil(std::sqrt(sampling_points.size())));
         
         vkCmdTraceRaysKHR(*cmd, 
-            rgen_torus, // Use Torus Shader
-            rmiss_region, 
-            rhit_region, 
+            rgen_region_torus, 
+            rmiss_region_torus, 
+            rhit_region_torus, 
             callable_region, 
             side, side, 1);
             
@@ -2861,16 +2817,15 @@ void Engine::captureSceneData() {
     }
     std::cout << std::endl;
 
-    // 4. Save Metadata & PLY
     saveTransformsJson("dataset/transforms_train.json", recorded_frames);
     saveTransformsJson("dataset/transforms_test.json", test_frames);
-    savePly("dataset/points3d.ply"); // Saves data from the filled hit_data_buffer
+    savePly("dataset/points3d.ply"); 
 
-    // Restore state
     activate_point_cloud = original_cloud_state;
     is_capturing = false;
     std::cout << "--- Dataset Generation Complete ---" << std::endl;
 }
+
 void Engine::saveTransformsJson(const std::string& filename, const std::vector<FrameData>& frames) {
     json root;
     

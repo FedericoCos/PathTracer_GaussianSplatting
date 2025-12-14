@@ -424,11 +424,7 @@ void main()
     }
     float transmission = mat.transmission_factor; 
 
-    // --- LIGHTING ---
-    // REVERTED: Writing hit_pos and normal to payload as requested
-    payload.hit_pos = hit_pos;
-    payload.normal = N;
-    
+    // NO PAYLOAD WRITES FOR hit_pos/normal
     vec3 Lo = vec3(0.0);
     vec3 Le = emissive;
     float emission_strength = length(emissive);
@@ -450,6 +446,7 @@ void main()
             float prob_nee_strategy = (ubo.punctual_flux > 0.0) ? ubo.p_emissive : 1.0;
             pdf_nee *= prob_nee_strategy;
             // float mis_weight = (pdf_bsdf * pdf_bsdf) / (pdf_bsdf * pdf_bsdf + pdf_nee * pdf_nee);
+            // We removed weighting logic because Le is added directly here for Primary rays
              Lo += Le * 1.0;
         }
     }
@@ -483,7 +480,9 @@ void main()
     payload.color = Lo;
 
     // --- NEXT RAY GENERATION ---
-    // OPTIMIZATION: Set specific flag for Opaque (1.0) vs Glass (2.0)
+    // OPTIMIZATION: Set specific flag for Opaque vs Transparent
+    // 2.0 = Glass (Needs more bounces)
+    // 1.0 = Opaque (Needs fewer bounces)
     
     if (transmission > 0.0) {
         payload.hit_flag = 2.0; // GLASS
@@ -514,7 +513,7 @@ void main()
 
     // OPAQUE PATH
     payload.hit_flag = 1.0; // OPAQUE
-    payload.next_ray_origin = hit_pos + N_geo * 0.001; 
+    payload.next_ray_origin = hit_pos + N_geo * 0.001; // Use N_geo for robustness
 
     float NdotV = max(dot(N, V), 0.0);
     float cc_prob = 0.0;

@@ -6,17 +6,7 @@
 #include "raytracing.glsl"
 
 layout(location = 0) rayPayloadEXT RayPayload payload;
-
-// --- SETTINGS ---
-// Clamps max brightness to prevent "Blue Noise" fireflies from getting stuck
-const float CLAMP_MAX = 5.0; 
-
-vec2 hammersley(uint i) {
-    return vec2(
-        float(i) * 0.61803398875, // Golden Ratio X
-        float(i) * 1.32471795724  // Plastic Constant Y (or just use random seed)
-    );
-}
+const float CLAMP_MAX = 5.0;
 
 vec2 r2_sequence(uint i) {
     const float a1 = 0.75487766624669276; 
@@ -27,53 +17,50 @@ vec2 r2_sequence(uint i) {
 void main()
 {
     ivec2 size = textureSize(blueNoiseTex, 0);
-    // Offset read position by frame count to "spin" the noise pattern
-    vec2 random_offset = fract(r2_sequence(ubo.frameCount)); 
+    vec2 random_offset = fract(r2_sequence(ubo.frameCount));
     ivec2 pixel_offset = ivec2(random_offset * vec2(size));
-
-    // Apply Toroidal Shift
     ivec2 pos = (ivec2(gl_LaunchIDEXT.xy) + pixel_offset) & (size - 1);
     vec4 blue = texelFetch(blueNoiseTex, pos, 0);
 
-    // Use blue.r and blue.g for your sub-pixel jitter
     vec2 subPixelJitter = blue.rg;
     uint index = gl_LaunchIDEXT.y * gl_LaunchSizeEXT.x + gl_LaunchIDEXT.x;
-    // Jitter seed per frame
-    uint seed = index + ubo.frameCount * 719393; 
-    
-    // 1. Antialiasing Jitter
-    // vec2 subPixelJitter = fract(hammersley(ubo.frameCount) + vec2(rnd(seed), rnd(seed)));
-    
+    uint seed = index + ubo.frameCount * 719393;
     const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + subPixelJitter;
     const vec2 inUV = pixelCenter / vec2(gl_LaunchSizeEXT.xy);
     vec2 d = inUV * 2.0 - 1.0;
 
-    // 2. Camera Ray
     vec4 origin = inverse(ubo.view) * vec4(0, 0, 0, 1);
     vec4 target = inverse(ubo.proj) * vec4(d.x, d.y, 1, 1);
     vec4 direction = inverse(ubo.view) * vec4(normalize(target.xyz / target.w), 0);
     vec3 ray_origin = origin.xyz;
     vec3 ray_dir = normalize(direction.xyz);
 
-    // 3. Trace Path
     vec3 accumulated_color = vec3(0.0);
     vec3 throughput = vec3(1.0);
     payload.seed = seed;
     payload.blue_noise = blue.ba;
     payload.last_bsdf_pdf = 0.0;
+    
+    // OPTIMIZATION: Initialize flag to safe default
+    payload.hit_flag = 0.0; 
 
     int max_depth = 12;
 
     for (int depth = 0; depth < max_depth; depth++) { 
         payload.depth = depth;
         traceRayEXT(tlas, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0, ray_origin, 0.001, ray_dir, 10000.0, 0);
+        
         accumulated_color += payload.color * throughput;
-
         accumulated_color = min(accumulated_color, vec3(CLAMP_MAX));
+        
+        // Miss shader sets hit_flag = -1.0
+        if (payload.hit_flag < 0.0) break; 
 
-        if (payload.hit_flag < 1.5) break; 
-        if (depth == 0 && payload.hit_flag > 1.5) {
-            max_depth = 8; // Saves 33% rays on diffuse surfaces
+        // OPTIMIZATION: Adaptive Depth
+        // If we hit an Opaque surface (hit_flag == 1.0), we can reduce depth safely.
+        // If we hit Glass (hit_flag == 2.0), we keep full depth.
+        if (depth == 0 && payload.hit_flag < 1.5) {
+            max_depth = 4; // Reduced from 12 to 4 for Diffuse/Opaque
         }
 
         throughput *= payload.weight;
@@ -82,37 +69,20 @@ void main()
         
         float max_throughput = max(max(throughput.r, throughput.g), throughput.b);
         if (max_throughput < 0.001) break;
-
-        // FIX 3: Adaptive Russian Roulette
-        // Start checking earlier (Depth 1 or 2).
-        // This doesn't reduce quality; it probabilistically terminates paths.
-        // Paths that survive get their brightness BOOSTED to compensate (unbiased).
+        
         if(depth >= 4) {
-            // Calculate survival probability based on material brightness
             float p = clamp(max_throughput, 0.05, 0.95);
-            
             if (rnd(payload.seed) > p) break;
-            
-            // Boost the survivor so the average brightness remains correct
             throughput /= p;
         }
     }
     
-    // 4. FIREFLY CLAMP
-    // accumulated_color = min(accumulated_color, vec3(CLAMP_MAX));
-
-    // 5. ACCUMULATION
     vec3 final_color = accumulated_color;
-
     if (ubo.frameCount > 0) {
-        // 1. Load previous frame (Now it is high-precision Linear Float)
         vec3 prev_color = imageLoad(rt_output_image, ivec2(gl_LaunchIDEXT.xy)).rgb;
-        
-        // 2. Linear Mix
         float blend = 1.0 / float(ubo.frameCount + 1);
         final_color = mix(prev_color, final_color, blend);
     }
 
-    // 3. Store Linear Float (Ready for next frame)
     imageStore(rt_output_image, ivec2(gl_LaunchIDEXT.xy), vec4(final_color, 1.0));
 }

@@ -20,6 +20,9 @@
         "num_rays": 1000000
     },
 
+    "use_lod": 1.0,
+    "lod_factor": 0.7,
+
     "ambient_light": [0, 0, 0, 0.25]
   },
   "objects": [

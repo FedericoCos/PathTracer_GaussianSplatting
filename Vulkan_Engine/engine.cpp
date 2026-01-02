@@ -751,6 +751,12 @@ void Engine::key_callback(GLFWwindow* window, int key, int scancode, int action,
             }
             break;
         
+        case (Action::PANORAMA):
+            if(action == GLFW_PRESS){
+                engine -> capturePanorama();
+            }
+            break;
+        
         case Action::SAMPLING_METHOD: 
             if (action == GLFW_PRESS){
                 engine -> accumulation_frame = 0;
@@ -1227,6 +1233,12 @@ void Engine::loadScene(const std::string &scene_path)
 
         ubo.use_lod = settings.value("use_lod", ubo.use_lod);
         ubo.lod_factor = settings.value("lod_factor", ubo.lod_factor);
+
+        accumulation_steps = settings.value("accumulation_steps", 512);
+        total_positions = settings.value("total_positions", 336);
+        min_beta = settings.value("min_beta", -45.f);
+        max_beta = settings.value("max_beta", 45.f);
+        image_divisor = settings.value("image_divisor", 2.f);
     }
 
     // --- 2. Load Objects ---
@@ -1726,9 +1738,6 @@ void Engine::createGlobalBindlessBuffers()
             global_light_triangles.push_back(l_tri);
 
             // Calculate Flux (Power) = Area * Emission Strength (Length of color vector)
-            // Note: We use the max component or length of emissive factor.
-            // Ideally, we should look up the texture if it exists, but for CDF building, 
-            // base factor is usually a good enough approximation for probability.
             const Material& mat = obj.materials[tri.material_index];
             float emission_strength = glm::length(mat.emissive_factor);
             
@@ -2668,11 +2677,9 @@ ImageReadbackData Engine::readImageToCPU(vk::Image image, VkFormat format, uint3
 }
 
 void Engine::captureSceneData() {
-    const int ACCUMULATION_STEPS = 512; 
-    const int TOTAL_POSITIONS = 2; 
 
     std::cout << "\n--- Starting Dataset Capture ---" << std::endl;
-    std::cout << "1. Capturing " << TOTAL_POSITIONS << " Camera Views (from inside Torus)" << std::endl;
+    std::cout << "1. Capturing " << total_positions << " Camera Views (from inside Torus)" << std::endl;
     std::cout << "2. Generating Point Cloud Data" << std::endl;
 
     logical_device.waitIdle();
@@ -2687,19 +2694,19 @@ void Engine::captureSceneData() {
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_real_distribution<> alpha_dist(0.0f, 360.0f);
-    std::uniform_real_distribution<> beta_dist(-45.f, 45.f);
+    std::uniform_real_distribution<> beta_dist(min_beta, max_beta);
 
     // =========================================================
     // PHASE 1: CAMERA IMAGES (View from INSIDE Torus)
     // =========================================================
-    for (int i = 0; i < TOTAL_POSITIONS; ++i) {
+    for (int i = 0; i < total_positions; ++i) {
         float alpha = alpha_dist(gen);
         float beta = beta_dist(gen);
         
         camera.updateToroidalAngles(alpha, beta, torus.getMajorRadius(), torus.getHeight());
 
         // Accumulate Frames
-        for (int frame = 0; frame < ACCUMULATION_STEPS; ++frame) {
+        for (int frame = 0; frame < accumulation_steps; ++frame) {
             accumulation_frame = frame;
             updateUniformBuffer(current_frame); 
 
@@ -2754,8 +2761,8 @@ void Engine::captureSceneData() {
         ImageReadbackData data = readImageToCPU(capture_resolve_image.image, capture_resolve_image.image_format, swapchain.extent.width, swapchain.extent.height);
         
         // Downscale
-        uint32_t target_w = data.width / 2;
-        uint32_t target_h = data.height / 2;
+        uint32_t target_w = data.width / image_divisor;
+        uint32_t target_h = data.height / image_divisor;
         std::vector<uint8_t> resized_pixels(target_w * target_h * 4);
         for (uint32_t y = 0; y < target_h; ++y) {
             for (uint32_t x = 0; x < target_w; ++x) {
@@ -2781,14 +2788,14 @@ void Engine::captureSceneData() {
         if (i % 4 == 0) test_frames.push_back(frame_data);
         else recorded_frames.push_back(frame_data);
 
-        std::cout << "Captured Image " << i + 1 << "/" << TOTAL_POSITIONS << " (" << ACCUMULATION_STEPS << " samples)\r" << std::flush;
+        std::cout << "Captured Image " << i + 1 << "/" << total_positions << " (" << accumulation_steps << " samples)\r" << std::flush;
     }
     std::cout << std::endl << "Images saved. Now generating Point Cloud..." << std::endl;
 
     // =========================================================
     // PHASE 2: POINT CLOUD GENERATION (Rays FROM Torus Surface)
     // =========================================================
-    for (int frame = 0; frame < ACCUMULATION_STEPS; ++frame) {
+    for (int frame = 0; frame < accumulation_steps; ++frame) {
         accumulation_frame = frame;
         updateUniformBuffer(current_frame); 
 
@@ -2816,7 +2823,7 @@ void Engine::captureSceneData() {
             
         endSingleTimeCommands(cmd, pool_and_queue.graphics_queue);
         
-        if (frame % 100 == 0) std::cout << "Accumulating Point Cloud: " << frame << "/" << ACCUMULATION_STEPS << "\r" << std::flush;
+        if (frame % 100 == 0) std::cout << "Accumulating Point Cloud: " << frame << "/" << accumulation_steps << "\r" << std::flush;
     }
     std::cout << std::endl;
 
@@ -2924,4 +2931,124 @@ void Engine::savePly(const std::string& filename) {
 
     file.close();
     std::cout << "Saved " << valid_points.size() << " points to " << filename << std::endl;
+}
+
+
+void Engine::capturePanorama() {
+    std::cout << "\n--- Starting 360 Panorama Capture (Internal) ---" << std::endl;
+
+    // 1. Ensure GPU is idle and setup directory
+    logical_device.waitIdle();
+    std::filesystem::create_directories("dataset/panorama");
+
+    // 2. Get the current Beta angle from the camera state
+    // We assume the camera is currently in Toroidal mode or valid toroidal coordinates are stored.
+    float current_beta = camera.getCurrentState().t_camera.beta;
+    
+    // We will do a full 360 loop. 
+    // You can adjust 'step_size' to change the number of images (e.g., 1.0f = 360 images).
+    float step_size = 1.0f; 
+    int total_steps = static_cast<int>(360.0f / step_size);
+
+    std::cout << "Capturing " << total_steps << " frames at Beta: " << current_beta << std::endl;
+
+    for (int i = 0; i < total_steps; ++i) {
+        float alpha = static_cast<float>(i) * step_size;
+
+        // 3. Move Camera: Alpha increases (simulating moving right), Beta stays fixed
+        camera.updateToroidalAngles(alpha, current_beta, torus.getMajorRadius(), torus.getHeight());
+
+        // 4. Accumulate Frames (Denoising)
+        for (int frame = 0; frame < accumulation_steps; ++frame) {
+            accumulation_frame = frame;
+            updateUniformBuffer(current_frame);
+
+            // Record Ray Tracing Command
+            vk::raii::CommandBuffer cmd = beginSingleTimeCommands(pool_and_queue.command_pool_graphics, logical_device);
+
+            cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline);
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.layout, 0, {*rt_descriptor_sets[current_frame]}, {});
+
+            RayPushConstant p_const;
+            p_const.model = torus.model_matrix;
+            p_const.major_radius = torus.getMajorRadius();
+            p_const.minor_radius = torus.getMinorRadius();
+            p_const.height = torus.getHeight();
+            cmd.pushConstants<RayPushConstant>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, p_const);
+
+            // Trace Camera Rays
+            vkCmdTraceRaysKHR(*cmd, 
+                rgen_region_camera, 
+                rmiss_region_camera, 
+                rhit_region_camera, 
+                callable_region, 
+                swapchain.extent.width, swapchain.extent.height, 1);
+
+            endSingleTimeCommands(cmd, pool_and_queue.graphics_queue);
+        }
+
+        // 5. Transfer to Host and Save
+        // Copy RT Image -> Capture Image -> Buffer
+        vk::raii::CommandBuffer cmd_copy = beginSingleTimeCommands(pool_and_queue.command_pool_graphics, logical_device);
+
+        // Transition layouts
+        transitionImage(cmd_copy, capture_resolve_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, vk::ImageAspectFlagBits::eColor);
+        transitionImage(cmd_copy, rt_output_image.image, vk::ImageLayout::eGeneral, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
+
+        // Blit (handles resizing if RT image is different size, though usually same here)
+        vk::ImageBlit blitRegion;
+        blitRegion.srcOffsets[0] = vk::Offset3D{0, 0, 0};
+        blitRegion.srcOffsets[1] = vk::Offset3D{static_cast<int32_t>(swapchain.extent.width), static_cast<int32_t>(swapchain.extent.height), 1};
+        blitRegion.srcSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
+        blitRegion.dstOffsets[0] = vk::Offset3D{0, 0, 0};
+        blitRegion.dstOffsets[1] = vk::Offset3D{static_cast<int32_t>(swapchain.extent.width), static_cast<int32_t>(swapchain.extent.height), 1};
+        blitRegion.dstSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
+
+        cmd_copy.blitImage(
+            rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal,
+            capture_resolve_image.image, vk::ImageLayout::eTransferDstOptimal,
+            blitRegion, vk::Filter::eNearest
+        );
+
+        // Transition back
+        transitionImage(cmd_copy, rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
+        transitionImage(cmd_copy, capture_resolve_image.image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
+
+        endSingleTimeCommands(cmd_copy, pool_and_queue.graphics_queue);
+
+        // Read back
+        ImageReadbackData data = readImageToCPU(capture_resolve_image.image, capture_resolve_image.image_format, swapchain.extent.width, swapchain.extent.height);
+        
+        // Optional: Downscale logic (copied from captureSceneData)
+        if (image_divisor > 1.0f) {
+            uint32_t target_w = static_cast<uint32_t>(data.width / image_divisor);
+            uint32_t target_h = static_cast<uint32_t>(data.height / image_divisor);
+            std::vector<uint8_t> resized_pixels(target_w * target_h * 4);
+            for (uint32_t y = 0; y < target_h; ++y) {
+                for (uint32_t x = 0; x < target_w; ++x) {
+                    // Simple Nearest Neighbor sampling for speed
+                    uint32_t src_x = static_cast<uint32_t>(x * image_divisor);
+                    uint32_t src_y = static_cast<uint32_t>(y * image_divisor);
+                    uint32_t src_idx = (src_y * data.width + src_x) * 4;
+                    uint32_t dst_idx = (y * target_w + x) * 4;
+                    
+                    resized_pixels[dst_idx + 0] = data.data[src_idx + 0]; 
+                    resized_pixels[dst_idx + 1] = data.data[src_idx + 1]; 
+                    resized_pixels[dst_idx + 2] = data.data[src_idx + 2]; 
+                    resized_pixels[dst_idx + 3] = 255; 
+                }
+            }
+            data.width = target_w;
+            data.height = target_h;
+            data.data = resized_pixels;
+        }
+
+        // Save
+        std::string filename = "dataset/panorama/pano_" + std::to_string(static_cast<int>(alpha)) + ".jpg";
+        saveJPG(filename, data);
+
+        std::cout << "Captured Panorama " << i + 1 << "/" << total_steps << " (Alpha: " << alpha << ")\r" << std::flush;
+    }
+
+    std::cout << std::endl << "--- Panorama Capture Complete ---" << std::endl;
 }

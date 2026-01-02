@@ -1,0 +1,39 @@
+{
+  "settings": {
+    "use_rt_box": true,
+    "rt_box_file": "showcase/subjects/castle_byers_box.json",
+    "panel_shadows_enabled": false,
+
+    "torus_settings": {
+        "major_radius": 22,
+        "minor_radius": 1.0,
+        "height": 14,
+        "major_segments": 500,
+        "minor_segments": 500,
+        "num_rays": 1000000
+    },
+
+    "sun": {
+        "color": [0.2, 0.28, 0.5],
+        "direction": [-0.25, 0.0, -1.0],
+        "intensity": 1.5
+    },
+
+    "ambient_light": [0, 0, 0, 1],
+
+    "lod_factor": 0.7,
+    "use_lod": 1.0,
+    
+    "accumulation_steps": 4096,
+    "total_positions": 4
+  },
+  "objects": [
+    {
+      "model": "resources/castle_byers/scene.gltf",
+      "position": [0, 0, 0],
+      "scale": [0.5, 0.5, 0.5],
+      "rotation": [0.0, 0.0, 0.0]
+    }
+
+  ]
+}

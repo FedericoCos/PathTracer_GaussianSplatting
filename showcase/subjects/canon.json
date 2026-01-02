@@ -1,14 +1,7 @@
 {
   "settings": {
-    "lights_file": "resources/spartan/lights.json",
-    "use_manual_lights": false,
-    "use_manual_lights_shadows": false,
-    "use_emissive_lights": false,
-    "use_emissive_lights_shadows": false,
-    "emissive_intensity_multiplier": 300.0,
-
     "use_rt_box": true,
-    "rt_box_file": "showcase/subjects/huracan_box.json",
+    "rt_box_file": "showcase/subjects/canon_box.json",
     "panel_shadows_enabled": false,
 
     "ambient_light": [0, 0, 0, 1]

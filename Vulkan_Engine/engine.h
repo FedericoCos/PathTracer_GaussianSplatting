@@ -230,6 +230,8 @@ private:
         {GLFW_KEY_5, Action::SAMPLING_METHOD},
         {GLFW_KEY_6, Action::SAMPLING_METHOD},
         {GLFW_KEY_7, Action::SAMPLING_METHOD},
+
+        {GLFW_KEY_G, Action::PANORAMA},
     };
     std::unordered_set<int> pressed_keys;
 
@@ -253,6 +255,10 @@ private:
     int num_rays = 1000000;
     int current_sampling = 0;
     bool invalid_sampling = true;
+    int accumulation_steps;
+    int total_positions;
+    float min_beta, max_beta;
+    float image_divisor;
 
     // For emission light
     AllocatedBuffer light_triangle_buffer;
@@ -378,4 +384,5 @@ private:
 
     void saveTransformsJson(const std::string &filename, const std::vector<FrameData> &frames);
     void savePly(const std::string &filename);
+    void capturePanorama();
 };

@@ -770,7 +770,7 @@ void Gameobject::loadPrimitive(const tinygltf::Primitive& primitive, const tinyg
         bbMin = glm::min(bbMin, p0); bbMin = glm::min(bbMin, p1); bbMin = glm::min(bbMin, p2);
         bbMax = glm::max(bbMax, p0); bbMax = glm::max(bbMax, p1); bbMax = glm::max(bbMax, p2);
 
-        // --- NEW: NEE Data Collection ---
+        // NEE Data Collection
         if (is_emissive) {
             // Calculate Area (Vertices are already World Space)
             float area = 0.5f * glm::length(glm::cross(p1 - p0, p2 - p0));
@@ -787,10 +787,7 @@ void Gameobject::loadPrimitive(const tinygltf::Primitive& primitive, const tinyg
             }
         }
     }
-
-    // --- CRITICAL CHANGE: Push EVERYTHING to o_primitives ---
-    // The BLAS builder only iterates o_primitives. We want transparent objects
-    // to be in the BLAS so the Ray Tracer hits them.
+    
     o_primitives.push_back(new_primitive);
 }
 

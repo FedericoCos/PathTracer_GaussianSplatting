@@ -371,7 +371,9 @@ enum class Action{
 
     CAPTURE_DATA,
 
-    SAMPLING_METHOD
+    SAMPLING_METHOD,
+
+    PANORAMA
 };
 
 /**

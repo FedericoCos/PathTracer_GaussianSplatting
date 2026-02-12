@@ -11,6 +11,15 @@
     "rt_box_file": "showcase/subjects/snitch_box.json",
     "panel_shadows_enabled": false,
 
+    "torus_settings": {
+        "major_radius": 16,
+        "minor_radius": 1.0,
+        "height": 14,
+        "major_segments": 500,
+        "minor_segments": 500,
+        "num_rays": 500000
+    },
+
     "ambient_light": [0, 0, 0, 1]
   },
   "objects": [

@@ -4,7 +4,21 @@
     "rt_box_file": "showcase/subjects/canon_box.json",
     "panel_shadows_enabled": false,
 
-    "ambient_light": [0, 0, 0, 1]
+    "torus_settings": {
+        "major_radius": 15.50,
+        "minor_radius": 1.0,
+        "height": 18.75,
+        "major_segments": 500,
+        "minor_segments": 500,
+        "num_rays": 1000000
+    },
+
+    "ambient_light": [0, 0, 0, 1],
+
+    "accumulation_steps": 2048,
+    "total_positions": 256,
+    "capture_images": true,
+    "capture_pointcloud": true
   },
   "objects": [
     {

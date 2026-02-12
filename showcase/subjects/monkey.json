@@ -1,0 +1,33 @@
+{
+  "settings": {
+    "use_rt_box": true,
+    "rt_box_file": "showcase/subjects/monkey_box.json",
+    "panel_shadows_enabled": false,
+
+    "torus_settings": {
+        "major_radius": 3.5,
+        "minor_radius": 1.0,
+        "height": 3,
+        "major_segments": 500,
+        "minor_segments": 500,
+        "num_rays": 250000
+    },
+
+    "ambient_light": [0, 0, 0, 1],
+
+    "accumulation_steps": 1024,
+    "total_positions": 64,
+    "capture_images": false,
+    "capture_pointcloud": true,
+    "min_beta": -30.0,
+    "max_beta": 30.0
+  },
+  "objects": [
+    {
+      "model": "resources/monkey/scene.gltf",
+      "position": [0.0, 3.5, 0],
+      "scale": [1.5, 1.5, 1.5],
+      "rotation": [0.0, 0, 0.0]
+    }
+  ]
+}

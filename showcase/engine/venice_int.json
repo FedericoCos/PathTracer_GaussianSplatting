@@ -10,16 +10,22 @@
         "height": 0,
         "major_segments": 500,
         "minor_segments": 500,
-        "num_rays": 1000000
+        "num_rays": 500000
     },
 
-    "ambient_light": [0.53, 0.81, 0.92, 1]
+    "ambient_light": [0.53, 0.81, 0.92, 1],
+    "accumulation_steps": 2048,
+    "total_positions": 512,
+    "capture_images": false,
+    "capture_pointcloud": true,
+    "min_beta": -180,
+    "max_beta": 180
   },
   "objects": [
     {
       "model": "resources/venice_int/scene.gltf",
-      "position": [0, 0, 0],
-      "scale": [1, 1, 1],
+      "position": [-6, 0, 3],
+      "scale": [2, 2, 2],
       "rotation": [0.0, 0.0, 0.0]
     }
 

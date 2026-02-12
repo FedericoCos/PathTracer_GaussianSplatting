@@ -206,8 +206,8 @@ void Engine::createRTBox(const std::string& rtbox_path)
     float y_bot = pos.y;
     float y_top = pos.y + h;
 
-    rt_box.vertices.resize(20); // 5 faces * 4 vertices
-    rt_box.indices.resize(30);  // 5 faces * 6 indices (2 tris)
+    rt_box.vertices.resize(24); // 5 faces * 4 vertices
+    rt_box.indices.resize(36);  // 5 faces * 6 indices (2 tris)
 
     // --- 2. Define Vertices (using pos and dim) ---
     // Floor (Y = y_bot)
@@ -235,6 +235,11 @@ void Engine::createRTBox(const std::string& rtbox_path)
     rt_box.vertices[17].pos = {pos.x + w, y_bot, pos.z + d}; rt_box.vertices[17].normal = {-1, 0, 0};
     rt_box.vertices[18].pos = {pos.x + w, y_top, pos.z + d}; rt_box.vertices[18].normal = {-1, 0, 0};
     rt_box.vertices[19].pos = {pos.x + w, y_top, pos.z - d}; rt_box.vertices[19].normal = {-1, 0, 0};
+    // Front wall (z = pos.z + d)
+    rt_box.vertices[20].pos = {pos.x - w, y_bot, pos.z + d}; rt_box.vertices[20].normal = {0, 0, -1};
+    rt_box.vertices[21].pos = {pos.x + w, y_bot, pos.z + d}; rt_box.vertices[21].normal = {0, 0, -1};
+    rt_box.vertices[22].pos = {pos.x + w, y_top, pos.z + d}; rt_box.vertices[22].normal = {0, 0, -1};
+    rt_box.vertices[23].pos = {pos.x - w, y_top, pos.z + d}; rt_box.vertices[23].normal = {0, 0, -1};
     
     for(auto& v : rt_box.vertices) {
         v.color = {1.f, 1.f, 1.f};
@@ -249,10 +254,11 @@ void Engine::createRTBox(const std::string& rtbox_path)
         4, 5, 6, 6, 7, 4,   // Ceiling
         8, 9, 10, 10, 11, 8, // Back
         12, 13, 14, 14, 15, 12, // Left
-        16, 17, 18, 18, 19, 16  // Right
+        16, 17, 18, 18, 19, 16,  // Right
+        20, 21, 22, 22, 23, 20
     };
     
-    // --- 3. Helper to create materials from JSON ---
+    // --- 3. Helpd
     auto createMatFromJson = [&](const json& mat_config) -> Material {
         Material mat;
         mat.base_color_factor = glm::vec4(
@@ -278,9 +284,9 @@ void Engine::createRTBox(const std::string& rtbox_path)
     rt_box.materials.clear();
     rt_box.o_primitives.clear();
 
-    std::vector<std::string> panel_names = {"floor", "ceiling", "back_wall", "left_wall", "right_wall"};
+    std::vector<std::string> panel_names = {"floor", "ceiling", "back_wall", "left_wall", "right_wall", "front_wall"};
 
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 6; ++i) {
         const std::string& name = panel_names[i];
         const json& panel_config = config["panels"][name];
 
@@ -859,6 +865,8 @@ void Engine::cursor_position_callback(GLFWwindow *window, double x_pos, double y
  * Initiate GLFW window and all callbacks necessary
  */
 bool Engine::initWindow(){
+    win_width = 960.f;
+    win_height = 540.f;
     window = initWindowGLFW("Torus Engine", win_width, win_height);
     glfwSetWindowUserPointer(window, this);
     glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
@@ -1239,6 +1247,9 @@ void Engine::loadScene(const std::string &scene_path)
         min_beta = settings.value("min_beta", -45.f);
         max_beta = settings.value("max_beta", 45.f);
         image_divisor = settings.value("image_divisor", 2.f);
+
+        this -> capture_images = settings.value("capture_images", true);
+        this -> capture_pointcloud = settings.value("capture_pointcloud", true);
     }
 
     // --- 2. Load Objects ---
@@ -1328,13 +1339,13 @@ void Engine::loadScene(const std::string &scene_path)
         // Now the BLAS is built using the exact world coordinates.
         createModel(new_object);
 
-        if (this->use_rt_box && !rtbox_path.empty()) {
-            createRTBox(rtbox_path);
-        } else if (this->use_rt_box && rtbox_path.empty()) {
-            std::cerr << "Warning: 'use_rt_box' is true but no 'rt_box_file' was specified." << std::endl;
-        }
-
         scene_objs.emplace_back(std::move(new_object));
+    }
+
+    if (this->use_rt_box && !rtbox_path.empty()) {
+        createRTBox(rtbox_path);
+    } else if (this->use_rt_box && rtbox_path.empty()) {
+        std::cerr << "Warning: 'use_rt_box' is true but no 'rt_box_file' was specified." << std::endl;
     }
 }
 
@@ -2692,14 +2703,14 @@ void Engine::captureSceneData() {
     std::vector<FrameData> test_frames;
     
     std::random_device rd;
-    std::mt19937 gen(rd());
+    std::mt19937 gen(13);
     std::uniform_real_distribution<> alpha_dist(0.0f, 360.0f);
     std::uniform_real_distribution<> beta_dist(min_beta, max_beta);
 
     // =========================================================
     // PHASE 1: CAMERA IMAGES (View from INSIDE Torus)
     // =========================================================
-    for (int i = 0; i < total_positions; ++i) {
+    for (int i = 0; i < total_positions && capture_images; ++i) {
         float alpha = alpha_dist(gen);
         float beta = beta_dist(gen);
         
@@ -2761,22 +2772,24 @@ void Engine::captureSceneData() {
         ImageReadbackData data = readImageToCPU(capture_resolve_image.image, capture_resolve_image.image_format, swapchain.extent.width, swapchain.extent.height);
         
         // Downscale
-        uint32_t target_w = data.width / image_divisor;
-        uint32_t target_h = data.height / image_divisor;
-        std::vector<uint8_t> resized_pixels(target_w * target_h * 4);
-        for (uint32_t y = 0; y < target_h; ++y) {
-            for (uint32_t x = 0; x < target_w; ++x) {
-                uint32_t src_idx = ((y * 2) * data.width + (x * 2)) * 4;
-                uint32_t dst_idx = (y * target_w + x) * 4;
-                resized_pixels[dst_idx + 0] = data.data[src_idx + 0]; 
-                resized_pixels[dst_idx + 1] = data.data[src_idx + 1]; 
-                resized_pixels[dst_idx + 2] = data.data[src_idx + 2]; 
-                resized_pixels[dst_idx + 3] = 255; 
+        if(image_divisor > 1.0f){
+            uint32_t target_w = data.width / image_divisor;
+            uint32_t target_h = data.height / image_divisor;
+            std::vector<uint8_t> resized_pixels(target_w * target_h * 4);
+            for (uint32_t y = 0; y < target_h; ++y) {
+                for (uint32_t x = 0; x < target_w; ++x) {
+                    uint32_t src_idx = ((y * 2) * data.width + (x * 2)) * 4;
+                    uint32_t dst_idx = (y * target_w + x) * 4;
+                    resized_pixels[dst_idx + 0] = data.data[src_idx + 0]; 
+                    resized_pixels[dst_idx + 1] = data.data[src_idx + 1]; 
+                    resized_pixels[dst_idx + 2] = data.data[src_idx + 2]; 
+                    resized_pixels[dst_idx + 3] = 255; 
+                }
             }
+            data.width = target_w;
+            data.height = target_h;
+            data.data = resized_pixels;
         }
-        data.width = target_w;
-        data.height = target_h;
-        data.data = resized_pixels;
 
         std::string full_save_path = "dataset/train/r_" + std::to_string(i) + ".jpg";
         saveJPG(full_save_path, data);
@@ -2795,7 +2808,7 @@ void Engine::captureSceneData() {
     // =========================================================
     // PHASE 2: POINT CLOUD GENERATION (Rays FROM Torus Surface)
     // =========================================================
-    for (int frame = 0; frame < accumulation_steps; ++frame) {
+    for (int frame = 0; frame < accumulation_steps && capture_pointcloud; ++frame) {
         accumulation_frame = frame;
         updateUniformBuffer(current_frame); 
 
@@ -2827,13 +2840,18 @@ void Engine::captureSceneData() {
     }
     std::cout << std::endl;
 
-    saveTransformsJson("dataset/transforms_train.json", recorded_frames);
-    saveTransformsJson("dataset/transforms_test.json", test_frames);
-    savePly("dataset/points3d.ply"); 
+    if(capture_images){
+        saveTransformsJson("dataset/transforms_train.json", recorded_frames);
+        saveTransformsJson("dataset/transforms_test.json", test_frames);
+    }
+    if(capture_pointcloud)
+        savePly("dataset/points3d.ply"); 
 
     activate_point_cloud = original_cloud_state;
     is_capturing = false;
     std::cout << "--- Dataset Generation Complete ---" << std::endl;
+
+    abort();
 }
 
 void Engine::saveTransformsJson(const std::string& filename, const std::vector<FrameData>& frames) {

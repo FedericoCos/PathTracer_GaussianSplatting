@@ -1,0 +1,37 @@
+{
+  "settings": {
+    "use_rt_box": true,
+    "rt_box_file": "showcase/subjects/teapot_box.json",
+    "panel_shadows_enabled": false,
+
+    "torus_settings": {
+        "major_radius": 6.25,
+        "minor_radius": 1.0,
+        "height": 2,
+        "major_segments": 500,
+        "minor_segments": 500,
+        "num_rays": 1000000
+    },
+
+    "ambient_light": [0, 0, 0, 1],
+
+    "accumulation_steps": 1024,
+    "total_positions": 256,
+    "capture_images": false,
+    "capture_pointcloud": true
+  },
+  "objects": [
+    {
+      "model": "resources/teapot2/scene.gltf",
+      "position": [-2.0, 0, -3],
+      "scale": [0.6, 0.6, 0.6],
+      "rotation": [0.0, 200, 0.0]
+    },
+    {
+      "model": "resources/dragon/scene.gltf",
+      "position": [1.8, -1.2, 1],
+      "scale": [20, 20, 20],
+      "rotation": [0.0, 0, 0.0]
+    }
+  ]
+}

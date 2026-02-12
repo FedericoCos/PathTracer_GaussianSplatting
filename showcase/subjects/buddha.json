@@ -1,0 +1,31 @@
+{
+  "settings": {
+    "use_rt_box": true,
+    "rt_box_file": "showcase/subjects/buddha_box.json",
+    "panel_shadows_enabled": false,
+
+    "torus_settings": {
+        "major_radius": 3.5,
+        "minor_radius": 1.0,
+        "height": 3,
+        "major_segments": 500,
+        "minor_segments": 500,
+        "num_rays": 500000
+    },
+
+    "ambient_light": [0, 0, 0, 1],
+
+    "accumulation_steps": 1024,
+    "total_positions": 256,
+    "capture_images": false,
+    "capture_pointcloud": true
+  },
+  "objects": [
+    {
+      "model": "resources/buddha/scene.gltf",
+      "position": [0.0, 2.0, 0],
+      "scale": [5, 5, 5],
+      "rotation": [0.0, 180, 0.0]
+    }
+  ]
+}

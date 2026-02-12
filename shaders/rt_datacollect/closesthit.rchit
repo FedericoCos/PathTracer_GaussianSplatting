@@ -78,7 +78,7 @@ float D_GGX(vec3 N, vec3 H, float roughness) {
 }
 
 float V_SmithGGXCorrelatedFast(float NdotV, float NdotL, float roughness) {
-    float a = roughness;
+    float a = roughness * roughness;
     float ggxV = NdotL * (NdotV * (1.0 - a) + a);
     float ggxL = NdotV * (NdotL * (1.0 - a) + a);
     return 0.5 / max(ggxV + ggxL, 0.0001);
@@ -125,7 +125,7 @@ float traceShadow(vec3 origin, vec3 lightPos) {
     return shadowPayload.isHit ? 0.0 : 1.0;
 }
 
-void samplePunctualLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, vec3 F0, float transmission, inout vec3 Lo) {
+void samplePunctualLights(vec3 hit_pos, vec3 N, vec3 N_geo, vec3 V, vec3 albedo, float roughness, vec3 F0, float transmission, inout vec3 Lo) {
     uint num_lights = scene_lights.lights.length();
     float r_select = getBlueNoise(4);
     uint light_idx = 0;
@@ -170,7 +170,7 @@ void samplePunctualLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float rough
     if (NdotL < 0.001) return;
     
     if (NdotL > 0.0 && length(Le) > 0.0) {
-        vec3 shadow_origin = hit_pos + N * 0.001;
+        vec3 shadow_origin = hit_pos + N_geo * 0.001;
         float visibility;
         if (light.type == 1) visibility = traceShadowDist(shadow_origin, L, 10000.0);
         else visibility = traceShadow(shadow_origin, light.position);
@@ -191,7 +191,7 @@ void samplePunctualLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float rough
     }
 }
 
-void sampleLights_SG(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, vec3 F0, float transmission, inout vec3 Lo) {
+void sampleLights_SG(vec3 hit_pos, vec3 N, vec3 N_geo, vec3 V, vec3 albedo, float roughness, vec3 F0, float transmission, inout vec3 Lo) {
     uint num_lights = light_cdf.entries.length();
     float r_select = getBlueNoise(4);
     uint idx = 0;
@@ -224,7 +224,7 @@ void sampleLights_SG(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness,
     if (NdotL < 0.001) return;
     float LdotN_light = abs(dot(-L, light_normal));
     if (NdotL > 0.0 && LdotN_light > 0.0) {
-        vec3 shadow_origin = hit_pos + N * 0.001;
+        vec3 shadow_origin = hit_pos + N_geo * 0.001;
         float visibility = traceShadow(shadow_origin, light_pos);
         visibility = max(visibility, transmission);
 
@@ -233,7 +233,12 @@ void sampleLights_SG(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness,
             vec3 Le = l_mat.emissive_factor_and_pad.rgb;
             float emission_strength = max(Le.r, max(Le.g, Le.b));
             float pdf_nee = (emission_strength / ubo.emissive_flux) * (dist_sq / LdotN_light);
-            float pdf_bsdf = pdf_Lambert(N, L);
+            float pdf_spec = pdf_GGX(N, V, L, roughness);
+            float pdf_diff = pdf_Lambert(N, L);
+            // Match the actual sampling strategy used in the BRDF path
+            float prob_specular = clamp(length(F0), 0.05, 0.95);
+            float prob_diffuse = 1.0 - prob_specular;
+            float pdf_bsdf = (pdf_spec * prob_specular) + (pdf_diff * prob_diffuse);
             float mis_weight = (pdf_nee * pdf_nee) / (pdf_nee * pdf_nee + pdf_bsdf * pdf_bsdf);
 
             vec3 H = safeNormalize(V + L);
@@ -251,7 +256,7 @@ void sampleLights_SG(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness,
     }
 }
 
-void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, float metallic, vec3 F0, float transmission, inout vec3 Lo) {
+void sampleLights(vec3 hit_pos, vec3 N, vec3 N_geo, vec3 V, vec3 albedo, float roughness, float metallic, vec3 F0, float transmission, inout vec3 Lo) {
     uint num_lights = light_cdf.entries.length();
     float r_select = getBlueNoise(7);
     uint idx = 0;
@@ -283,7 +288,7 @@ void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, fl
     if (NdotL < 0.001) return;
     float LdotN_light = abs(dot(-L, light_normal));
     if (NdotL > 0.0 && LdotN_light > 0.0) {
-        vec3 shadow_origin = hit_pos + N * 0.001;
+        vec3 shadow_origin = hit_pos + N_geo * 0.001;
         float visibility = traceShadow(shadow_origin, light_pos);
         visibility = max(visibility, transmission);
         if (visibility > 0.0) {
@@ -295,7 +300,8 @@ void sampleLights(vec3 hit_pos, vec3 N, vec3 V, vec3 albedo, float roughness, fl
             float prob_specular = mix(0.04, 1.0, metallic);
             float pdf_spec = pdf_GGX(N, V, L, roughness);
             float pdf_diff = pdf_Lambert(N, L);
-            float pdf_bsdf = mix(pdf_diff, pdf_spec, prob_specular);
+            float prob_diffuse = 1.0 - prob_specular;
+            float pdf_bsdf = (pdf_spec * prob_specular) + (pdf_diff * prob_diffuse);
             float mis_weight = (pdf_nee * pdf_nee) / (pdf_nee * pdf_nee + pdf_bsdf * pdf_bsdf);
 
             vec3 H = safeNormalize(V + L);
@@ -340,6 +346,7 @@ void main()
     vec3 B_geo = cross(N_geo, T_geo) * sign(tangent_obj.w); 
 
     vec3 V = -gl_WorldRayDirectionEXT;
+    vec3 N_geo_original = N_geo;  // Preserve original for glass
     if (dot(N_geo, V) < 0.0) N_geo = -N_geo;
     vec3 N = N_geo;
     vec3 T = T_geo; 
@@ -458,8 +465,8 @@ void main()
             if (ubo.emissive_flux > 0.0) pdf_nee = (emission_strength_cpu / (ubo.emissive_flux)) * (dist_sq / max(LdotN, 0.001));
             float prob_nee_strategy = (ubo.punctual_flux > 0.0) ? ubo.p_emissive : 1.0;
             pdf_nee *= prob_nee_strategy;
-            // float mis_weight = (pdf_bsdf * pdf_bsdf) / (pdf_bsdf * pdf_bsdf + pdf_nee * pdf_nee);
-             Lo += Le * 1.0;
+            float mis_weight = (pdf_bsdf * pdf_bsdf) / (pdf_bsdf * pdf_bsdf + pdf_nee * pdf_nee);
+             Lo += Le * mis_weight;
         }
     }
 
@@ -471,22 +478,22 @@ void main()
         float p_punctual = 1.0 - ubo.p_emissive;
         if (getBlueNoise(10) < ubo.p_emissive) {
             if(use_nee){
-                if(mat.use_specular_glossiness_workflow > 0.0) sampleLights_SG(hit_pos, N, V, albedo, roughness, F0, transmission, light_contr);
-                else sampleLights(hit_pos, N, V, albedo, roughness, metallic, F0, transmission, light_contr);
+                if(mat.use_specular_glossiness_workflow > 0.0) sampleLights_SG(hit_pos, N, N_geo, V, albedo, roughness, F0, transmission, light_contr);
+                else sampleLights(hit_pos, N, N_geo, V, albedo, roughness, metallic, F0, transmission, light_contr);
                 light_contr *= (1.0 / ubo.p_emissive);
             }
         } else {
-            samplePunctualLights(hit_pos, N, V, albedo, roughness, F0, transmission, light_contr);
+            samplePunctualLights(hit_pos, N, N_geo, V, albedo, roughness, F0, transmission, light_contr);
             light_contr *= (1.0 / p_punctual);
         }
         Lo += light_contr;
     } 
     else if (has_emissive && use_nee) {
-        if(mat.use_specular_glossiness_workflow > 0.0) sampleLights_SG(hit_pos, N, V, albedo, roughness, F0, transmission, Lo);
-        else sampleLights(hit_pos, N, V, albedo, roughness, metallic, F0, transmission, Lo);
+        if(mat.use_specular_glossiness_workflow > 0.0) sampleLights_SG(hit_pos, N, N_geo, V, albedo, roughness, F0, transmission, Lo);
+        else sampleLights(hit_pos, N, N_geo, V, albedo, roughness, metallic, F0, transmission, Lo);
     }
     else if (has_punctual) {
-        samplePunctualLights(hit_pos, N, V, albedo, roughness, F0, transmission, Lo);
+        samplePunctualLights(hit_pos, N, N_geo, V, albedo, roughness, F0, transmission, Lo);
     }
 
     payload.color = Lo;
@@ -496,17 +503,20 @@ void main()
     
     if (transmission > 0.0) {
         payload.hit_flag = 2.0; // GLASS
-        payload.next_ray_origin = hit_pos - N_geo * 0.001;
-        vec3 F_val = F_Schlick(abs(dot(N, V)), F0); 
+        bool entering = dot(N_geo_original, V) > 0.0;
+        vec3 N_refr = entering ? N_geo_original : -N_geo_original;
+        
+        payload.next_ray_origin = hit_pos - N_refr * 0.001;
+        vec3 F_val = F_Schlick(abs(dot(N_geo_original, V)), F0); 
         float prob_reflect = max(max(F_val.r, F_val.g), F_val.b);
+        
         if (getBlueNoise(11) < prob_reflect) { 
-            payload.next_ray_origin = hit_pos + N_geo * 0.001;
-            payload.next_ray_dir = reflect(-V, N); 
+            payload.next_ray_origin = hit_pos + N_refr * 0.001;
+            payload.next_ray_dir = reflect(-V, N_refr); 
             payload.weight = vec3(1.0);
         } else {
             float refraction_ior = 1.01;
-            float eta = (dot(N_geo, V) > 0.0) ? (1.0 / refraction_ior) : refraction_ior;
-            vec3 N_refr = (dot(N_geo, V) > 0.0) ? N_geo : -N_geo; 
+            float eta = entering ? (1.0 / refraction_ior) : refraction_ior;
             vec3 refractDir = refract(-V, N_refr, eta);
             if (length(refractDir) > 0.0) { 
                 payload.next_ray_dir = refractDir;
@@ -535,6 +545,7 @@ void main()
     }
 
     if (clearcoat > 0.0 && getBlueNoise(12) < cc_prob) {
+        // Clearcoat path
         vec3 H_cc = sampleGGX(N, cc_roughness);
         vec3 L_cc = reflect(-V, H_cc);
         float NdotL = max(dot(N, L_cc), 0.0);
@@ -550,7 +561,18 @@ void main()
             float Vis = V_SmithGGXCorrelatedFast(NdotV, NdotL, cc_roughness);
             vec3 specular_weight = F * Vis * 4.0 * NdotL * (VdotH / max(NdotH, 0.0001));
             float pdf_cc = pdf_GGX(N, V, L_cc, cc_roughness);
-            payload.last_bsdf_pdf = pdf_cc * cc_prob; 
+            
+            // Also compute the PDF for the base layer with this direction
+            float prob_specular_base = mix(0.04, 1.0, metallic);
+            prob_specular_base = mix(prob_specular_base, 1.0, pow(1.0 - NdotV, 5.0));
+            prob_specular_base = clamp(prob_specular_base, 0.05, 0.95);
+            float prob_diffuse_base = 1.0 - prob_specular_base;
+            float pdf_spec_base = pdf_GGX(N, V, L_cc, roughness);
+            float pdf_diff_base = pdf_Lambert(N, L_cc);
+            float pdf_base = (pdf_spec_base * prob_specular_base) + (pdf_diff_base * prob_diffuse_base);
+            
+            // Combined PDF accounting for all paths
+            payload.last_bsdf_pdf = (pdf_cc * cc_prob) + (pdf_base * (1.0 - cc_prob));
             payload.weight = specular_weight * (1.0 / cc_prob);
         }
     } 

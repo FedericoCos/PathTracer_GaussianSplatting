@@ -1,5 +1,7 @@
 #include "sampling.h"
 
+int seed = 13;
+
 float Sampling::halton(int index, int base)
 {
     float f = 1.f;
@@ -39,7 +41,7 @@ void Sampling::generateStratifiedSamples(std::vector<RaySample> &sampling_points
     int rows = static_cast<int>(std::ceil(static_cast<float>(num_rays) / cols));
 
     std::random_device rd;
-    std::mt19937 gen(rd());
+    std::mt19937 gen(seed);
     std::uniform_real_distribution<float> dis(0.0f, 1.0f);
 
     for (int i = 0; i < num_rays; i++) {
@@ -133,7 +135,7 @@ void Sampling::generateImportanceSamples(
     sampling_points.resize(num_rays);
 
     std::random_device rd;
-    std::mt19937 gen(rd());
+    std::mt19937 gen(seed);
     std::uniform_real_distribution<float> dis(0.0f, 1.0f);
 
     for (int i = 0; i < num_rays; i++) {
@@ -165,7 +167,7 @@ void Sampling::generateRandomSamples(std::vector<RaySample> &sampling_points, co
     sampling_points.resize(num_rays);
 
     std::random_device rd;
-    std::mt19937 gen(rd());
+    std::mt19937 gen(seed);
     std::uniform_real_distribution<float> dis(0.0f, 1.0f);
 
     for(int i = 0; i < num_rays; i++){
@@ -265,7 +267,7 @@ void Sampling::generateHitBasedImportanceSamples(
     sampling_points.resize(num_rays);
 
     std::random_device rd;
-    std::mt19937 gen(rd());
+    std::mt19937 gen(seed);
     std::uniform_real_distribution<float> dis(0.0f, 1.0f);
 
     for (int i = 0; i < num_rays; i++) {
@@ -305,7 +307,7 @@ void Sampling::generateLatinHypercubeSamples(std::vector<RaySample> &sampling_po
     // This ensures that for any index i, u_indices[i] and v_indices[i] 
     // are random pairings, but globally unique in their respective dimensions.
     std::random_device rd;
-    std::mt19937 gen(rd());
+    std::mt19937 gen(seed);
 
     std::shuffle(u_indices.begin(), u_indices.end(), gen);
     std::shuffle(v_indices.begin(), v_indices.end(), gen);

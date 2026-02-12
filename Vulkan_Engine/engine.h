@@ -259,6 +259,8 @@ private:
     int total_positions;
     float min_beta, max_beta;
     float image_divisor;
+    bool capture_images = true;
+    bool capture_pointcloud = true;
 
     // For emission light
     AllocatedBuffer light_triangle_buffer;

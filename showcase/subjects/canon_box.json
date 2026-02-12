@@ -21,6 +21,10 @@
     "right_wall": {
       "material": { "base_color": [0.8, 0.8, 0.8], "metallic": 1.0, "roughness": 0.0 },
       "light": { "intensity": 1.0 }
+    },
+    "front_wall": {
+      "material": { "base_color": [0.8, 0.8, 0.8], "metallic": 1.0, "roughness": 0.0 },
+      "light": { "intensity": 0.0 }
     }
   }
 }

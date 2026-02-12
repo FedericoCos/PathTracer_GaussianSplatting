@@ -1,0 +1,11 @@
+Model Information:
+* title:	Teapot (Utah)
+* source:	https://sketchfab.com/3d-models/teapot-utah-08b7c8a857c3400c8c834a956fe646c1
+* author:	Astraeus (https://sketchfab.com/FinnSoft)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Teapot (Utah)" (https://sketchfab.com/3d-models/teapot-utah-08b7c8a857c3400c8c834a956fe646c1) by Astraeus (https://sketchfab.com/FinnSoft) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

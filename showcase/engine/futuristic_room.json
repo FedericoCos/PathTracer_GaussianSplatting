@@ -12,20 +12,26 @@
     "panel_shadows_enabled": false,
 
     "torus_settings": {
-        "major_radius": 4,
+        "major_radius": 12,
         "minor_radius": 2.0,
         "height": 9.5,
         "major_segments": 500,
         "minor_segments": 500,
-        "num_rays": 1000000
+        "num_rays": 500000
     },
 
-    "ambient_light": [0.00, 0.0, 0.0, 0.7]
+    "ambient_light": [0.00, 0.0, 0.0, 0.7],
+    "accumulation_steps": 2048,
+    "total_positions": 512,
+    "capture_images": true,
+    "capture_pointcloud": true,
+    "min_beta": -180,
+    "max_beta": 180
   },
   "objects": [
     {
       "model": "resources/futuristic_room/scene.gltf",
-      "position": [20, 0, 0],
+      "position": [25, 0, -5],
       "scale": [10, 10, 10],
       "rotation": [0.0, 0.0, 0.0]
     }

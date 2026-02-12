@@ -3,23 +3,27 @@
   "dimensions": [40, 40, 40],
   "panels": {
     "floor": {
-      "material": { "base_color": [0.8, 0.8, 0.8], "metallic": 1.0, "roughness": 0.0 },
-      "light": { "intensity": 1.0 }
+      "material": { "base_color": [1, 1, 1], "metallic": 1.0, "roughness": 0.0 },
+      "light": { "intensity": 0.0 }
     },
     "ceiling": {
-      "material": { "base_color": [0.8, 0.8, 0.8], "metallic": 1.0, "roughness": 0.0 },
-      "light": { "intensity": 1.0 }
+      "material": { "base_color": [1, 1, 1], "metallic": 1.0, "roughness": 0.0 },
+      "light": { "intensity": 0.0 }
     },
     "back_wall": {
-      "material": { "base_color": [0.8, 0.8, 0.8], "metallic": 1.0, "roughness": 0.0 },
+      "material": { "base_color": [1, 1, 1], "metallic": 1.0, "roughness": 0.0 },
       "light": { "intensity": 0.0 }
     },
     "left_wall": {
-      "material": { "base_color": [0.8, 0.8, 0.8], "metallic": 1.0, "roughness": 0.0 },
-      "light": { "intensity": 0.0 }
+      "material": { "base_color": [1, 1, 1], "metallic": 0.0, "roughness": 1.0 },
+      "light": { "intensity": 2.0 }
     },
     "right_wall": {
-      "material": { "base_color": [0.8, 0.8, 0.8], "metallic": 1.0, "roughness": 0.0 },
+      "material": { "base_color": [1, 1, 1], "metallic": 0.0, "roughness": 1.0 },
+      "light": { "intensity": 2.0 }
+    },
+    "front_wall": {
+      "material": { "base_color": [1, 1, 1], "metallic": 1.0, "roughness": 0.0 },
       "light": { "intensity": 0.0 }
     }
   }

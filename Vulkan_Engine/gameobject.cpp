@@ -431,7 +431,10 @@ void Gameobject::loadMaterials(const tinygltf::Model& model) {
             // PBR Base
             const auto& bcf = pbr.baseColorFactor;
             newMaterial.base_color_factor = glm::vec4(bcf[0], bcf[1], bcf[2], bcf[3]);
+            // if(pbr.extensions.count("metallicFactor"))
             newMaterial.metallic_factor = static_cast<float>(pbr.metallicFactor);
+            /* else
+                newMaterial.metallic_factor = 0.0f; */
             newMaterial.roughness_factor = static_cast<float>(pbr.roughnessFactor);
 
             newMaterial.albedo_texture_index = getTextureIndex(pbr.baseColorTexture.index, model);

@@ -2,7 +2,6 @@
 Engine
 resources/dataset/*.png
 dataset/train/*.jpg
-blue_noise
 resources/sponza
 resources/sponza_candles
 resources/sponza_curtains

@@ -63,3 +63,66 @@ The pipeline has been validated on complex environments, demonstrating that star
 | **Textureless Surfaces** | Often fails (holes)  | Robust reconstruction  |
 | **Camera Poses** | Estimated (potential drift)  | Exact (Ground Truth)  |
 | **Convergence** | Relies on ADC  | ADC can be bypassed  |
+
+---
+
+## Requirements
+
+This project is written in C++ and uses Vulkan for rendering, along with several external libraries.
+
+### Core Requirements
+- C++17 compatible compiler (GCC / Clang)
+- Vulkan SDK (tested with latest LunarG SDK)
+- Make
+
+### Dependencies
+The following libraries are required:
+
+- GLFW (window and input handling)
+- GLM (math library)
+- Assimp (model loading)
+- stb (image loading)
+- ImGui (UI)
+- Vulkan Memory Allocator (VMA)
+
+Make sure all dependencies are installed and accessible by the compiler.  
+You may need to adjust include/library paths in the `Makefile` depending on your system.
+
+### Setup Script
+
+A helper script is provided to install the required system dependencies on Ubuntu/Debian systems.
+
+#### Usage
+
+Make the script executable:
+
+```bash
+chmod +x setup.sh
+```
+
+Run the script:
+
+```bash
+./setup.sh
+```
+The script installs all required libraries except for the Vulkan SDK, which must be installed manually.
+Download it from: https://vulkan.lunarg.com/
+After installing the Vulkan SDK, make sure to source the environment variables:
+You may still need to adjust library/include paths in the Makefile
+The script is intended for Ubuntu/Debian-based distributions
+
+---
+
+## How to run
+The project uses a Makefile for compilation.
+From the root directory, run:
+```bash
+make run
+```
+This will build the executable and run it
+To clean the project:
+```bash
+make clean
+```
+To change the loaded scene, modify the path inside the main_scene.json file
+

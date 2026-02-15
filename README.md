@@ -80,7 +80,7 @@ The following libraries are required:
 
 - GLFW (window and input handling)
 - GLM (math library)
-- Assimp (model loading)
+- tinyGLTF (model loading)
 - stb (image loading)
 - ImGui (UI)
 - Vulkan Memory Allocator (VMA)

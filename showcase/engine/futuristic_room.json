@@ -21,7 +21,7 @@
     },
 
     "ambient_light": [0.00, 0.0, 0.0, 0.7],
-    "accumulation_steps": 2048,
+    "accumulation_steps": 1024,
     "total_positions": 512,
     "capture_images": true,
     "capture_pointcloud": true,

@@ -17,7 +17,7 @@
         "height": 1.25,
         "major_segments": 500,
         "minor_segments": 500,
-        "num_rays": 2000000
+        "num_rays": 500000
     },
 
     "ambient_light": [0.0002, 0.02, 0.04, 2.0],
@@ -27,7 +27,8 @@
     "capture_images": true,
     "capture_pointcloud": true,
     "min_beta": -30,
-    "max_beta": 30
+    "max_beta": 30,
+    "image_divisor": 1.0 
   },
   "objects": [
     {

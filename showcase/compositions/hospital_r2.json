@@ -17,13 +17,14 @@
         "height": 2.5,
         "major_segments": 500,
         "minor_segments": 500,
-        "num_rays": 1000000
+        "num_rays": 500000
     },
 
     "ambient_light": [0.003, 0.02, 0.04, 4.00],
 
     "accumulation_steps": 1024,
-    "total_positions": 336
+    "total_positions": 336,
+    "image_divisor": 1.0
   },
   "objects": [
     {

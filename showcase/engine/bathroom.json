@@ -5,13 +5,21 @@
     "panel_shadows_enabled": false,
 
     "torus_settings": {
-        "major_radius": 22,
+        "major_radius": 1,
         "minor_radius": 1.0,
-        "height": 16,
+        "height": 0,
         "major_segments": 500,
         "minor_segments": 500,
-        "num_rays": 1000000
+        "num_rays": 500000
     },
+
+    "accumulation_steps": 1024,
+    "total_positions": 512,
+    "capture_images": true,
+    "capture_pointcloud": true,
+    "min_beta": -30,
+    "max_beta": 30,
+    "image_divisor": 1.0,
 
     "ambient_light": [0.002, 0.002, 0.002, 0.25]
   },

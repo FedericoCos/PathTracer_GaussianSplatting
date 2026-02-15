@@ -19,7 +19,9 @@
         "num_rays": 500000
     },
 
-    "ambient_light": [0.015, 0.02, 0.14, 2.5]
+    "ambient_light": [0.015, 0.02, 0.14, 2.5],
+    "accumulation_steps": 1024,
+    "image_divisor": 1.0
   },
   "objects": [
     {

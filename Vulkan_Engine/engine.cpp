@@ -1124,10 +1124,12 @@ void Engine::createRTOutputImage() {
         // vk::Format::eR8G8B8A8Unorm, // Standard format for saving to disk (JPG/PNG)
         swapchain.format, // Setting the format to the same of the Swapchain for consistency between what we see and what we save
         vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc,
+        vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eColorAttachment,
         vk::MemoryPropertyFlagBits::eDeviceLocal, 
         vma_allocator
     );
+
+    capture_resolve_image.image_view = Image::createImageView(capture_resolve_image, logical_device);
 
     // Transition to General Layout (Ready for RayGen writing)
     vk::raii::CommandBuffer cmd = beginSingleTimeCommands(pool_and_queue.command_pool_transfer, logical_device);
@@ -1550,7 +1552,7 @@ void Engine::createDescriptorPool()
     };
 
     vk::DescriptorPoolCreateInfo pool_info;
-    pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet; // Allow freeing if needed
+    pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     pool_info.maxSets = total_sets;
     pool_info.poolSizeCount = static_cast<uint32_t>(pool_sizes.size());
     pool_info.pPoolSizes = pool_sizes.data();
@@ -1611,7 +1613,6 @@ void Engine::createPointCloudDescriptorSets()
     point_cloud_descriptor_sets = logical_device.allocateDescriptorSets(alloc_info);
 
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        // Binding 0: Main UBO
         vk::DescriptorBufferInfo ubo_info;
         ubo_info.buffer = uniform_buffers[i].buffer;
         ubo_info.offset = 0;
@@ -1624,7 +1625,6 @@ void Engine::createPointCloudDescriptorSets()
         ubo_write.descriptorCount = 1;
         ubo_write.pBufferInfo = &ubo_info;
 
-        // Binding 1: Hit Data Buffer
         vk::DescriptorBufferInfo hit_buffer_info;
         hit_buffer_info.buffer = hit_data_buffer.buffer;
         hit_buffer_info.offset = 0;
@@ -1637,7 +1637,6 @@ void Engine::createPointCloudDescriptorSets()
         hit_write.descriptorCount = 1;
         hit_write.pBufferInfo = &hit_buffer_info;
 
-        // --- FIX 2: Add Binding 2 (Torus Vertices) ---
         vk::DescriptorBufferInfo sampler_buffer_info;
         sampler_buffer_info.buffer = sample_data_buffer.buffer;
         sampler_buffer_info.offset = 0;
@@ -1650,7 +1649,6 @@ void Engine::createPointCloudDescriptorSets()
         torus_write.descriptorCount = 1;
         torus_write.pBufferInfo = &sampler_buffer_info;
 
-        // Update writes array to size 3
         std::array<vk::WriteDescriptorSet, 3> writes = {ubo_write, hit_write, torus_write};
         logical_device.updateDescriptorSets(writes, {});
     }
@@ -1659,13 +1657,11 @@ void Engine::createPointCloudDescriptorSets()
 
 void Engine::createGlobalBindlessBuffers()
 {
-    // --- 1. Create local vectors to aggregate data ---
     std::vector<MaterialPushConstant> global_materials_data;
     std::vector<Vertex> global_scene_vertices;
     std::vector<uint32_t> global_scene_indices;
     std::vector<MeshInfo> global_mesh_info;
 
-    // --- NEW: Light Sampling Vectors ---
     std::vector<LightTriangle> global_light_triangles;
     std::vector<float> light_triangle_fluxes;
     std::vector<float> punctlight_fluxes;
@@ -1674,18 +1670,15 @@ void Engine::createGlobalBindlessBuffers()
 
     int current_texture_offset = 0;
     
-    // Helper lambda to aggregate a single game object
     auto aggregate_object = [&](Gameobject& obj) {
         if (obj.vertices.empty()) return;
         
-        // Base offsets for this object
         uint32_t vertex_offset = static_cast<uint32_t>(global_scene_vertices.size());
         uint32_t index_offset = static_cast<uint32_t>(global_scene_indices.size());
         uint32_t material_offset = static_cast<uint32_t>(global_materials_data.size());
         
         obj.mesh_info_offset = static_cast<uint32_t>(global_mesh_info.size());
 
-        // Process Textures
         for(auto& tex: obj.textures){
             vk::DescriptorImageInfo image_info;
             image_info.sampler = *obj.default_sampler;
@@ -1694,11 +1687,9 @@ void Engine::createGlobalBindlessBuffers()
             global_texture_descriptors.push_back(image_info);
         }
         
-        // Append Geometry
         global_scene_vertices.insert(global_scene_vertices.end(), obj.vertices.begin(), obj.vertices.end());
         global_scene_indices.insert(global_scene_indices.end(), obj.indices.begin(), obj.indices.end());
 
-        // Append Materials
         for (const auto& mat : obj.materials) {
             MaterialPushConstant p_const = {};
             p_const.base_color_factor = mat.base_color_factor;
@@ -1737,8 +1728,6 @@ void Engine::createGlobalBindlessBuffers()
             });
         }
 
-        // --- NEW: Collect Emissive Triangles ---
-        // We convert local indices to Global Absolute Indices using 'vertex_offset'
         for (const auto& tri : obj.emissive_triangles) {
             LightTriangle l_tri;
             l_tri.v0 = vertex_offset + tri.index0;
@@ -1748,12 +1737,9 @@ void Engine::createGlobalBindlessBuffers()
             
             global_light_triangles.push_back(l_tri);
 
-            // Calculate Flux (Power) = Area * Emission Strength (Length of color vector)
             const Material& mat = obj.materials[tri.material_index];
             float emission_strength = glm::length(mat.emissive_factor);
             
-            // Flux = Area * Radiance (Approximation)
-            // We assume Lambertian emission over the hemisphere (PI factor usually involved but cancels out in PDF)
             float flux = tri.area * emission_strength;
             light_triangle_fluxes.push_back(flux);
         }
@@ -1769,26 +1755,21 @@ void Engine::createGlobalBindlessBuffers()
         current_texture_offset += obj.textures.size();
     };
 
-    // --- 2. Aggregate all objects ---
     for (Gameobject& obj : scene_objs) {
         if(&obj != &torus)
             aggregate_object(obj);
     }
-    // aggregate_object(debug_cube);
     if (use_rt_box) {
         aggregate_object(rt_box);
     }
 
-    // --- 3. Build CDF ---
     std::vector<LightCDF> global_light_cdf;
     num_light_triangles = static_cast<uint32_t>(global_light_triangles.size());
     ubo.emissive_flux = 0.0f;
 
     if (num_light_triangles > 0) {
-        // Calculate total flux
         for (float f : light_triangle_fluxes) ubo.emissive_flux += f;
 
-        // Build CDF
         float running_sum = 0.0f;
         for (size_t i = 0; i < num_light_triangles; i++) {
             running_sum += light_triangle_fluxes[i];
@@ -1800,10 +1781,8 @@ void Engine::createGlobalBindlessBuffers()
             
             global_light_cdf.push_back(cdf_entry);
         }
-        // Force last entry to 1.0 to prevent precision errors
         global_light_cdf.back().cumulative_probability = 1.0f;
     } else {
-        // Dummy entry to prevent binding errors if no lights exist
         global_light_triangles.push_back({0, 0, 0, 0});
         global_light_cdf.push_back({1.0f, 0, {0.0f, 0.0f}});
     }
@@ -1815,13 +1794,12 @@ void Engine::createGlobalBindlessBuffers()
         float running_sum = 0.0f;
         for (size_t i = 0; i < global_punctual_lights.size(); i++) {
             const auto& l = global_punctual_lights[i];
-            if (l.type == 1) { // Directional
+            if (l.type == 1) { 
                 punctlight_fluxes.push_back(l.intensity * 400.0f);
-                ubo.punctual_flux += punctlight_fluxes[i]; // Assuming a scene cross-section of ~20x20m = 400m^2.
-            } else { // Point or Spot
-                // Flux (Lumens) = Intensity (Candela) * SolidAngle (4PI)
+                ubo.punctual_flux += punctlight_fluxes[i];
+            } else { 
                 punctlight_fluxes.push_back(l.intensity * 12.566f);
-                ubo.punctual_flux += punctlight_fluxes[i]; // 4 * PI
+                ubo.punctual_flux += punctlight_fluxes[i]; 
             }
         }
 
@@ -1872,7 +1850,6 @@ void Engine::createGlobalBindlessBuffers()
     upload_buffer(all_materials_buffer, sizeof(MaterialPushConstant) * global_materials_data.size(), global_materials_data.data());
     upload_buffer(all_mesh_info_buffer, sizeof(MeshInfo) * global_mesh_info.size(), global_mesh_info.data());
 
-    // --- NEW: Upload Light Buffers ---
     upload_buffer(light_triangle_buffer, sizeof(LightTriangle) * global_light_triangles.size(), global_light_triangles.data());
     upload_buffer(light_cdf_buffer, sizeof(LightCDF) * global_light_cdf.size(), global_light_cdf.data());
     upload_buffer(punctual_cdf_buffer, sizeof(PunctualLightCDF) * global_punctual_pdf.size(), global_punctual_pdf.data());
@@ -1883,7 +1860,6 @@ void Engine::createGlobalBindlessBuffers()
 }
 
 
-// ------ Render Loop Functions
 
 void Engine::run(){
     while(!glfwWindowShouldClose(window)){
@@ -1912,9 +1888,6 @@ void Engine::recordCommandBuffer(uint32_t image_index){
     p_const.height = torus.getHeight();
     cmd.pushConstants<RayPushConstant>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, p_const);
 
-    // =========================================================
-    // MODE A: TORUS SAMPLING (Point Cloud)
-    // =========================================================
     if(render_point_cloud)
     {
         uint32_t side = static_cast<uint32_t>(std::ceil(std::sqrt(sampling_points.size())));
@@ -1926,7 +1899,6 @@ void Engine::recordCommandBuffer(uint32_t image_index){
             callable_region, 
             side, side, 1);
         
-        // ... [Rest of Point Cloud Barrier and Drawing Logic remains identical] ...
         vk::MemoryBarrier2 mem_barrier;
         mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
         mem_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
@@ -1994,9 +1966,6 @@ void Engine::recordCommandBuffer(uint32_t image_index){
                                 vk::AccessFlagBits2::eColorAttachmentWrite, {},
                                 vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::PipelineStageFlagBits2::eBottomOfPipe);
     }
-    // =========================================================
-    // MODE B: CAMERA RENDER
-    // =========================================================
     else 
     {
         vkCmdTraceRaysKHR(*cmd, 
@@ -2006,7 +1975,6 @@ void Engine::recordCommandBuffer(uint32_t image_index){
             callable_region, 
             swapchain.extent.width, swapchain.extent.height, 1);
         
-        // ... [Rest of Blit/Barrier logic remains identical] ...
         vk::ImageMemoryBarrier2 image_barrier;
         image_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
         image_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
@@ -2695,7 +2663,6 @@ void Engine::captureSceneData() {
 
     logical_device.waitIdle();
 
-    // --- SETUP ---
     bool original_cloud_state = activate_point_cloud;
     activate_point_cloud = false; 
 
@@ -2707,9 +2674,6 @@ void Engine::captureSceneData() {
     std::uniform_real_distribution<> alpha_dist(0.0f, 360.0f);
     std::uniform_real_distribution<> beta_dist(min_beta, max_beta);
 
-    // =========================================================
-    // PHASE 1: CAMERA IMAGES (View from INSIDE Torus)
-    // =========================================================
     for (int i = 0; i < total_positions && capture_images; ++i) {
         float alpha = alpha_dist(gen);
         float beta = beta_dist(gen);
@@ -2733,7 +2697,6 @@ void Engine::captureSceneData() {
             p_const.height = torus.getHeight();
             cmd.pushConstants<RayPushConstant>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, p_const);
 
-            // --- TRACE CAMERA RAYS (Use Camera Regions) ---
             vkCmdTraceRaysKHR(*cmd, 
                 rgen_region_camera, 
                 rmiss_region_camera, 
@@ -2744,7 +2707,6 @@ void Engine::captureSceneData() {
             endSingleTimeCommands(cmd, pool_and_queue.graphics_queue);
         }
 
-        // --- Save Image Logic (Unchanged) ---
         vk::raii::CommandBuffer cmd_copy = beginSingleTimeCommands(pool_and_queue.command_pool_graphics, logical_device);
 
         transitionImage(cmd_copy, capture_resolve_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, vk::ImageAspectFlagBits::eColor);
@@ -2805,9 +2767,6 @@ void Engine::captureSceneData() {
     }
     std::cout << std::endl << "Images saved. Now generating Point Cloud..." << std::endl;
 
-    // =========================================================
-    // PHASE 2: POINT CLOUD GENERATION (Rays FROM Torus Surface)
-    // =========================================================
     for (int frame = 0; frame < accumulation_steps && capture_pointcloud; ++frame) {
         accumulation_frame = frame;
         updateUniformBuffer(current_frame); 
@@ -2857,34 +2816,23 @@ void Engine::captureSceneData() {
 void Engine::saveTransformsJson(const std::string& filename, const std::vector<FrameData>& frames) {
     json root;
     
-    // 1. Camera Angle X (Horizontal FOV in radians)
-    // 1. Get Vertical FOV from Camera (in Radians)
     float fov_y = glm::radians(camera.getCurrentState().fov);
     
-    // 2. Get Aspect Ratio from Swapchain (Width / Height)
-    // Note: Ensure you use the resolution of the SAVED IMAGES (e.g. if you resized to 960x526)
-    // Assuming your camera aspect ratio matches your saved image aspect ratio:
     float aspect = camera.getCurrentState().aspect_ratio;
 
-    // 3. Convert to Horizontal FOV (camera_angle_x)
-    // Formula: tan(fovX / 2) = aspect * tan(fovY / 2)
     float fov_x = 2.0f * atan(tan(fov_y / 2.0f) * aspect);
 
     root["camera_angle_x"] = fov_x;
 
-    // 2. Frames
     root["frames"] = json::array();
     for (const auto& frame : frames) {
         json frame_json;
         frame_json["file_path"] = frame.file_path;
         
-        // Convert glm::mat4 to 4x4 array
         frame_json["transform_matrix"] = json::array();
         for (int row = 0; row < 4; ++row) {
             json row_arr = json::array();
             for (int col = 0; col < 4; ++col) {
-                // GLM is column-major, but JSON expects row-major reading usually, 
-                // effectively we just need to write out the rows.
                 row_arr.push_back(frame.transform_matrix[col][row]); 
             }
             frame_json["transform_matrix"].push_back(row_arr);
@@ -2901,16 +2849,14 @@ void Engine::saveTransformsJson(const std::string& filename, const std::vector<F
 void Engine::savePly(const std::string& filename) {
     std::cout << "Exporting PLY..." << std::endl;
 
-    // 1. Read Hit Buffer from GPU
     size_t num_rays = sampling_points.size();
     std::vector<HitDataGPU> hits(num_rays);
     readBuffer(hit_data_buffer.buffer, sizeof(HitDataGPU) * num_rays, hits.data(), vma_allocator,
                 logical_device, pool_and_queue.command_pool_transfer, pool_and_queue.transfer_queue);
 
-    // 2. Filter valid points
     std::vector<HitDataGPU> valid_points;
     for (const auto& hit : hits) {
-        if (hit.flag > 0.0f) { // Check for hit
+        if (hit.flag > 0.0f) { 
             valid_points.push_back(hit);
         }
     }
@@ -2920,8 +2866,6 @@ void Engine::savePly(const std::string& filename) {
         std::cerr << "Failed to open " << filename << std::endl;
         return;
     }
-
-    // 3. Write PLY Header
     file << "ply\n";
     file << "format ascii 1.0\n";
     file << "element vertex " << valid_points.size() << "\n";
@@ -2936,14 +2880,13 @@ void Engine::savePly(const std::string& filename) {
     file << "property uchar blue\n";
     file << "end_header\n";
 
-    // 2. Write Data
     for (const auto& p : valid_points) {
         int r = static_cast<int>(p.color.r * 255.0f);
         int g = static_cast<int>(p.color.g * 255.0f);
         int b = static_cast<int>(p.color.b * 255.0f);
         
         file << p.pos.x << " " << p.pos.y << " " << p.pos.z << " " 
-             << p.normal.x << " " << p.normal.y << " " << p.normal.z << " "  // <--- Use REAL normals
+             << p.normal.x << " " << p.normal.y << " " << p.normal.z << " " 
              << r << " " << g << " " << b << "\n";
     }
 
@@ -2953,37 +2896,26 @@ void Engine::savePly(const std::string& filename) {
 
 
 void Engine::capturePanorama() {
-    std::cout << "\n--- Starting 360 Panorama Capture (Internal) ---" << std::endl;
+    std::cout << "\n--- Starting 360 Panorama Capture ---" << std::endl;
 
-    // 1. Ensure GPU is idle and setup directory
     logical_device.waitIdle();
     std::filesystem::create_directories("dataset/panorama");
 
-    // 2. Get the current Beta angle from the camera state
-    // We assume the camera is currently in Toroidal mode or valid toroidal coordinates are stored.
     float current_beta = camera.getCurrentState().t_camera.beta;
-    
-    // We will do a full 360 loop. 
-    // You can adjust 'step_size' to change the number of images (e.g., 1.0f = 360 images).
     float step_size = 1.0f; 
     int total_steps = static_cast<int>(360.0f / step_size);
 
-    std::cout << "Capturing " << total_steps << " frames at Beta: " << current_beta << std::endl;
-
     for (int i = 0; i < total_steps; ++i) {
         float alpha = static_cast<float>(i) * step_size;
-
-        // 3. Move Camera: Alpha increases (simulating moving right), Beta stays fixed
+        
         camera.updateToroidalAngles(alpha, current_beta, torus.getMajorRadius(), torus.getHeight());
 
-        // 4. Accumulate Frames (Denoising)
         for (int frame = 0; frame < accumulation_steps; ++frame) {
-            accumulation_frame = frame;
-            updateUniformBuffer(current_frame);
+            accumulation_frame = frame; 
+            updateUniformBuffer(current_frame); 
 
-            // Record Ray Tracing Command
             vk::raii::CommandBuffer cmd = beginSingleTimeCommands(pool_and_queue.command_pool_graphics, logical_device);
-
+            
             cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.pipeline);
             cmd.bindDescriptorSets(vk::PipelineBindPoint::eRayTracingKHR, *rt_pipeline.layout, 0, {*rt_descriptor_sets[current_frame]}, {});
 
@@ -2994,57 +2926,98 @@ void Engine::capturePanorama() {
             p_const.height = torus.getHeight();
             cmd.pushConstants<RayPushConstant>(*rt_pipeline.layout, vk::ShaderStageFlagBits::eRaygenKHR, 0, p_const);
 
-            // Trace Camera Rays
-            vkCmdTraceRaysKHR(*cmd, 
-                rgen_region_camera, 
-                rmiss_region_camera, 
-                rhit_region_camera, 
-                callable_region, 
-                swapchain.extent.width, swapchain.extent.height, 1);
+            if (render_point_cloud) {
+                uint32_t side = static_cast<uint32_t>(std::ceil(std::sqrt(sampling_points.size())));
+                vkCmdTraceRaysKHR(*cmd, rgen_region_torus, rmiss_region_torus, rhit_region_torus, callable_region, side, side, 1);
+            } else {
+                vkCmdTraceRaysKHR(*cmd, rgen_region_camera, rmiss_region_camera, rhit_region_camera, callable_region, swapchain.extent.width, swapchain.extent.height, 1);
+            }
 
             endSingleTimeCommands(cmd, pool_and_queue.graphics_queue);
         }
 
-        // 5. Transfer to Host and Save
-        // Copy RT Image -> Capture Image -> Buffer
-        vk::raii::CommandBuffer cmd_copy = beginSingleTimeCommands(pool_and_queue.command_pool_graphics, logical_device);
+        vk::raii::CommandBuffer cmd_final = beginSingleTimeCommands(pool_and_queue.command_pool_graphics, logical_device);
 
-        // Transition layouts
-        transitionImage(cmd_copy, capture_resolve_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, vk::ImageAspectFlagBits::eColor);
-        transitionImage(cmd_copy, rt_output_image.image, vk::ImageLayout::eGeneral, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
+        if (render_point_cloud) {
+            vk::MemoryBarrier2 mem_barrier;
+            mem_barrier.srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
+            mem_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
+            mem_barrier.dstStageMask = vk::PipelineStageFlagBits2::eVertexShader; 
+            mem_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead;
+            
+            vk::DependencyInfo dep_info;
+            dep_info.memoryBarrierCount = 1;
+            dep_info.pMemoryBarriers = &mem_barrier;
+            cmd_final.pipelineBarrier2(dep_info);
 
-        // Blit (handles resizing if RT image is different size, though usually same here)
-        vk::ImageBlit blitRegion;
-        blitRegion.srcOffsets[0] = vk::Offset3D{0, 0, 0};
-        blitRegion.srcOffsets[1] = vk::Offset3D{static_cast<int32_t>(swapchain.extent.width), static_cast<int32_t>(swapchain.extent.height), 1};
-        blitRegion.srcSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
-        blitRegion.dstOffsets[0] = vk::Offset3D{0, 0, 0};
-        blitRegion.dstOffsets[1] = vk::Offset3D{static_cast<int32_t>(swapchain.extent.width), static_cast<int32_t>(swapchain.extent.height), 1};
-        blitRegion.dstSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
+            transitionImage(cmd_final, capture_resolve_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageAspectFlagBits::eColor);
 
-        cmd_copy.blitImage(
-            rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal,
-            capture_resolve_image.image, vk::ImageLayout::eTransferDstOptimal,
-            blitRegion, vk::Filter::eNearest
-        );
+            vk::RenderingAttachmentInfo color_att{};
+            color_att.imageView = *capture_resolve_image.image_view;
+            color_att.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+            color_att.loadOp = vk::AttachmentLoadOp::eClear;
+            color_att.storeOp = vk::AttachmentStoreOp::eStore;
+            color_att.clearValue = vk::ClearColorValue{std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}};
 
-        // Transition back
-        transitionImage(cmd_copy, rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
-        transitionImage(cmd_copy, capture_resolve_image.image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
+            vk::RenderingInfo render_info{};
+            render_info.renderArea.extent = swapchain.extent;
+            render_info.layerCount = 1;
+            render_info.colorAttachmentCount = 1;
+            render_info.pColorAttachments = &color_att;
 
-        endSingleTimeCommands(cmd_copy, pool_and_queue.graphics_queue);
+            cmd_final.beginRendering(render_info);
 
-        // Read back
+            cmd_final.setViewport(0, vk::Viewport(0.f, 0.f, (float)swapchain.extent.width, (float)swapchain.extent.height, 0.f, 1.f));
+            cmd_final.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapchain.extent));
+            cmd_final.setCullMode(vk::CullModeFlagBits::eNone);  
+
+            cmd_final.bindPipeline(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.pipeline);
+            cmd_final.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *point_cloud_pipeline.layout, 0, {*point_cloud_descriptor_sets[current_frame]}, {});
+            
+            PC pc_data;
+            pc_data.model = torus.model_matrix;
+            pc_data.major_radius = torus.getMajorRadius();
+            pc_data.minor_radius = torus.getMinorRadius();
+            pc_data.height = torus.getHeight();
+
+            if(render_final_pointcloud){
+                pc_data.mode = 0;
+                cmd_final.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data);
+                cmd_final.draw(static_cast<uint32_t>(sampling_points.size()), 1, 0, 0);
+            }
+            if(show_projected_torus){
+                pc_data.mode = 1;
+                cmd_final.pushConstants<PC>(*point_cloud_pipeline.layout, vk::ShaderStageFlagBits::eVertex, 0, pc_data);
+                cmd_final.draw(static_cast<uint32_t>(sampling_points.size()), 1, 0, 0);
+            }
+            cmd_final.endRendering();
+
+            transitionImage(cmd_final, capture_resolve_image.image, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
+        } else {
+            // Standard Path Tracing Copy 
+            transitionImage(cmd_final, capture_resolve_image.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, vk::ImageAspectFlagBits::eColor);
+            transitionImage(cmd_final, rt_output_image.image, vk::ImageLayout::eGeneral, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
+
+            vk::ImageBlit blitRegion;
+            blitRegion.srcOffsets[1] = vk::Offset3D{static_cast<int32_t>(swapchain.extent.width), static_cast<int32_t>(swapchain.extent.height), 1};
+            blitRegion.srcSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
+            blitRegion.dstOffsets[1] = vk::Offset3D{static_cast<int32_t>(swapchain.extent.width), static_cast<int32_t>(swapchain.extent.height), 1};
+            blitRegion.dstSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
+
+            cmd_final.blitImage(rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, capture_resolve_image.image, vk::ImageLayout::eTransferDstOptimal, blitRegion, vk::Filter::eNearest);
+            
+            transitionImage(cmd_final, rt_output_image.image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eGeneral, vk::ImageAspectFlagBits::eColor);
+            transitionImage(cmd_final, capture_resolve_image.image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, vk::ImageAspectFlagBits::eColor);
+        }
+        endSingleTimeCommands(cmd_final, pool_and_queue.graphics_queue);
+
         ImageReadbackData data = readImageToCPU(capture_resolve_image.image, capture_resolve_image.image_format, swapchain.extent.width, swapchain.extent.height);
-        
-        // Optional: Downscale logic (copied from captureSceneData)
         if (image_divisor > 1.0f) {
             uint32_t target_w = static_cast<uint32_t>(data.width / image_divisor);
             uint32_t target_h = static_cast<uint32_t>(data.height / image_divisor);
             std::vector<uint8_t> resized_pixels(target_w * target_h * 4);
             for (uint32_t y = 0; y < target_h; ++y) {
                 for (uint32_t x = 0; x < target_w; ++x) {
-                    // Simple Nearest Neighbor sampling for speed
                     uint32_t src_x = static_cast<uint32_t>(x * image_divisor);
                     uint32_t src_y = static_cast<uint32_t>(y * image_divisor);
                     uint32_t src_idx = (src_y * data.width + src_x) * 4;
@@ -3061,7 +3034,6 @@ void Engine::capturePanorama() {
             data.data = resized_pixels;
         }
 
-        // Save
         std::string filename = "dataset/panorama/pano_" + std::to_string(static_cast<int>(alpha)) + ".jpg";
         saveJPG(filename, data);
 
